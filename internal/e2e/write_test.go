@@ -139,3 +139,34 @@ func TestHomeTopAllowsNewFilesButNotSubdirectories(t *testing.T) {
 	mustSucceed(t, box.state, writeFileCommand(filepath.Join(box.denied, "top.txt")))
 	mustFail(t, box.state, writeFileCommand(filepath.Join(sub, "nested.txt")))
 }
+
+// TestNarrowingADirectoryInsideAHandedOverOneTakesEffect is the regression
+// guard for a read-only grant that was read-only in name only. A permission
+// reaches everything below the directory it is set on, so leaving the write
+// bits out of the nested grant changed nothing: the sandbox kept writing
+// through the permission it had on the parent.
+func TestNarrowingADirectoryInsideAHandedOverOneTakesEffect(t *testing.T) {
+	box := newBox(t)
+	nested := filepath.Join(box.granted, "reference")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(nested, "written.txt")
+	mustSucceed(t, box.state, writeFileCommand(target))
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := box.state.Add(nested, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+	mustFail(t, box.state, writeFileCommand(target))
+	if exists(target) {
+		t.Error("a directory narrowed to read-only is still writable")
+	}
+	// Reading still works, which is the other half of what read-only means.
+	place(t, filepath.Join(nested, "readable.txt"), "content")
+	mustSucceed(t, box.state, []string{"cmd.exe", "/c", "type " + filepath.Join(nested, "readable.txt")})
+	// And the directory around it is untouched.
+	mustSucceed(t, box.state, writeFileCommand(filepath.Join(box.granted, "sibling.txt")))
+}

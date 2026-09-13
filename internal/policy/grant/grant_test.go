@@ -20,14 +20,33 @@ func TestEntriesCoverEveryKind(t *testing.T) {
 	}
 }
 
-func TestReadOnlyGrantsNoWriteBits(t *testing.T) {
+// TestReadOnlyRefusesChangesRatherThanOmittingThem is the regression guard for
+// a read-only grant that was read-only in name only: leaving the write bits
+// out of a permission does nothing about a write the parent directory hands
+// down, so narrowing a directory inside a handed-over one changed nothing.
+func TestReadOnlyRefusesChangesRatherThanOmittingThem(t *testing.T) {
 	entries := RO.Entries()
-	if len(entries) != 1 {
-		t.Fatalf("got %d entries", len(entries))
-	}
 	const writeBits = 0x2 | 0x4 | 0x40 | 0x10000 // write, append, delete child, delete
-	if entries[0].Access&writeBits != 0 {
-		t.Errorf("read-only access mask %#x contains write bits", entries[0].Access)
+
+	var refusesChanges, allowsReading bool
+	for _, entry := range entries {
+		if entry.Refuse {
+			if entry.Access&writeBits != writeBits {
+				t.Errorf("the refusal covers %#x, which leaves some way to change the directory", entry.Access)
+			}
+			refusesChanges = true
+			continue
+		}
+		if entry.Access&writeBits != 0 {
+			t.Errorf("the permission %#x contains write bits", entry.Access)
+		}
+		allowsReading = true
+	}
+	if !refusesChanges {
+		t.Error("a read-only grant does not refuse anything")
+	}
+	if !allowsReading {
+		t.Error("a read-only grant does not allow reading")
 	}
 }
 

@@ -2,7 +2,9 @@ package acl
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
@@ -107,4 +109,65 @@ func TestProtectWorksOnDirectories(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "child.txt"), []byte("x"), 0o644); err != nil {
 		t.Errorf("the owner cannot write inside a protected directory: %v", err)
 	}
+}
+
+// TestSetReplacesRefusalsAndNotOnlyPermissions is the regression guard for a
+// clearing step that took away permissions and left refusals behind. Windows
+// reads a refusal before any permission, so a directory narrowed to read-only
+// and then widened again stayed refused by an entry nobody had asked to keep.
+func TestSetReplacesRefusalsAndNotOnlyPermissions(t *testing.T) {
+	dir := t.TempDir()
+	refusal := []ACE{
+		{Access: AccessChange, Inheritance: InheritObjects | InheritContainers, Refuse: true},
+		{Access: AccessReadExecute, Inheritance: InheritObjects | InheritContainers},
+	}
+	if err := Set(dir, unusedAccount, refusal); err != nil {
+		t.Fatal(err)
+	}
+	if !holds(t, dir, unusedAccount, "(DENY)") {
+		t.Fatal("the refusal was not applied")
+	}
+
+	// Widening the account again has to leave nothing of it behind.
+	if err := Set(dir, unusedAccount, []ACE{{Access: AccessModify, Inheritance: InheritObjects | InheritContainers}}); err != nil {
+		t.Fatal(err)
+	}
+	if holds(t, dir, unusedAccount, "(DENY)") {
+		t.Error("a refusal survived the account being widened")
+	}
+	if !holds(t, dir, unusedAccount, "(M)") {
+		t.Error("the new permission was not applied")
+	}
+}
+
+func TestRemoveTakesRefusalsAwayToo(t *testing.T) {
+	dir := t.TempDir()
+	if err := Set(dir, unusedAccount, []ACE{
+		{Access: AccessChange, Inheritance: InheritObjects, Refuse: true},
+		{Access: AccessReadExecute, Inheritance: InheritObjects},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Remove(dir, unusedAccount); err != nil {
+		t.Fatal(err)
+	}
+	if holds(t, dir, unusedAccount, "") {
+		t.Error("the account still holds an entry after being removed")
+	}
+}
+
+// holds reports whether the account appears in the permissions of path, with
+// the given text in its entry. An empty text matches any entry.
+func holds(t *testing.T, path, account, text string) bool {
+	t.Helper()
+	out, err := exec.Command("icacls", path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("icacls %s: %v", path, err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, account) && strings.Contains(line, text) {
+			return true
+		}
+	}
+	return false
 }

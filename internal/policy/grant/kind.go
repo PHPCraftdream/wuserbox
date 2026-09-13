@@ -9,8 +9,10 @@ type Kind string
 const (
 	// RW allows creating, changing and deleting anything under a directory.
 	RW Kind = "rw"
-	// RO allows reading a directory that the sandbox could not otherwise
-	// reach, for example one that a refusal covers.
+	// RO allows reading a directory and refuses to let the sandbox change it.
+	// The refusal is the point: without it, a directory inside one that was
+	// handed over would still be writable through inheritance, and calling
+	// that read-only would be a lie.
 	RO Kind = "ro"
 	// File allows changing a single file in place, without any access to the
 	// directory around it.
@@ -30,7 +32,10 @@ func (k Kind) Entries() []acl.ACE {
 	case RW:
 		return []acl.ACE{{Access: acl.AccessModify, Inheritance: subtree}}
 	case RO:
-		return []acl.ACE{{Access: acl.AccessReadExecute, Inheritance: subtree}}
+		return []acl.ACE{
+			{Access: acl.AccessChange, Inheritance: subtree, Refuse: true},
+			{Access: acl.AccessReadExecute, Inheritance: subtree},
+		}
 	case File:
 		return []acl.ACE{{Access: acl.AccessModify, Inheritance: acl.InheritNone}}
 	case HomeTop:
@@ -46,4 +51,19 @@ func (k Kind) Entries() []acl.ACE {
 // Writable reports whether a kind hands out the right to change anything.
 func (k Kind) Writable() bool {
 	return k == RW || k == File || k == HomeTop
+}
+
+// Proves is the operation that shows a permission of this kind is in force.
+// Asking the wrong question gives the wrong answer: a grant that lets an agent
+// create files in a directory without creating subdirectories is in perfect
+// order, and testing it for a plain write would call it broken.
+func (k Kind) Proves() string {
+	switch k {
+	case RW, File:
+		return "write"
+	case HomeTop:
+		return "create"
+	default:
+		return "read"
+	}
 }

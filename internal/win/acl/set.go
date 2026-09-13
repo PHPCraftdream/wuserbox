@@ -18,6 +18,10 @@ const (
 	seFileObject = 1
 	daclInfo     = 4
 	grantAccess  = 1
+	// setAccess replaces everything an account holds, refusals included.
+	// Revoking does not: it removes permissions and leaves refusals behind,
+	// and a refusal outlives the grant it was meant to accompany.
+	setAccess    = 2
 	denyAccess   = 3
 	revokeAccess = 4
 )
@@ -52,9 +56,26 @@ func Set(path, account string, entries []ACE) error {
 		return err
 	}
 	// Start by clearing this account so stale entries cannot survive.
-	list := []explicitAccess{entry(value, 0, InheritNone, revokeAccess)}
+	// Clearing comes first, and on its own, and it replaces rather than
+	// revokes: revoking takes away permissions and leaves refusals in place,
+	// so an account narrowed to read-only and then widened again would stay
+	// refused by an entry nobody asked to keep.
+	if err := apply(path, []explicitAccess{entry(value, 0, InheritNone, setAccess)}); err != nil {
+		return err
+	}
+
+	// Refusals go in before permissions: Windows reads the list in order, and
+	// a refusal placed after a permission would never be reached.
+	var list []explicitAccess
 	for _, e := range entries {
-		list = append(list, entry(value, e.Access, e.Inheritance, grantAccess))
+		if e.Refuse {
+			list = append(list, entry(value, e.Access, e.Inheritance, denyAccess))
+		}
+	}
+	for _, e := range entries {
+		if !e.Refuse {
+			list = append(list, entry(value, e.Access, e.Inheritance, grantAccess))
+		}
 	}
 	return apply(path, list)
 }
