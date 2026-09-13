@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -26,7 +27,7 @@ func CommandLine(args []string) (string, error) {
 
 	switch strings.ToLower(filepath.Ext(executable)) {
 	case ".cmd", ".bat":
-		return interpreterLine(parts), nil
+		return interpreterLine(parts)
 	}
 	quoted := make([]string, len(parts))
 	for i, part := range parts {
@@ -38,16 +39,28 @@ func CommandLine(args []string) (string, error) {
 // interpreterLine builds `cmd.exe /s /c "..."`. With /s the interpreter strips
 // the outer pair of quotes and takes the rest as it stands, and every argument
 // inside is quoted, so its punctuation is data rather than syntax.
-func interpreterLine(parts []string) string {
+//
+// An argument holding a quote of its own is refused. There is no spelling that
+// carries a literal quote through the interpreter into a batch parameter:
+// doubling it, escaping it with a backslash and escaping it with a caret were
+// each tried against a real script, and each arrived as something other than
+// what was passed. Saying so is better than handing the script a different
+// argument and letting it fail somewhere further on.
+func interpreterLine(parts []string) (string, error) {
 	quoted := make([]string, len(parts))
 	for i, part := range parts {
+		if strings.Contains(part, `"`) {
+			return "", fmt.Errorf("the argument %q holds a quote, and a batch file cannot receive one: "+
+				"call the program directly instead of through %s, or pass the value another way",
+				part, filepath.Base(parts[0]))
+		}
 		quoted[i] = quoteForInterpreter(part)
 	}
-	return `cmd.exe /s /c "` + strings.Join(quoted, " ") + `"`
+	return `cmd.exe /s /c "` + strings.Join(quoted, " ") + `"`, nil
 }
 
 // quoteForInterpreter wraps an argument in quotes, always, so the interpreter
-// reads its punctuation as text.
+// reads its punctuation as text. Arguments holding a quote never reach it.
 //
 // One thing quoting cannot stop is variable expansion: the interpreter
 // replaces %NAME% before the script runs, and there is no escape for it on a
@@ -55,18 +68,5 @@ func interpreterLine(parts []string) string {
 // the same way it would from any other Windows program that calls a batch
 // file.
 func quoteForInterpreter(arg string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for i := 0; i < len(arg); i++ {
-		switch c := arg[i]; c {
-		case '"':
-			// A quote would end the quoted run; doubling it keeps it as text
-			// for both the interpreter and the program's own parser.
-			b.WriteString(`""`)
-		default:
-			b.WriteByte(c)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
+	return `"` + arg + `"`
 }

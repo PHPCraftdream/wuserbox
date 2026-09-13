@@ -135,3 +135,34 @@ func TestBatchArgumentsExpandVariables(t *testing.T) {
 		t.Logf("the interpreter left the variable alone: %q", output)
 	}
 }
+
+// TestBatchArgumentsWithAQuoteAreRefused is the regression guard for an
+// argument that arrived as something else. There is no way to carry a literal
+// quote through the interpreter into a batch parameter: doubling it, escaping
+// it with a backslash and escaping it with a caret were each tried against a
+// real script and each arrived changed. Saying so beats handing the script a
+// different argument.
+func TestBatchArgumentsWithAQuoteAreRefused(t *testing.T) {
+	script := writeScript(t, reporter)
+	_, err := CommandLine([]string{script, `say "hello"`})
+	if err == nil {
+		t.Fatal("an argument holding a quote was accepted")
+	}
+	for _, want := range []string{"quote", "call the program directly"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the message does not mention %q: %v", want, err)
+		}
+	}
+}
+
+// TestQuotesReachAnOrdinaryProgramUnchanged is the other half: the refusal is
+// about batch files only, and a normal program still receives what was meant.
+func TestQuotesReachAnOrdinaryProgramUnchanged(t *testing.T) {
+	line, err := CommandLine([]string{"cmd.exe", "/c", `say "hello"`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(line, `\"hello\"`) && !strings.Contains(line, `"hello"`) {
+		t.Errorf("the quote was not escaped the way Windows expects: %s", line)
+	}
+}
