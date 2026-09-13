@@ -114,24 +114,42 @@ func validateRules(asJSON bool) error {
 }
 
 // inspectRules looks for the mistakes a hand-edited file collects: the same
-// directory twice, one directory in both lists, and directories that are no
-// longer there. The last is reported apart from the rest, because it is not a
-// mistake in the file.
+// directory twice, one directory in both lists, a project written out more
+// than once, and directories that are no longer there. The last is reported
+// apart from the rest, because it is not a mistake in the file.
+//
+// Entries are gathered per project rather than per rule. Only the first rule
+// for a project is ever applied, so a second one is not a harmless repetition:
+// everything it asks for is quietly dropped.
 func inspectRules(rules *config.Config) []Complaint {
 	var complaints []Complaint
+	seenProject := map[string]string{}
+	seenPath := map[string]map[string]grant.Kind{}
+
 	for _, rule := range rules.Projects {
-		seen := map[string]grant.Kind{}
+		project := lower(cleanPath(rule.Dir))
+		if first, repeated := seenProject[project]; repeated {
+			complaints = append(complaints, Complaint{
+				Kind: "duplicate", Project: rule.Dir, Path: rule.Dir,
+				Message: fmt.Sprintf("%s has more than one rule; only the first is applied, "+
+					"so everything this one asks for is dropped", first),
+			})
+		} else {
+			seenProject[project] = rule.Dir
+			seenPath[project] = map[string]grant.Kind{}
+		}
+
 		for _, list := range []struct {
 			paths []string
 			kind  grant.Kind
 		}{{rule.RW, grant.RW}, {rule.RO, grant.RO}} {
 			for _, listed := range list.paths {
 				key := lower(cleanPath(listed))
-				if previous, repeated := seen[key]; repeated {
+				if previous, repeated := seenPath[project][key]; repeated {
 					complaints = append(complaints, clash(rule.Dir, listed, previous, list.kind))
 					continue
 				}
-				seen[key] = list.kind
+				seenPath[project][key] = list.kind
 				if _, err := os.Stat(cleanPath(listed)); err != nil {
 					complaints = append(complaints, Complaint{
 						Kind: "missing", Project: rule.Dir, Path: listed,

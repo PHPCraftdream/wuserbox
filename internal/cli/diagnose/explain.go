@@ -98,18 +98,31 @@ func sourcesFor(s *state.State) (map[string]plan.Source, error) {
 	return out, nil
 }
 
-// inForce asks Windows whether the recorded permission is really there.
+// inForce asks Windows what the sandbox can really do with a path, and
+// compares it with what was recorded.
+//
+// Both directions matter. Less access than recorded means a permission was
+// lost. More access than recorded is the worse of the two: a directory
+// written down as readable that the sandbox can in fact write to is exactly
+// the situation this tool exists to prevent, and it would otherwise be
+// reported as being in good order.
 func inForce(account string, held grant.Spec) (bool, string) {
-	operation := access.Write
-	if !held.Kind.Writable() {
-		operation = access.Read
-	}
-	result, err := access.Check(account, held.Path, operation)
+	readable, err := access.Check(account, held.Path, access.Read)
 	if err != nil {
 		return false, err.Error()
 	}
-	if !result.Allowed {
-		return false, result.Reason
+	writable, err := access.Check(account, held.Path, access.Write)
+	if err != nil {
+		return false, err.Error()
+	}
+	if !readable.Allowed {
+		return false, "cannot be read: " + readable.Reason
+	}
+	switch expected := held.Kind.Writable(); {
+	case expected && !writable.Allowed:
+		return false, "recorded as writable, but writing is refused: " + writable.Reason
+	case !expected && writable.Allowed:
+		return false, "recorded as read-only, but the sandbox can write to it"
 	}
 	return true, ""
 }

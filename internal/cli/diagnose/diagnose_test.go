@@ -9,6 +9,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 )
 
 // TestMain loads the rules parser before any test moves the environment, so
@@ -187,5 +188,124 @@ func TestReportKindsAreTheOnesGrantUses(t *testing.T) {
 		if string(kind) == "" {
 			t.Errorf("a grant kind has no name")
 		}
+	}
+}
+
+// TestExplainNoticesAccessBeyondTheRecord is the regression guard for the more
+// dangerous half of drift. A directory recorded as read-only that the sandbox
+// can write to used to be reported as in good order, because only the recorded
+// access was ever checked.
+func TestExplainNoticesAccessBeyondTheRecord(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
+	target := t.TempDir()
+	s := &state.State{
+		Group: "wub-explain-test",
+		SID:   "S-1-5-21-1111111111-2222222222-3333333333-121212",
+		Dir:   t.TempDir(),
+		Temp:  t.TempDir(),
+	}
+	// Recorded as read-only, granted as writable: the two disagree.
+	if err := s.Add(target, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+	if err := grant.Apply(s.SID, target, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := build(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, account := range report.Accounts {
+		if !strings.EqualFold(account.Path, target) {
+			continue
+		}
+		found = true
+		if account.InForce {
+			t.Error("a read-only entry the sandbox can write to was reported as in order")
+		}
+		if !strings.Contains(account.Note, "can write") {
+			t.Errorf("unhelpful note: %q", account.Note)
+		}
+	}
+	if !found {
+		t.Fatalf("the directory is missing from the report: %+v", report.Accounts)
+	}
+	if len(report.Drifted) == 0 {
+		t.Error("the excess was not counted as drift")
+	}
+}
+
+func TestExplainNoticesAPermissionThatWasLost(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
+	target := t.TempDir()
+	s := &state.State{
+		Group: "wub-explain-test",
+		SID:   "S-1-5-21-1111111111-2222222222-3333333333-131313",
+		Dir:   t.TempDir(),
+		Temp:  t.TempDir(),
+	}
+	if err := s.Add(target, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if err := grant.Revoke(s.SID, target); err != nil {
+		t.Fatal(err)
+	}
+	report, err := build(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Drifted) == 0 {
+		t.Errorf("a lost permission was not noticed: %+v", report.Accounts)
+	}
+}
+
+// TestValidateFindsAConflictSpreadOverTwoRules is the regression guard for a
+// file that looked sound and was not: the checks were scoped to a single rule,
+// so the same directory asked for twice, in two rules for the same project,
+// went unnoticed. Only the first rule is applied, so the second was silently
+// dropped.
+func TestValidateFindsAConflictSpreadOverTwoRules(t *testing.T) {
+	project, tools := t.TempDir(), t.TempDir()
+	useRules(t, &config.Config{Projects: []config.Rule{
+		{Dir: project, RW: []string{tools}},
+		{Dir: project, RO: []string{tools}},
+	}})
+	err := Config([]string{"validate"})
+	if got := exit.Of(err); got != exit.BadConfig {
+		t.Errorf("exit code is %v, want %v", got, exit.BadConfig)
+	}
+	complaints := inspectRules(&config.Config{Projects: []config.Rule{
+		{Dir: project, RW: []string{tools}},
+		{Dir: project, RO: []string{tools}},
+	}})
+	var sawProject, sawPath bool
+	for _, complaint := range complaints {
+		if complaint.Kind == "duplicate" && strings.Contains(complaint.Message, "more than one rule") {
+			sawProject = true
+		}
+		if complaint.Kind == "conflict" {
+			sawPath = true
+		}
+	}
+	if !sawProject {
+		t.Errorf("the repeated project was not reported: %+v", complaints)
+	}
+	if !sawPath {
+		t.Errorf("the directory asked for both ways was not reported: %+v", complaints)
+	}
+}
+
+func TestValidateAcceptsTheSameDirectoryInDifferentProjects(t *testing.T) {
+	shared := t.TempDir()
+	useRules(t, &config.Config{Projects: []config.Rule{
+		{Dir: t.TempDir(), RW: []string{shared}},
+		{Dir: t.TempDir(), RO: []string{shared}},
+	}})
+	if err := Config([]string{"validate"}); err != nil {
+		t.Errorf("two projects may each name the same directory: %v", err)
 	}
 }
