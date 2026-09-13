@@ -1,0 +1,6 @@
+# Keep line endings stable: the build checks formatting, and a checkout that
+# turned line endings into the Windows form would fail it on every file.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.dll binary
