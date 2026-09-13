@@ -128,3 +128,60 @@ func TestGrantsForMapsKinds(t *testing.T) {
 		t.Error("expected no grants for an unlisted project")
 	}
 }
+
+func TestRulesMatchAnyPathSpelling(t *testing.T) {
+	useTempConfig(t)
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	project := filepath.Join(home, "project")
+	tools := filepath.Join(home, "tools")
+	for _, dir := range []string{project, tools} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	drive := strings.ToLower(project[:1])
+	shellStyle := "/" + drive + filepath.ToSlash(project[2:])
+
+	// The file was written by hand, in the spelling a person would use.
+	rules := &Config{Projects: []Rule{{
+		Dir: filepath.ToSlash(project),
+		RW:  []string{filepath.ToSlash(tools), "~/tools", "%USERPROFILE%/tools"},
+	}}}
+	if err := rules.Save(); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, spelling := range []string{
+		project,
+		strings.ToUpper(project),
+		filepath.ToSlash(project),
+		project + `\`,
+		shellStyle,
+		"~/project",
+		"%USERPROFILE%/project",
+	} {
+		if loaded.RuleFor(spelling, false) == nil {
+			t.Errorf("the rule was not found for %q", spelling)
+		}
+	}
+	grants := loaded.GrantsFor(project)
+	if len(grants) != 3 {
+		t.Fatalf("got %d grants, want 3", len(grants))
+	}
+	for _, g := range grants {
+		if !strings.EqualFold(g.Path, tools) {
+			t.Errorf("a path resolved to %q, want %q", g.Path, tools)
+		}
+	}
+}
+
+func TestRuleForStillMatchesAVanishedDirectory(t *testing.T) {
+	rules := &Config{Projects: []Rule{{Dir: "C:/gone/project"}}}
+	if rules.RuleFor(`C:\gone\project`, false) == nil {
+		t.Error("a rule for a directory that no longer exists should still match")
+	}
+}

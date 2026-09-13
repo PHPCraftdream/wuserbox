@@ -23,15 +23,25 @@ func (c *Config) RuleFor(dir string, create bool) *Rule {
 	return &c.Projects[len(c.Projects)-1]
 }
 
-// SamePath compares two paths that may differ in slash direction or case.
+// SamePath reports whether two spellings name the same place. Either side may
+// be written the Windows way, the shell way, with a variable or with a tilde,
+// so a file edited by hand matches what the commands pass in.
 func SamePath(a, b string) bool {
-	return strings.EqualFold(
-		filepath.Clean(filepath.FromSlash(a)),
-		filepath.Clean(filepath.FromSlash(b)),
-	)
+	return strings.EqualFold(canonical(a), canonical(b))
 }
 
-// GrantsFor turns the rule for a project directory into grant specs.
+// canonical reduces a path to one spelling. It falls back to a plain cleanup
+// when the path cannot be resolved, so a rule for a directory that is gone
+// still matches its own entry.
+func canonical(path string) string {
+	if resolved, err := paths.Resolve(path); err == nil {
+		return resolved
+	}
+	return filepath.Clean(filepath.FromSlash(strings.Trim(strings.TrimSpace(path), `"'`)))
+}
+
+// GrantsFor turns the rule for a project directory into grant specs, with
+// every path reduced to its real location.
 func (c *Config) GrantsFor(dir string) []grant.Spec {
 	rule := c.RuleFor(dir, false)
 	if rule == nil {
