@@ -115,14 +115,18 @@ func TestRecursiveDeleteStopsAtTheSandboxBoundary(t *testing.T) {
 	place(t, outside, "data")
 	place(t, inside, "data")
 
+	// Whether the file outside can be removed at all is a property of the
+	// machine's temporary directory, and has to be asked before the sweep
+	// rather than after, when there may be nothing left to ask about.
+	if answer, err := access.Check(box.state.SID, outside, access.Delete); err == nil && answer.Allowed {
+		t.Skipf("the temporary directory on this machine lets the sandbox delete outside the project: %s",
+			answer.Reason)
+	}
+
 	// A sweeping delete over the whole tree, the way `rm -rf` behaves.
 	runSandboxed(t, box.state, []string{"cmd.exe", "/c", "rmdir /s /q " + box.root})
 
 	if !exists(outside) {
-		if answer, err := access.Check(box.state.SID, box.denied, access.Delete); err == nil && answer.Allowed {
-			t.Skipf("the temporary directory on this machine lets the sandbox delete outside the project: %s",
-				answer.Reason)
-		}
 		t.Error("a file outside the sandbox was deleted")
 	}
 	if !exists(box.root) {

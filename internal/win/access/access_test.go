@@ -58,7 +58,6 @@ func TestCheckFollowsThePermissions(t *testing.T) {
 		{filepath.Join(granted, "f.txt"), Delete, true},
 		{filepath.Join(granted, "new.txt"), Create, true},
 		{filepath.Join(denied, "f.txt"), Write, false},
-		{filepath.Join(denied, "f.txt"), Delete, false},
 		{filepath.Join(denied, "new.txt"), Create, false},
 		{filepath.Join(denied, "f.txt"), Read, true}, // reading is not restricted
 	}
@@ -75,6 +74,30 @@ func TestCheckFollowsThePermissions(t *testing.T) {
 		if result.Reason == "" {
 			t.Errorf("%s %s: no reason given", c.operation, c.path)
 		}
+	}
+}
+
+// TestCheckRefusesDeletionWhenNeitherDoorIsOpen is kept apart from the table
+// above because it depends on the machine: a temporary directory that hands
+// out the right to remove things from it opens the second door before the test
+// says anything, and then there is nothing to test here.
+func TestCheckRefusesDeletionWhenNeitherDoorIsOpen(t *testing.T) {
+	_, denied := prepared(t)
+	file := filepath.Join(denied, "f.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if through, err := deleteThroughParent(testGroup, file); err != nil {
+		t.Fatal(err)
+	} else if through {
+		t.Skip("the temporary directory on this machine lets the sandbox remove what is inside it")
+	}
+	answer, err := Check(testGroup, file, Delete)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Allowed {
+		t.Errorf("deletion was allowed with both doors shut: %s", answer.Reason)
 	}
 }
 
@@ -265,15 +288,20 @@ func TestCheckSeesDeletionThroughTheParent(t *testing.T) {
 	if err := acl.Protect(file); err != nil {
 		t.Fatal(err)
 	}
-	onTheFile, err := Check(testGroup, file, Delete)
-	if err != nil {
+	// The ordinary permission on a directory does not carry the right to
+	// remove things from it, so with the file itself closed both doors are
+	// shut. Unless the machine's temporary directory says otherwise, in which
+	// case only the second half of this test means anything.
+	if through, err := deleteThroughParent(testGroup, file); err != nil {
 		t.Fatal(err)
-	}
-	// Whatever the answer is, it has to match what happens. The directory was
-	// handed over with the ordinary permission, which does not carry the right
-	// to remove things from it, so the file stays.
-	if onTheFile.Allowed {
-		t.Errorf("deletion was allowed without either door being open: %s", onTheFile.Reason)
+	} else if !through {
+		onTheFile, err := Check(testGroup, file, Delete)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if onTheFile.Allowed {
+			t.Errorf("deletion was allowed without either door being open: %s", onTheFile.Reason)
+		}
 	}
 
 	// Open the second door and the answer has to change. It takes both sides:
