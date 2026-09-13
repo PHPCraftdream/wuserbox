@@ -70,4 +70,6 @@ jobs:
             fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + '\n');
           " "$staging" "$version"
           echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > "$staging/.npmrc"
-          npm publish "$staging" --access public
+          # npm reads its configuration from the directory it runs in, not from
+          # the package being published, so the token has to be named outright.
+          npm publish "$staging" --userconfig "$staging/.npmrc" --access public

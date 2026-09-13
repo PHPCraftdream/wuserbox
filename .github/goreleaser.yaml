@@ -20,7 +20,7 @@ builds:
     flags: [-trimpath]
     ldflags:
       - -s -w
-      - -X wuserbox/internal/cli/inspect.Release={{ .Version }}
+      - -X github.com/PHPCraftdream/wuserbox/internal/cli/inspect.Release={{ .Version }}
 
 archives:
   - id: wuserbox
