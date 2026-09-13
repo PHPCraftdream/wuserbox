@@ -3,6 +3,8 @@ package cli
 import (
 	"strings"
 	"testing"
+
+	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
 )
 
 func TestUnknownCommandIsReported(t *testing.T) {
@@ -55,5 +57,78 @@ func TestEveryCommandHasAnImplementation(t *testing.T) {
 		if command.run == nil {
 			t.Errorf("%q has no implementation", name)
 		}
+	}
+}
+
+func TestDispatcherAndHelpListTheSameCommands(t *testing.T) {
+	documented := map[string]bool{}
+	for _, entry := range usage.Commands {
+		documented[entry.Name] = true
+		if _, known := commands[entry.Name]; !known {
+			t.Errorf("the help documents %q, which the dispatcher does not accept", entry.Name)
+		}
+	}
+	for name := range commands {
+		if !documented[name] {
+			t.Errorf("the dispatcher accepts %q, which the help says nothing about", name)
+		}
+	}
+}
+
+func TestHelpMarksTheSameCommandsAsPrivileged(t *testing.T) {
+	for _, entry := range usage.Commands {
+		if got := commands[entry.Name].privileged; got != entry.Privileged {
+			t.Errorf("%q is privileged=%v in the dispatcher and %v in the help",
+				entry.Name, got, entry.Privileged)
+		}
+	}
+}
+
+func TestHelpForOneCommandSucceeds(t *testing.T) {
+	for _, entry := range usage.Commands {
+		if err := Execute([]string{"help", entry.Name}); err != nil {
+			t.Errorf("help %s: %v", entry.Name, err)
+		}
+	}
+}
+
+func TestHelpResolvesAliases(t *testing.T) {
+	if err := Execute([]string{"help", "add_dir"}); err != nil {
+		t.Errorf("an alias was not resolved: %v", err)
+	}
+}
+
+func TestHelpRejectsAnUnknownCommand(t *testing.T) {
+	err := Execute([]string{"help", "frobnicate"})
+	if err == nil || !strings.Contains(err.Error(), "no command named") {
+		t.Errorf("got %v", err)
+	}
+	if err := Execute([]string{"help", "run", "extra"}); err == nil {
+		t.Error("two arguments should have been rejected")
+	}
+}
+
+func TestAFlagAsksForTheCommandsOwnEntry(t *testing.T) {
+	// Asking a command for help must not run it, and must not be treated as a
+	// permission change, so it works inside a sandbox too.
+	for _, args := range [][]string{
+		{"grant", "--help"},
+		{"grant", "-h"},
+		{"rm", "--help"},
+		{"run", "-h"},
+	} {
+		if err := Execute(args); err != nil {
+			t.Errorf("%v: %v", args, err)
+		}
+	}
+}
+
+func TestHelpAfterTheSeparatorBelongsToTheCommand(t *testing.T) {
+	// `wuserbox run -- git --help` asks git for help, not wuserbox.
+	if asksForHelp([]string{"--", "git", "--help"}) {
+		t.Error("a flag after the separator was taken for wuserbox")
+	}
+	if !asksForHelp([]string{"--rw", `C:\extra`, "--help", "--", "git"}) {
+		t.Error("a flag before the separator was missed")
 	}
 }

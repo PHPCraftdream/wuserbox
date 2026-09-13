@@ -1,31 +1,90 @@
-// Package usage holds the help text, so every command can print it without
-// depending on the dispatcher.
 package usage
 
-// Text is what `wuserbox help` prints.
-const Text = `wuserbox - run a command that reads everything you can read, but writes
-only to this directory and the directories you allow.
+import "strings"
 
-  wuserbox run [opts] -- <cmd> [args...]  run cmd sandboxed for the current dir
-  wuserbox init [opts]                    create the group and apply permissions
-  wuserbox grant <dir> [--ro]             allow this sandbox to write to dir
-  wuserbox revoke <dir>                   take an allowance back
-  wuserbox add-dir <dir> [--ro]           remember dir in ~/.wuserbox.ktav and grant it
-  wuserbox remove-dir <dir>               forget dir and revoke it
-  wuserbox name [dir]                     show the group name for a directory
-  wuserbox path <group>                   show the directory behind a group
-  wuserbox list                           list sandboxes
-  wuserbox rm [--dir d]                   delete group, permissions and temp directory
-  wuserbox audit [depth]                  list directories writable by Everyone
-  wuserbox version                        show the release this build came from
+// Text is what "wuserbox help" prints. It is written for whoever reads it
+// first after a write was refused, which is usually a coding agent rather than
+// a person, so it says what the boundary is and what to ask the user for.
+//
+// The command list is built from Commands, so the overview and the detailed
+// entries cannot drift apart.
+var Text = intro + commandList() + options + paths
 
-options:
+const intro = `wuserbox - run a command that reads everything you can read, but writes
+only where you allow.
+
+WHAT THIS MEANS FOR A PROGRAM RUNNING INSIDE
+
+  You can read everything the user can read: the whole disk, the toolchain,
+  the user's settings and credentials.
+
+  You can write only to:
+    * the project directory you were started in, and everything under it
+    * any directory the user has granted for this project
+    * your own temporary directory, which TEMP and TMP point at
+
+  Anywhere else a write fails with "Access is denied". That is Windows
+  enforcing a permission boundary, not a broken tool and not a bug to work
+  around. Retrying, changing permissions or asking for administrator rights
+  will not help: the commands that widen access refuse to run from inside a
+  sandbox, and so does elevation.
+
+  WUSERBOX_DIR holds the project directory and WUSERBOX_GROUP the name of the
+  sandbox, so you can tell you are inside one.
+
+NEEDING ANOTHER DIRECTORY
+
+  Ask the user to run one of these in a terminal that is NOT inside the
+  sandbox, then start you again:
+
+    wuserbox add-dir C:\path\to\dir        allow writing there, now and from now on
+    wuserbox add-dir C:\path\to\dir --ro   allow reading it, nothing more
+    wuserbox grant C:\path\to\dir          allow writing there for this project
+
+  add-dir also records the directory in %USERPROFILE%\.wuserbox.ktav, so it
+  survives; grant does the same without writing it down. Say which directory
+  you need and why, and let the user decide.
+
+COMMANDS
+
+`
+
+const options = `
+  Run "wuserbox help <command>" for the full entry on any of them.
+
+OPTIONS SHARED BY run AND init
+
   --dir <d>       project directory (default: the current directory)
-  --rw <d>        extra writable directory, repeatable
-  --ro <d>        extra readable directory, repeatable
-  --no-ai         skip the preset for AI agent directories
+  --rw <d>        allow writing to another directory, repeatable
+  --ro <d>        allow reading another directory, repeatable
+  --no-ai         do not hand over the AI agent directories
   --home-writes   let the sandbox create files in the profile root
 
-Directories may be written in any usual form: C:\tools, c:/tools, /c/tools,
-/mnt/c/tools, ~/tools, %USERPROFILE%\tools or a relative path.
+  --rw and --ro stay in force for later runs as well, until "wuserbox revoke"
+  takes them back or "wuserbox rm" removes the sandbox.
 `
+
+const paths = `
+PATHS
+
+  Any usual spelling works, and the order of options does not matter:
+
+    C:\tools    c:/tools    /c/tools    /mnt/c/tools    /cygdrive/c/tools
+    ~/tools     %USERPROFILE%\tools     $HOME/tools     ..\tools
+`
+
+// commandList renders the one-line summaries, aligned on the call.
+func commandList() string {
+	width := 0
+	for _, command := range Commands {
+		if len(command.Call) > width {
+			width = len(command.Call)
+		}
+	}
+	var b strings.Builder
+	for _, command := range Commands {
+		b.WriteString("  wuserbox " + command.Call +
+			strings.Repeat(" ", width-len(command.Call)+2) + command.Summary + "\n")
+	}
+	return b.String()
+}

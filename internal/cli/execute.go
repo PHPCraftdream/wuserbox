@@ -6,12 +6,12 @@ import (
 	"io"
 	"os"
 
-	"wuserbox/internal/cli/access"
-	"wuserbox/internal/cli/inspect"
-	"wuserbox/internal/cli/launch"
-	"wuserbox/internal/cli/setup"
-	"wuserbox/internal/cli/usage"
-	"wuserbox/internal/win/token"
+	"github.com/PHPCraftdream/wuserbox/internal/cli/access"
+	"github.com/PHPCraftdream/wuserbox/internal/cli/inspect"
+	"github.com/PHPCraftdream/wuserbox/internal/cli/launch"
+	"github.com/PHPCraftdream/wuserbox/internal/cli/setup"
+	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
+	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
 
 // command is one entry in the dispatch table.
@@ -47,18 +47,18 @@ func Execute(args []string) error {
 		io.WriteString(os.Stderr, usage.Text)
 		return fmt.Errorf("no command given")
 	}
-	name := args[0]
-	if canonical, ok := aliases[name]; ok {
-		name = canonical
-	}
+	name := resolve(args[0])
 	switch name {
 	case "help", "-h", "--help":
-		io.WriteString(os.Stdout, usage.Text)
-		return nil
+		return help(args[1:])
 	}
-	cmd, ok := commands[name]
-	if !ok {
+	cmd, known := commands[name]
+	if !known {
 		return fmt.Errorf("unknown command %q (try `wuserbox help`)", args[0])
+	}
+	rest := args[1:]
+	if asksForHelp(rest) {
+		return help([]string{name})
 	}
 	// Sandboxed code must not be able to widen its own permissions. The check
 	// reads the kernel's restricted-token flag, which it cannot clear.
@@ -66,5 +66,47 @@ func Execute(args []string) error {
 		return fmt.Errorf("refusing to run %q from inside a sandbox: "+
 			"a sandboxed process may not change its own permissions", name)
 	}
-	return cmd.run(args[1:])
+	return cmd.run(rest)
+}
+
+// help prints the overview, or the full entry for one command.
+func help(args []string) error {
+	switch len(args) {
+	case 0:
+		io.WriteString(os.Stdout, usage.Text)
+		return nil
+	case 1:
+		name := resolve(args[0])
+		detail, known := usage.Detail(name)
+		if !known {
+			return fmt.Errorf("no command named %q (try `wuserbox help` for the list)", args[0])
+		}
+		io.WriteString(os.Stdout, detail)
+		return nil
+	default:
+		return fmt.Errorf("usage: wuserbox help [command]")
+	}
+}
+
+// resolve maps an alias to the command it stands for.
+func resolve(name string) string {
+	if canonical, ok := aliases[name]; ok {
+		return canonical
+	}
+	return name
+}
+
+// asksForHelp reports whether the arguments contain a request for help. Only
+// the part before "--" counts: after it, the flags belong to the command being
+// run rather than to wuserbox.
+func asksForHelp(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			return false
+		}
+		if a == "-h" || a == "--help" || a == "help" {
+			return true
+		}
+	}
+	return false
 }
