@@ -1,0 +1,143 @@
+package diagnose
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+
+	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox/plan"
+	"github.com/PHPCraftdream/wuserbox/internal/win/access"
+)
+
+// Account is one directory a sandbox holds, why it holds it, and whether the
+// permission is really in place.
+type Account struct {
+	Path   string      `json:"path"`
+	Kind   grant.Kind  `json:"kind"`
+	Source plan.Source `json:"source"`
+	// InForce is what Windows says when asked, which is not always what the
+	// bookkeeping claims: a directory may have been removed, or its
+	// permissions changed by hand.
+	InForce bool   `json:"in_force"`
+	Note    string `json:"note,omitempty"`
+}
+
+// Report is the whole answer explain gives.
+type Report struct {
+	Group    string    `json:"group"`
+	Dir      string    `json:"dir"`
+	Temp     string    `json:"temp"`
+	Accounts []Account `json:"permissions"`
+	// Drifted lists the paths where the bookkeeping and Windows disagree.
+	Drifted []string `json:"drifted,omitempty"`
+}
+
+// Explain prints what a sandbox may touch and where each permission came
+// from, and checks each one against Windows rather than trusting the record.
+func Explain(args []string) error {
+	flags := flag.NewFlagSet("explain", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	flags.Usage = func() { _, _ = io.WriteString(os.Stderr, usage.Text) }
+	project := flags.String("dir", "", "project to explain")
+	asJSON := flags.Bool("json", false, "print the result as JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	s, err := sandboxOf(*project)
+	if err != nil {
+		return err
+	}
+	report, err := build(s)
+	if err != nil {
+		return err
+	}
+	return printReport(report, *asJSON)
+}
+
+func build(s *state.State) (Report, error) {
+	report := Report{Group: s.Group, Dir: s.Dir, Temp: s.Temp}
+	sources, err := sourcesFor(s)
+	if err != nil {
+		return report, err
+	}
+	for _, held := range s.Grants {
+		account := Account{
+			Path:   held.Path,
+			Kind:   held.Kind,
+			Source: sources[lower(held.Path)],
+		}
+		if account.Source == "" {
+			account.Source = "given once"
+		}
+		account.InForce, account.Note = inForce(s.SID, held)
+		report.Accounts = append(report.Accounts, account)
+		if !account.InForce {
+			report.Drifted = append(report.Drifted, held.Path)
+		}
+	}
+	return report, nil
+}
+
+// sourcesFor works out where each permission would come from if the sandbox
+// were built now, so a directory given once by hand can be told apart from one
+// the rules file asks for every time.
+func sourcesFor(s *state.State) (map[string]plan.Source, error) {
+	prepared, err := plan.For(plan.Input{Group: s.Group, Dir: s.Dir, Temp: s.Temp})
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]plan.Source{}
+	for _, entry := range prepared.Entries {
+		out[lower(entry.Path)] = entry.Source
+	}
+	return out, nil
+}
+
+// inForce asks Windows whether the recorded permission is really there.
+func inForce(account string, held grant.Spec) (bool, string) {
+	operation := access.Write
+	if !held.Kind.Writable() {
+		operation = access.Read
+	}
+	result, err := access.Check(account, held.Path, operation)
+	if err != nil {
+		return false, err.Error()
+	}
+	if !result.Allowed {
+		return false, result.Reason
+	}
+	return true, ""
+}
+
+func printReport(report Report, asJSON bool) error {
+	if asJSON {
+		encoded, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write(append(encoded, '\n'))
+		return err
+	}
+	fmt.Printf("sandbox   %s\nproject   %s\ntemp      %s\n", report.Group, report.Dir, report.Temp)
+	fmt.Printf("\npermissions\n")
+	for _, account := range report.Accounts {
+		state := "ok"
+		if !account.InForce {
+			state = "not in force"
+		}
+		fmt.Printf("  %-4s %s\n        from %s, %s\n", account.Kind, account.Path, account.Source, state)
+		if account.Note != "" {
+			fmt.Printf("        %s\n", account.Note)
+		}
+	}
+	if len(report.Drifted) > 0 {
+		fmt.Printf("\n%d recorded permission(s) are not in force; `wuserbox init` reapplies them\n",
+			len(report.Drifted))
+	}
+	return nil
+}

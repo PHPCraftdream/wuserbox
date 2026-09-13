@@ -2,15 +2,15 @@
 package cli
 
 import (
-	"fmt"
 	"io"
 	"os"
 
 	"github.com/PHPCraftdream/wuserbox/internal/cli/access"
+	"github.com/PHPCraftdream/wuserbox/internal/cli/diagnose"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/inspect"
-	"github.com/PHPCraftdream/wuserbox/internal/cli/launch"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/setup"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
+	"github.com/PHPCraftdream/wuserbox/internal/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
 
@@ -21,7 +21,7 @@ type command struct {
 }
 
 var commands = map[string]command{
-	"run":        {run: launch.Run},
+	"run":        {run: setup.Run},
 	"init":       {run: setup.Init, privileged: true},
 	"rm":         {run: setup.Rm, privileged: true},
 	"grant":      {run: access.Grant, privileged: true},
@@ -33,6 +33,9 @@ var commands = map[string]command{
 	"list":       {run: inspect.List},
 	"audit":      {run: inspect.Audit},
 	"version":    {run: inspect.Version},
+	"explain":    {run: diagnose.Explain},
+	"check":      {run: diagnose.Check},
+	"config":     {run: diagnose.Config},
 }
 
 // aliases accept the spellings people reach for out of habit.
@@ -44,8 +47,8 @@ var aliases = map[string]string{
 // Execute dispatches one command. Arguments exclude the program name.
 func Execute(args []string) error {
 	if len(args) == 0 {
-		io.WriteString(os.Stderr, usage.Text)
-		return fmt.Errorf("no command given")
+		_, _ = io.WriteString(os.Stderr, usage.Text)
+		return exit.Errorf(exit.Usage, "no command given")
 	}
 	name := resolve(args[0])
 	switch name {
@@ -54,7 +57,7 @@ func Execute(args []string) error {
 	}
 	cmd, known := commands[name]
 	if !known {
-		return fmt.Errorf("unknown command %q (try `wuserbox help`)", args[0])
+		return exit.Errorf(exit.Usage, "unknown command %q (try `wuserbox help`)", args[0])
 	}
 	rest := args[1:]
 	if asksForHelp(rest) {
@@ -63,7 +66,7 @@ func Execute(args []string) error {
 	// Sandboxed code must not be able to widen its own permissions. The check
 	// reads the kernel's restricted-token flag, which it cannot clear.
 	if cmd.privileged && token.IsRestricted() {
-		return fmt.Errorf("refusing to run %q from inside a sandbox: "+
+		return exit.Errorf(exit.Denied, "refusing to run %q from inside a sandbox: "+
 			"a sandboxed process may not change its own permissions", name)
 	}
 	return cmd.run(rest)
@@ -73,18 +76,18 @@ func Execute(args []string) error {
 func help(args []string) error {
 	switch len(args) {
 	case 0:
-		io.WriteString(os.Stdout, usage.Text)
+		_, _ = io.WriteString(os.Stdout, usage.Text)
 		return nil
 	case 1:
 		name := resolve(args[0])
 		detail, known := usage.Detail(name)
 		if !known {
-			return fmt.Errorf("no command named %q (try `wuserbox help` for the list)", args[0])
+			return exit.Errorf(exit.NotFound, "no command named %q (try `wuserbox help` for the list)", args[0])
 		}
-		io.WriteString(os.Stdout, detail)
+		_, _ = io.WriteString(os.Stdout, detail)
 		return nil
 	default:
-		return fmt.Errorf("usage: wuserbox help [command]")
+		return exit.Errorf(exit.Usage, "usage: wuserbox help [command]")
 	}
 }
 
