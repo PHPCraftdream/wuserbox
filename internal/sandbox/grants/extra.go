@@ -7,7 +7,7 @@ import (
 )
 
 // Extra grants the directories passed on the command line for one invocation.
-func Extra(s *state.State, writable, readable []string) error {
+func Extra(s *state.State, writable, readable []string, repair bool) error {
 	for _, list := range []struct {
 		dirs []string
 		kind grant.Kind
@@ -17,7 +17,7 @@ func Extra(s *state.State, writable, readable []string) error {
 			if err != nil {
 				return err
 			}
-			if err := s.Add(resolved, list.kind); err != nil {
+			if err := apply(s, resolved, list.kind, repair); err != nil {
 				return err
 			}
 		}
