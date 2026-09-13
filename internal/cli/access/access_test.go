@@ -8,6 +8,7 @@ import (
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 )
 
 func TestParseTargetResolvesAnyPathSpelling(t *testing.T) {
@@ -121,5 +122,57 @@ func TestRemoveDirReportsAnUnlistedDirectory(t *testing.T) {
 	err := RemoveDir([]string{t.TempDir(), "--dir", t.TempDir()})
 	if err == nil || !strings.Contains(err.Error(), "not listed") {
 		t.Errorf("got %v", err)
+	}
+}
+
+// TestPlannedSeesTheSandboxAndNotOnlyTheRules is the regression guard for a
+// preview that said "nothing to do" for a command that went on to change an
+// access control entry: the rules already agreed, but the permission the
+// sandbox held did not.
+func TestPlannedSeesTheSandboxAndNotOnlyTheRules(t *testing.T) {
+	project, tools := t.TempDir(), t.TempDir()
+	rules := &config.Config{Projects: []config.Rule{{Dir: project, RO: []string{tools}}}}
+	held := &state.State{
+		Group:  "wub-preview-test",
+		SID:    "S-1-5-21-1111111111-2222222222-3333333333-141414",
+		Dir:    project,
+		Grants: []grant.Spec{{Path: tools, Kind: grant.RW}},
+	}
+	asked := target{path: tools, project: project, kind: grant.RO}
+
+	actions := planned(rules, held, asked)
+	if len(actions) == 0 {
+		t.Fatal("the preview reported no change, but the permission would be narrowed")
+	}
+	var mentioned bool
+	for _, action := range actions {
+		if strings.Contains(action.Detail, "rw to ro") {
+			mentioned = true
+		}
+	}
+	if !mentioned {
+		t.Errorf("the preview does not say the access would change: %+v", actions)
+	}
+}
+
+func TestPlannedSaysNothingWhenBothAgree(t *testing.T) {
+	project, tools := t.TempDir(), t.TempDir()
+	rules := &config.Config{Projects: []config.Rule{{Dir: project, RW: []string{tools}}}}
+	held := &state.State{
+		Group:  "wub-preview-test",
+		Dir:    project,
+		Grants: []grant.Spec{{Path: tools, Kind: grant.RW}},
+	}
+	asked := target{path: tools, project: project, kind: grant.RW}
+	if actions := planned(rules, held, asked); len(actions) != 0 {
+		t.Errorf("nothing would change, yet the preview lists %+v", actions)
+	}
+}
+
+func TestPlannedWithoutASandboxOnlyChangesTheRules(t *testing.T) {
+	project, tools := t.TempDir(), t.TempDir()
+	actions := planned(&config.Config{}, nil, target{path: tools, project: project, kind: grant.RW})
+	if len(actions) != 1 || actions[0].Does != "record" {
+		t.Errorf("got %+v", actions)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/PHPCraftdream/wuserbox/internal/cli/setup"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
 	"github.com/PHPCraftdream/wuserbox/internal/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/paths"
@@ -36,6 +37,8 @@ func parseTarget(name string, args []string) (target, error) {
 	dir := flags.String("dir", "", "project directory")
 	dryRun := flags.Bool("dry-run", false, "show what would change, change nothing")
 	asJSON := flags.Bool("json", false, "print the result as JSON")
+	nonInteractive := flags.Bool("non-interactive", false,
+		"fail instead of asking for administrator rights")
 	// The directory may be written before or after the options, so the two
 	// are separated here: the flag package would stop at the first of them.
 	options, operands := split(args)
@@ -59,6 +62,9 @@ func parseTarget(name string, args []string) (target, error) {
 	_, project, err = sandbox.Name(project)
 	if err != nil {
 		return target{}, err
+	}
+	if *nonInteractive {
+		_ = os.Setenv(setup.EnvNonInteractive, "1")
 	}
 	kind := grant.RW
 	if *readOnly {

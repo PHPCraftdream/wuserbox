@@ -24,8 +24,13 @@ func Rm(args []string) error {
 	dir := flags.String("dir", "", "project directory")
 	dryRun := flags.Bool("dry-run", false, "show what would change, change nothing")
 	asJSON := flags.Bool("json", false, "print the result as JSON")
+	nonInteractive := flags.Bool("non-interactive", false,
+		"fail instead of asking for administrator rights")
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	if *nonInteractive {
+		_ = os.Setenv(EnvNonInteractive, "1")
 	}
 	project := *dir
 	if project == "" {
