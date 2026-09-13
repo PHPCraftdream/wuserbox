@@ -9,6 +9,32 @@ outside the project.
 wuserbox run -- claude
 ```
 
+## Installing
+
+With [Scoop](https://scoop.sh), which also keeps it up to date:
+
+```
+scoop bucket add wuserbox https://github.com/PHPCraftdream/scoop-bucket
+scoop install wuserbox
+```
+
+With npm, handy when the agents themselves are installed that way:
+
+```
+npm install -g wuserbox
+```
+
+From source, if you have Go:
+
+```
+go install github.com/PHPCraftdream/wuserbox/cmd/wuserbox@latest
+```
+
+Or take the archive from [Releases](https://github.com/PHPCraftdream/wuserbox/releases)
+and put `wuserbox.exe` on your PATH. Keep the `ktav_cabi-windows-*.dll` beside
+it: that is the configuration parser, and with it in place the first run needs
+no network.
+
 ## How it works
 
 Two Windows mechanisms, nothing else:
@@ -44,6 +70,7 @@ else.
 | `wuserbox list` | list sandboxes |
 | `wuserbox rm` | delete group, permissions and temp directory |
 | `wuserbox audit [depth]` | list directories writable by Everyone |
+| `wuserbox version` | show the release this build came from |
 
 Options: `--dir <d>` picks the project, `--rw <d>` and `--ro <d>` add
 directories for one invocation, `--no-ai` skips the agent preset,
@@ -111,7 +138,8 @@ projects: [
 
 Edit it with `wuserbox add-dir <dir>` and `wuserbox remove-dir <dir>`, or by
 hand. Paths are stored with forward slashes, because ktav reads a backslash as
-an escape.
+an escape, but every spelling above is accepted when the file is read, in the
+`dir` key as well as in the lists.
 
 ## Limits worth knowing
 
@@ -141,7 +169,8 @@ internal/win      Windows calls: identifiers, permissions, tokens, processes, gr
 internal/policy   what a sandbox is allowed: grants, presets, rules, bookkeeping
 internal/sandbox  identity, creation, execution
 internal/cli      the commands
-test/e2e          escape attempts against a real sandbox
+internal/e2e      escape attempts against a real sandbox
+.github           tests and release workflows, build recipe, npm wrapper
 ```
 
 ## Tests
@@ -157,5 +186,28 @@ The full lifecycle test creates an actual local group, so run it from an
 elevated shell:
 
 ```
-go test ./test/e2e -run TestCLIFullLifecycle -v
+go test ./internal/e2e -run TestCLIFullLifecycle -v
 ```
+
+## Releasing
+
+A tag starting with `v` triggers the release workflow: it fetches the parser
+library, builds both architectures with [GoReleaser](https://goreleaser.com),
+publishes the archives and checksums, pushes the Scoop manifest to the bucket
+repository and publishes the npm package.
+
+```
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Two secrets are needed: `BUCKET_TOKEN`, a token that may push to the Scoop
+bucket repository, and `NPM_TOKEN`.
+
+## License
+
+Dual licensed: use it under the Apache License, Version 2.0, or the MIT
+license, whichever suits you. Both texts are in [LICENSE](LICENSE).
+
+    SPDX-License-Identifier: MIT OR Apache-2.0
+
+Contributions come in under the same two licenses.

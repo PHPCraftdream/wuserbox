@@ -1,0 +1,38 @@
+{
+  "name": "wuserbox",
+  "version": "0.0.0",
+  "description": "Run a command on Windows that reads everything you can read, but writes only where you allow",
+  "keywords": [
+    "windows",
+    "sandbox",
+    "permissions",
+    "acl",
+    "ai-agent",
+    "security"
+  ],
+  "homepage": "https://github.com/PHPCraftdream/wuserbox",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PHPCraftdream/wuserbox.git"
+  },
+  "license": "MIT OR Apache-2.0",
+  "bin": {
+    "wuserbox": "bin/wuserbox.js"
+  },
+  "files": [
+    "bin/",
+    "README.md",
+    "LICENSE"
+  ],
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "//cpu": "The package ships the 64-bit build; Windows on ARM runs it emulated.",
+  "engines": {
+    "node": ">=16"
+  }
+}

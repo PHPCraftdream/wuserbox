@@ -1,0 +1,72 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  # The parser library shipped beside the executable. Keep this in step with
+  # the github.com/ktav-lang/golang version in go.mod.
+  KTAV_VERSION: v0.6.4
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # goreleaser builds the changelog from history
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Fetch the parser library
+        shell: bash
+        run: |
+          # Not under dist/: goreleaser empties that directory when it starts.
+          mkdir -p .ktav
+          base="https://github.com/ktav-lang/golang/releases/download/${KTAV_VERSION}"
+          for arch in amd64 arm64; do
+            name="ktav_cabi-windows-${arch}.dll"
+            # arm64 may be missing from a release; fall back to amd64, which
+            # runs under emulation.
+            curl -fsSL -o ".ktav/${name}" "${base}/${name}" \
+              || cp .ktav/ktav_cabi-windows-amd64.dll ".ktav/${name}"
+          done
+          ls -l .ktav
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean --config .github/goreleaser.yaml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A token that may push to the Scoop bucket repository.
+          BUCKET_TOKEN: ${{ secrets.BUCKET_TOKEN }}
+
+      - name: Publish to npm
+        if: ${{ !contains(github.ref_name, '-') }}
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          staging=$(mktemp -d)
+          cp -r .github/npm/. "$staging/"
+          cp README.md LICENSE "$staging/"
+          cp dist/wuserbox_windows_amd64_v1/wuserbox.exe "$staging/bin/"
+          cp .ktav/ktav_cabi-windows-amd64.dll "$staging/bin/"
+          node -e "
+            const fs = require('fs');
+            const file = process.argv[1] + '/package.json';
+            const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
+            pkg.version = process.argv[2];
+            fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + '\n');
+          " "$staging" "$version"
+          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > "$staging/.npmrc"
+          npm publish "$staging" --access public

@@ -1,0 +1,80 @@
+# Release build for wuserbox. Invoked from .github/workflows/release.yml:
+#   goreleaser release --clean --config .github/goreleaser.yaml
+version: 2
+
+project_name: wuserbox
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: wuserbox
+    main: ./cmd/wuserbox
+    binary: wuserbox
+    env:
+      - CGO_ENABLED=0
+    goos: [windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X wuserbox/internal/cli/inspect.Release={{ .Version }}
+
+archives:
+  - id: wuserbox
+    formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_windows_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      # The configuration parser needs this library. Shipping it beside the
+      # executable keeps the first run working without network access; the
+      # workflow downloads it before the archives are built.
+      - src: .ktav/ktav_cabi-windows-{{ .Arch }}.dll
+        strip_parent: true
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  draft: false
+  prerelease: auto
+  footer: |
+    ## Installing
+
+    ```
+    scoop bucket add wuserbox https://github.com/PHPCraftdream/scoop-bucket
+    scoop install wuserbox
+    ```
+
+    ```
+    npm install -g wuserbox
+    ```
+
+    Or download the archive below and put `wuserbox.exe` on your PATH.
+
+# The manifest is pushed to a bucket repository, which Scoop users add once.
+scoops:
+  - repository:
+      owner: PHPCraftdream
+      name: scoop-bucket
+      branch: main
+      token: "{{ .Env.BUCKET_TOKEN }}"
+    directory: bucket
+    homepage: https://github.com/PHPCraftdream/wuserbox
+    description: Run a command that reads everything you can read, but writes only where you allow
+    license: MIT OR Apache-2.0
+    commit_author:
+      name: goreleaser
+      email: noreply@github.com
