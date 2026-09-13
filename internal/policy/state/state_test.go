@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 )
 
 const testSID = "S-1-5-21-1111111111-2222222222-3333333333-765432"
@@ -115,5 +115,46 @@ func TestSaveWritesReadableJSON(t *testing.T) {
 	}
 	if len(data) == 0 || data[len(data)-1] != '\n' {
 		t.Error("state file should end with a newline")
+	}
+}
+
+func TestAddReplacesAGrantOfADifferentKind(t *testing.T) {
+	s := newState(t)
+	target := t.TempDir()
+	if err := s.Add(target, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	// Narrowing the access has to take effect, not be swallowed because the
+	// path is already listed.
+	if err := s.Add(target, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Grants) != 1 {
+		t.Fatalf("the path was recorded twice: %+v", s.Grants)
+	}
+	kind, found := s.Kind(target)
+	if !found || kind != grant.RO {
+		t.Errorf("recorded kind is %q, want %q", kind, grant.RO)
+	}
+	stored, err := Load(s.Group)
+	if err != nil || stored == nil {
+		t.Fatalf("state was not persisted: %v", err)
+	}
+	if stored.Grants[0].Kind != grant.RO {
+		t.Errorf("persisted kind is %q", stored.Grants[0].Kind)
+	}
+	// Widening it again works the same way.
+	if err := s.Add(target, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if kind, _ := s.Kind(target); kind != grant.RW {
+		t.Errorf("recorded kind is %q after widening", kind)
+	}
+}
+
+func TestKindReportsAMissingPath(t *testing.T) {
+	s := newState(t)
+	if _, found := s.Kind(t.TempDir()); found {
+		t.Error("a path that was never granted was reported as recorded")
 	}
 }

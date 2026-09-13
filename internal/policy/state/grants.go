@@ -4,41 +4,57 @@ import (
 	"fmt"
 	"strings"
 
-	"wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 )
 
 // Has reports whether path was already granted to this sandbox.
 func (s *State) Has(path string) bool {
-	for _, g := range s.Grants {
-		if strings.EqualFold(g.Path, path) {
-			return true
-		}
-	}
-	return false
+	_, found := s.find(path)
+	return found
 }
 
-// Add applies a grant unless it is already recorded, then persists the state.
+// Kind reports the access recorded for a path, and whether there is any.
+func (s *State) Kind(path string) (grant.Kind, bool) {
+	index, found := s.find(path)
+	if !found {
+		return "", false
+	}
+	return s.Grants[index].Kind, true
+}
+
+func (s *State) find(path string) (int, bool) {
+	for i, g := range s.Grants {
+		if strings.EqualFold(g.Path, path) {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// Add applies a grant and records it. Repeating a grant that is already
+// recorded does nothing; asking for a different access on the same path
+// replaces it, so narrowing a directory from writable to readable takes
+// effect instead of being silently ignored.
 func (s *State) Add(path string, kind grant.Kind) error {
-	if s.Has(path) {
+	index, found := s.find(path)
+	if found && s.Grants[index].Kind == kind {
 		return nil
 	}
 	if err := grant.Apply(s.SID, path, kind); err != nil {
 		return err
 	}
-	s.Grants = append(s.Grants, grant.Spec{Path: path, Kind: kind})
+	if found {
+		s.Grants[index].Kind = kind
+	} else {
+		s.Grants = append(s.Grants, grant.Spec{Path: path, Kind: kind})
+	}
 	return s.Save()
 }
 
 // Remove revokes a recorded grant and persists the state.
 func (s *State) Remove(path string) error {
-	index := -1
-	for i, g := range s.Grants {
-		if strings.EqualFold(g.Path, path) {
-			index = i
-			break
-		}
-	}
-	if index < 0 {
+	index, found := s.find(path)
+	if !found {
 		return fmt.Errorf("%s is not granted to %s", path, s.Group)
 	}
 	if err := grant.Revoke(s.SID, path); err != nil {
