@@ -1,0 +1,137 @@
+package access
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"syscall"
+	"unsafe"
+
+	"github.com/PHPCraftdream/wuserbox/internal/win/token"
+	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
+)
+
+var (
+	procGetNamedSecurityInfo = w32.Advapi32.NewProc("GetNamedSecurityInfoW")
+	procAccessCheck          = w32.Advapi32.NewProc("AccessCheck")
+	procMapGenericMask       = w32.Advapi32.NewProc("MapGenericMask")
+	procImpersonate          = w32.Advapi32.NewProc("ImpersonateLoggedOnUser")
+	procRevertToSelf         = w32.Advapi32.NewProc("RevertToSelf")
+	procDuplicateTokenEx     = w32.Advapi32.NewProc("DuplicateTokenEx")
+)
+
+// Result is the answer to one question about one path.
+type Result struct {
+	Path      string    `json:"path"`
+	Operation Operation `json:"operation"`
+	// Checked is the object the answer is about. For creating something that
+	// does not exist yet, it is the directory that would hold it.
+	Checked string `json:"checked"`
+	Allowed bool   `json:"allowed"`
+	// Reason says why, in a few words.
+	Reason string `json:"reason"`
+}
+
+// Check asks Windows whether a sandbox could perform an operation, using the
+// same restricted token a run would get. Nothing is opened for writing and
+// nothing is created, so asking is free of consequences.
+func Check(group string, path string, operation Operation) (Result, error) {
+	result := Result{Path: path, Operation: operation, Checked: path}
+
+	target := path
+	if _, err := os.Stat(path); err != nil {
+		if operation != Create {
+			return result, fmt.Errorf("%s does not exist", path)
+		}
+	}
+	if operation.onParent() {
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			target = filepath.Dir(path)
+		}
+	}
+	result.Checked = target
+
+	descriptor, err := securityOf(target)
+	if err != nil {
+		return result, err
+	}
+	defer w32.Free(descriptor)
+
+	restricted, err := token.Restricted(group)
+	if err != nil {
+		return result, err
+	}
+	defer restricted.Close()
+
+	impersonation, err := impersonationCopy(restricted)
+	if err != nil {
+		return result, err
+	}
+	defer impersonation.Close()
+
+	granted, allowed, err := accessCheck(impersonation, descriptor, operation.mask())
+	if err != nil {
+		return result, err
+	}
+	result.Allowed = allowed
+	if allowed {
+		result.Reason = "the sandbox has a permission that covers it"
+	} else {
+		result.Reason = fmt.Sprintf("no permission for the sandbox covers it (granted %#x of %#x)",
+			granted, operation.mask())
+	}
+	return result, nil
+}
+
+// securityOf reads the whole security description of a path.
+func securityOf(path string) (uintptr, error) {
+	const seFileObject = 1
+	const wanted = 0x1 | 0x2 | 0x4 | 0x8 // owner, group, dacl, sacl-less request
+	var descriptor uintptr
+	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
+		seFileObject, wanted&^0x8, 0, 0, 0, 0, uintptr(unsafe.Pointer(&descriptor))); r != 0 {
+		return 0, fmt.Errorf("reading the permissions of %s: error %d", path, r)
+	}
+	return descriptor, nil
+}
+
+// impersonationCopy turns a token into one this thread can wear.
+func impersonationCopy(source syscall.Token) (syscall.Token, error) {
+	const securityImpersonation, tokenImpersonation = 2, 2
+	var copied syscall.Token
+	if r, _, err := procDuplicateTokenEx.Call(uintptr(source), syscall.TOKEN_ALL_ACCESS, 0,
+		securityImpersonation, tokenImpersonation, uintptr(unsafe.Pointer(&copied))); r == 0 {
+		return 0, fmt.Errorf("copying the sandbox token: %w", err)
+	}
+	return copied, nil
+}
+
+// accessCheck wears the token for the length of one question.
+func accessCheck(impersonation syscall.Token, descriptor uintptr, wanted uint32) (uint32, bool, error) {
+	if r, _, err := procImpersonate.Call(uintptr(impersonation)); r == 0 {
+		return 0, false, fmt.Errorf("taking on the sandbox token: %w", err)
+	}
+	defer procRevertToSelf.Call()
+
+	mapping := [4]uint32{
+		0x120089, // generic read
+		0x120116, // generic write
+		0x1200A0, // generic execute
+		0x1F01FF, // generic all
+	}
+	desired := wanted
+	procMapGenericMask.Call(uintptr(unsafe.Pointer(&desired)), uintptr(unsafe.Pointer(&mapping)))
+
+	privileges := make([]byte, 1024)
+	privilegeSize := uint32(len(privileges))
+	var granted uint32
+	var status int32
+	r, _, err := procAccessCheck.Call(descriptor, uintptr(impersonation), uintptr(desired),
+		uintptr(unsafe.Pointer(&mapping)), uintptr(unsafe.Pointer(&privileges[0])),
+		uintptr(unsafe.Pointer(&privilegeSize)), uintptr(unsafe.Pointer(&granted)),
+		uintptr(unsafe.Pointer(&status)))
+	if r == 0 {
+		return 0, false, fmt.Errorf("asking Windows: %w", err)
+	}
+	return granted, status != 0, nil
+}
