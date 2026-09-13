@@ -20,7 +20,7 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	path := useTempConfig(t)
 	want := &Config{Projects: []Rule{
 		{Dir: `C:\projects\app`, RW: []string{`C:\projects\tools`, `C:\projects\logs`}},
-		{Dir: `C:\projects\other`, RO: []string{`C:\shared`}},
+		{Dir: `C:\projects\second`, RO: []string{`C:\shared`}},
 	}}
 	if err := want.Save(); err != nil {
 		t.Fatal(err)
@@ -77,7 +77,7 @@ func TestAddIsIdempotentAcrossSpellings(t *testing.T) {
 	if !rule.Add(`C:\tools`, "rw") {
 		t.Fatal("first add should report a change")
 	}
-	if rule.Add(`c:/tools`, "rw") {
+	if rule.Add(`c:/tools`, grant.RW) {
 		t.Error("the same directory was added twice")
 	}
 	if len(rule.RW) != 1 {
@@ -183,5 +183,67 @@ func TestRuleForStillMatchesAVanishedDirectory(t *testing.T) {
 	rules := &Config{Projects: []Rule{{Dir: "C:/gone/project"}}}
 	if rules.RuleFor(`C:\gone\project`, false) == nil {
 		t.Error("a rule for a directory that no longer exists should still match")
+	}
+}
+
+// TestAddMovesAPathBetweenTheLists is the regression guard for a rule that
+// contradicted itself: narrowing a directory used to leave it in both lists,
+// and the reader would apply the writable entry and then the readable one, so
+// write access disappeared without a word.
+func TestAddMovesAPathBetweenTheLists(t *testing.T) {
+	c := &Config{}
+	rule := c.RuleFor(`C:\app`, true)
+	rule.Add(`C:\tools`, grant.RW)
+
+	if !rule.Add(`c:/tools`, grant.RO) {
+		t.Error("narrowing a directory should report a change")
+	}
+	if len(rule.RW) != 0 {
+		t.Errorf("the writable list still holds %v", rule.RW)
+	}
+	if len(rule.RO) != 1 {
+		t.Errorf("the readable list holds %v", rule.RO)
+	}
+	if kind, listed := rule.Kind(`C:\TOOLS`); !listed || kind != grant.RO {
+		t.Errorf("the path reads as %q, listed=%v", kind, listed)
+	}
+
+	// And back again.
+	if !rule.Add(`C:\tools`, grant.RW) {
+		t.Error("widening a directory should report a change")
+	}
+	if len(rule.RO) != 0 || len(rule.RW) != 1 {
+		t.Errorf("lists are rw=%v ro=%v", rule.RW, rule.RO)
+	}
+}
+
+func TestKindReportsAnUnlistedPath(t *testing.T) {
+	rule := &Rule{Dir: `C:\app`}
+	if _, listed := rule.Kind(`C:\nothing`); listed {
+		t.Error("an unlisted path was reported as listed")
+	}
+}
+
+// TestRulesCannotContradictThemselvesThroughTheCommand checks the same thing
+// one level up, the way a user would hit it.
+func TestRulesCannotContradictThemselvesThroughTheCommand(t *testing.T) {
+	useTempConfig(t)
+	c := &Config{}
+	rule := c.RuleFor(`C:\app`, true)
+	rule.Add(`C:\tools`, grant.RW)
+	rule.Add(`C:\tools`, grant.RO)
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants := loaded.GrantsFor(`C:\app`)
+	if len(grants) != 1 {
+		t.Fatalf("one directory produced %d grants: %+v", len(grants), grants)
+	}
+	if grants[0].Kind != grant.RO {
+		t.Errorf("the kept grant is %q, want %q", grants[0].Kind, grant.RO)
 	}
 }
