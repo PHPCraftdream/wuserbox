@@ -31,5 +31,11 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+          args: --config .github/golangci.yml ./...
+
       - name: Test
         run: go test ./...

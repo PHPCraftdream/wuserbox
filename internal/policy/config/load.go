@@ -18,7 +18,7 @@ func Load() (*Config, error) {
 	}
 	var c Config
 	if err := ktav.LoadsInto(string(data), &c); err != nil {
-		return nil, fmt.Errorf("%s: %v", Path(), err)
+		return nil, fmt.Errorf("%s: %w", Path(), err)
 	}
 	return &c, nil
 }

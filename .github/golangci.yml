@@ -1,0 +1,46 @@
+# Linters for wuserbox. Run it with the path, since the file does not sit in
+# the repository root:
+#
+#   golangci-lint run --config .github/golangci.yml ./...
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - misspell
+    - unconvert
+    - nilerr
+    - errorlint
+
+  settings:
+    errcheck:
+      # The Windows calls this program is made of return three values by
+      # convention, the last of which is meaningless unless the first says the
+      # call failed, and every caller already reads the first. Releasing a
+      # handle or a buffer cannot usefully fail either: there is nothing to do
+      # about it and nothing depends on it.
+      exclude-functions:
+        - (*syscall.LazyProc).Call
+        - syscall.CloseHandle
+        - syscall.GetTokenInformation
+        - (syscall.Token).Close
+        - (*os.File).Close
+
+    misspell:
+      locale: US
+
+  exclusions:
+    rules:
+      # Tests may set the environment and move about without ceremony; a
+      # failure there fails the test anyway.
+      - path: _test\.go
+        linters: [errcheck]
+        text: "os\\.(Setenv|Unsetenv|Chdir|Remove|RemoveAll)"
+
+formatters:
+  enable:
+    - gofmt

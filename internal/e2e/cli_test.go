@@ -1,7 +1,7 @@
 package e2e
 
 import (
-	"github.com/PHPCraftdream/wuserbox/internal/win/token"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +12,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
 
 var buildOnce struct {
@@ -50,8 +51,9 @@ func cli(t *testing.T, cwd string, args ...string) (string, int) {
 	cmd.Env = append(os.Environ(), config.EnvPath+"="+filepath.Join(t.TempDir(), "wuserbox.ktav"))
 	out, err := cmd.CombinedOutput()
 	code := 0
-	if exit, ok := err.(*exec.ExitError); ok {
-		code = exit.ExitCode()
+	var failed *exec.ExitError
+	if errors.As(err, &failed) {
+		code = failed.ExitCode()
 	} else if err != nil {
 		t.Fatalf("running %v: %v", args, err)
 	}
@@ -165,8 +167,9 @@ func TestCLIFullLifecycle(t *testing.T) {
 		cmd.Env = env
 		out, err := cmd.CombinedOutput()
 		code := 0
-		if exit, ok := err.(*exec.ExitError); ok {
-			code = exit.ExitCode()
+		var failed *exec.ExitError
+		if errors.As(err, &failed) {
+			code = failed.ExitCode()
 		} else if err != nil {
 			t.Fatalf("running %v: %v", args, err)
 		}

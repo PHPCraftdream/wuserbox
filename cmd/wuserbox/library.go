@@ -27,6 +27,6 @@ func useBundledLibrary() {
 	}
 	bundled := filepath.Join(filepath.Dir(executable), libraryName)
 	if _, err := os.Stat(bundled); err == nil {
-		os.Setenv(libraryVariable, bundled)
+		_ = os.Setenv(libraryVariable, bundled)
 	}
 }

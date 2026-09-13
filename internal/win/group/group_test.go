@@ -45,7 +45,7 @@ func TestAddNeedsAdministratorRights(t *testing.T) {
 	}
 	err := Add(testName, `C:\nowhere`)
 	if err == nil {
-		Delete(testName)
+		_ = Delete(testName)
 		t.Fatal("a local group was created without administrator rights")
 	}
 	if !strings.Contains(err.Error(), "administrator") {
@@ -59,7 +59,7 @@ func TestLifecycle(t *testing.T) {
 	if err := Add(testName, dir); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { Delete(testName) })
+	t.Cleanup(func() { _ = Delete(testName) })
 
 	comment, exists, err := Comment(testName)
 	if err != nil || !exists {

@@ -41,7 +41,7 @@ func TestProtectedSettingsCannotBeRewritten(t *testing.T) {
 }
 
 // TestAPermissionOnADirectoryReachesTheFilesAlreadyInIt records the Windows
-// behaviour that shapes the whole design: handing over a directory rewrites
+// behavior that shapes the whole design: handing over a directory rewrites
 // the permissions of the files already in it. That is why the profile root is
 // never handed over by default.
 func TestAPermissionOnADirectoryReachesTheFilesAlreadyInIt(t *testing.T) {

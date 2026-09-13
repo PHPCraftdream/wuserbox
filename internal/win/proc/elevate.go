@@ -53,7 +53,7 @@ func Elevate(args []string) (int, error) {
 	}
 	info.size = uint32(unsafe.Sizeof(info))
 	if r, _, callErr := procShellExecuteEx.Call(uintptr(unsafe.Pointer(&info))); r == 0 {
-		return -1, fmt.Errorf("elevation was refused: %v", callErr)
+		return -1, fmt.Errorf("elevation was refused: %w", callErr)
 	}
 	defer syscall.CloseHandle(info.process)
 	if _, err := syscall.WaitForSingleObject(info.process, syscall.INFINITE); err != nil {

@@ -20,10 +20,10 @@ const testAccount = "S-1-5-21-1111111111-2222222222-3333333333-778899"
 func TestMain(m *testing.M) {
 	warm, err := os.CreateTemp("", "wuserbox-warm-*.ktav")
 	if err == nil {
-		warm.WriteString("projects: [\n]\n")
+		_, _ = warm.WriteString("projects: [\n]\n")
 		warm.Close()
 		os.Setenv(config.EnvPath, warm.Name())
-		config.Load() // reaches the parser, which loads its library once
+		_, _ = config.Load() // reaches the parser, which loads its library once
 		os.Remove(warm.Name())
 		os.Unsetenv(config.EnvPath)
 	}

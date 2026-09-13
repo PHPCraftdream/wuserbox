@@ -16,7 +16,7 @@ func Parse(text string) (uintptr, error) {
 	var pointer uintptr
 	if r, _, err := procConvertStringSidToSid.Call(uintptr(unsafe.Pointer(w32.UTF16(text))),
 		uintptr(unsafe.Pointer(&pointer))); r == 0 {
-		return 0, fmt.Errorf("%q is not a security identifier: %v", text, err)
+		return 0, fmt.Errorf("%q is not a security identifier: %w", text, err)
 	}
 	return pointer, nil
 }

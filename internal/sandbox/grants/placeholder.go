@@ -25,7 +25,7 @@ func ReserveSensitiveFiles() ([]string, error) {
 			if os.IsExist(err) {
 				continue
 			}
-			return nil, fmt.Errorf("reserving %s: %v", path, err)
+			return nil, fmt.Errorf("reserving %s: %w", path, err)
 		}
 		file.Close()
 		if err := acl.Protect(path); err != nil {

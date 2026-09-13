@@ -36,7 +36,7 @@ type sidAndAttributes struct {
 func Restricted(group string) (syscall.Token, error) {
 	var self syscall.Token
 	if err := syscall.OpenProcessToken(syscall.Handle(^uintptr(0)), syscall.TOKEN_ALL_ACCESS, &self); err != nil {
-		return 0, fmt.Errorf("opening the process token: %v", err)
+		return 0, fmt.Errorf("opening the process token: %w", err)
 	}
 	defer self.Close()
 
@@ -67,7 +67,7 @@ func Restricted(group string) (syscall.Token, error) {
 		0, 0, 0, 0, uintptr(len(restricting)), uintptr(unsafe.Pointer(&restricting[0])),
 		uintptr(unsafe.Pointer(&restricted)))
 	if r == 0 {
-		return 0, fmt.Errorf("creating the restricted token: %v", callErr)
+		return 0, fmt.Errorf("creating the restricted token: %w", callErr)
 	}
 	if err := shareWithGroup(restricted, formatSID(user), group); err != nil {
 		return 0, err
@@ -80,7 +80,7 @@ func information(token syscall.Token, class uint32) ([]byte, error) {
 	syscall.GetTokenInformation(token, class, nil, 0, &size)
 	buf := make([]byte, size)
 	if err := syscall.GetTokenInformation(token, class, &buf[0], size, &size); err != nil {
-		return nil, fmt.Errorf("reading token information %d: %v", class, err)
+		return nil, fmt.Errorf("reading token information %d: %w", class, err)
 	}
 	return buf, nil
 }
@@ -103,7 +103,7 @@ func shareWithGroup(token syscall.Token, user, group string) error {
 	var descriptor uintptr
 	if r, _, err := procStringToSecurityDescriptor.Call(uintptr(unsafe.Pointer(w32.UTF16(text))), 1,
 		uintptr(unsafe.Pointer(&descriptor)), 0); r == 0 {
-		return fmt.Errorf("building the default permissions: %v", err)
+		return fmt.Errorf("building the default permissions: %w", err)
 	}
 	defer w32.Free(descriptor)
 
@@ -111,11 +111,11 @@ func shareWithGroup(token syscall.Token, user, group string) error {
 	var dacl uintptr
 	if r, _, err := procGetSecurityDescriptorDacl.Call(descriptor, uintptr(unsafe.Pointer(&present)),
 		uintptr(unsafe.Pointer(&dacl)), uintptr(unsafe.Pointer(&defaulted))); r == 0 {
-		return fmt.Errorf("reading the default permissions: %v", err)
+		return fmt.Errorf("reading the default permissions: %w", err)
 	}
 	if r, _, err := procSetTokenInformation.Call(uintptr(token), classDefaultDacl,
-		uintptr(unsafe.Pointer(&dacl)), uintptr(unsafe.Sizeof(dacl))); r == 0 {
-		return fmt.Errorf("setting the default permissions: %v", err)
+		uintptr(unsafe.Pointer(&dacl)), unsafe.Sizeof(dacl)); r == 0 {
+		return fmt.Errorf("setting the default permissions: %w", err)
 	}
 	return nil
 }

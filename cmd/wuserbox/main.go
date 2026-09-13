@@ -8,12 +8,13 @@ import (
 	"os"
 
 	"github.com/PHPCraftdream/wuserbox/internal/cli"
+	"github.com/PHPCraftdream/wuserbox/internal/exit"
 )
 
 func main() {
 	useBundledLibrary()
 	if err := cli.Execute(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "wuserbox:", err)
-		os.Exit(1)
+		os.Exit(int(exit.Of(err)))
 	}
 }

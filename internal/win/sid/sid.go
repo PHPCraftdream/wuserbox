@@ -30,7 +30,7 @@ func Lookup(account string) (Value, error) {
 		uintptr(unsafe.Pointer(&value[0])), uintptr(unsafe.Pointer(&sidLen)),
 		uintptr(unsafe.Pointer(&domain[0])), uintptr(unsafe.Pointer(&domainLen)), uintptr(unsafe.Pointer(&use)))
 	if r == 0 {
-		return nil, fmt.Errorf("looking up %q: %v", account, err)
+		return nil, fmt.Errorf("looking up %q: %w", account, err)
 	}
 	return value, nil
 }

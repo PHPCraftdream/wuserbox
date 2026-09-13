@@ -32,7 +32,7 @@ func Run(token syscall.Token, commandLine, directory string) (int, error) {
 		0, 0, 1, 0, 0, uintptr(unsafe.Pointer(w32.UTF16(directory))),
 		uintptr(unsafe.Pointer(&startup)), uintptr(unsafe.Pointer(&created)))
 	if r == 0 {
-		return -1, fmt.Errorf("starting %s: %v", commandLine, callErr)
+		return -1, fmt.Errorf("starting %s: %w", commandLine, callErr)
 	}
 	syscall.CloseHandle(created.Thread)
 	defer syscall.CloseHandle(created.Process)

@@ -37,7 +37,7 @@ func Protect(path string) error {
 	var descriptor uintptr
 	if r, _, err := procStringToSecurityDescriptor.Call(uintptr(unsafe.Pointer(w32.UTF16(text))), 1,
 		uintptr(unsafe.Pointer(&descriptor)), 0); r == 0 {
-		return fmt.Errorf("building protected permissions: %v", err)
+		return fmt.Errorf("building protected permissions: %w", err)
 	}
 	defer w32.Free(descriptor)
 
@@ -45,7 +45,7 @@ func Protect(path string) error {
 	var dacl uintptr
 	if r, _, err := procGetSecurityDescriptorDacl.Call(descriptor, uintptr(unsafe.Pointer(&present)),
 		uintptr(unsafe.Pointer(&dacl)), uintptr(unsafe.Pointer(&defaulted))); r == 0 {
-		return fmt.Errorf("reading protected permissions: %v", err)
+		return fmt.Errorf("reading protected permissions: %w", err)
 	}
 	const protectedDacl = 0x80000000
 	if r, _, _ := procSetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),

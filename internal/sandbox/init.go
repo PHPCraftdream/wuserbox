@@ -31,7 +31,8 @@ func Init(o Options) (*state.State, error) {
 			return nil, err
 		}
 	} else if comment != dir {
-		group.SetComment(name, dir)
+		// A stale comment is cosmetic: the group still works.
+		_ = group.SetComment(name, dir)
 	}
 
 	account, err := sid.Lookup(name)
