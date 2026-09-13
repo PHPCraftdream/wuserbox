@@ -62,6 +62,27 @@ OPTIONS SHARED BY run AND init
 
   --rw and --ro stay in force for later runs as well, until "wuserbox revoke"
   takes them back or "wuserbox rm" removes the sandbox.
+
+OPTIONS SHARED MORE WIDELY
+
+  --dry-run          show what would change, change nothing, start nothing
+  --json             print the result as JSON, on the commands that offer it
+  --quiet            no progress messages, errors only
+  --non-interactive  fail instead of asking for administrator rights, so a
+                     script never stops at a dialog nobody can click
+
+EXIT CODES
+
+  0  what was asked was done
+  1  something went wrong
+  2  the command line was wrong
+  3  the answer is no: a refused access check, or a sandbox asking for more
+  4  administrator rights are needed and prompts are switched off
+  5  the rules file does not parse or contradicts itself
+  6  what was named does not exist
+
+  One exception: "run" returns whatever the command inside returned, so the
+  code you read after it is the sandboxed program's own.
 `
 
 const paths = `

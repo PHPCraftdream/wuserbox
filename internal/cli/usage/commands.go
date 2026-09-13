@@ -26,6 +26,10 @@ flags, so "wuserbox run -- git --version" reaches git untouched.`,
 			{"--ro <d>", "hand over another directory for reading, repeatable"},
 			{"--no-ai", "withhold the AI agent directories, and take back any already given"},
 			{"--home-writes", "let the sandbox create files in the profile root"},
+			{"--dry-run", "show what would be handed over, hand over nothing"},
+			{"--json", "print the plan as JSON instead of lines"},
+			{"--quiet", "no progress messages, errors only"},
+			{"--non-interactive", "fail instead of asking for administrator rights"},
 		},
 		Examples: []string{
 			`wuserbox run -- claude`,
@@ -57,6 +61,10 @@ ones already in place alone.`,
 			{"--ro <d>", "hand over another directory for reading, repeatable"},
 			{"--no-ai", "do not hand over the AI agent directories"},
 			{"--home-writes", "let the sandbox create files in the profile root"},
+			{"--dry-run", "show what would be handed over, hand over nothing"},
+			{"--json", "print the plan as JSON instead of lines"},
+			{"--quiet", "no progress messages, errors only"},
+			{"--non-interactive", "fail instead of asking for administrator rights"},
 		},
 		Examples: []string{
 			`wuserbox init`,
@@ -82,6 +90,8 @@ Administrator rights are asked for only if you do not own the target
 directory.`,
 		Options: []Option{
 			{"--ro", "read access only, no writing"},
+			{"--dry-run", "show what would change, change nothing"},
+			{"--json", "print the result as JSON instead of lines"},
 			{"--dir <d>", "project whose sandbox is meant (default: the current directory)"},
 		},
 		Examples: []string{
@@ -102,6 +112,8 @@ project's group goes away.
 A directory listed in the rules file comes back on the next run. Use
 "remove-dir" to forget it there as well.`,
 		Options: []Option{
+			{"--dry-run", "show what would change, change nothing"},
+			{"--json", "print the result as JSON instead of lines"},
 			{"--dir <d>", "project whose sandbox is meant (default: the current directory)"},
 		},
 		Examples: []string{
@@ -122,6 +134,8 @@ This is the command to ask for when a sandboxed program reports that a
 write was refused and the directory is one it should have.`,
 		Options: []Option{
 			{"--ro", "read access only, no writing"},
+			{"--dry-run", "show what would change, change nothing"},
+			{"--json", "print the result as JSON instead of lines"},
 			{"--dir <d>", "project the rule belongs to (default: the current directory)"},
 		},
 		Examples: []string{
@@ -138,6 +152,8 @@ write was refused and the directory is one it should have.`,
 		Detail: `Deletes the directory from the rules file and, if the sandbox currently
 holds it, revokes the permission too.`,
 		Options: []Option{
+			{"--dry-run", "show what would change, change nothing"},
+			{"--json", "print the result as JSON instead of lines"},
 			{"--dir <d>", "project the rule belongs to (default: the current directory)"},
 		},
 		Examples: []string{
@@ -193,6 +209,8 @@ temporary directory and its bookkeeping, and removes the group.
 Your files stay where they are. The rules file keeps its entries, so
 starting the project again rebuilds the same sandbox.`,
 		Options: []Option{
+			{"--dry-run", "show what would change, change nothing"},
+			{"--json", "print the result as JSON instead of lines"},
 			{"--dir <d>", "project to remove (default: the current directory)"},
 		},
 		Examples: []string{
@@ -214,6 +232,79 @@ default. A larger number takes longer.`,
 		Examples: []string{
 			`wuserbox audit`,
 			`wuserbox audit 3`,
+		},
+	},
+	{
+		Name:    "explain",
+		Summary: "show what this sandbox may touch, and why",
+		Call:    "explain [--dir project] [--json]",
+		Detail: `Prints the sandbox of a project: its group, its temporary directory,
+every path it holds, the access it has on each, and where that came
+from. The source is the useful part: a directory the rules file asks
+for every time reads differently from one that was handed over once by
+hand.
+
+Each permission is then checked against Windows rather than trusted.
+A directory that was deleted, or whose permissions were changed by
+hand, shows as not in force, and "wuserbox init" puts it back.`,
+		Options: []Option{
+			{"--dir <d>", "project to explain (default: the current directory)"},
+			{"--json", "print the report as JSON instead of lines"},
+		},
+		Examples: []string{
+			`wuserbox explain`,
+			`wuserbox explain --json`,
+			`wuserbox explain --dir C:\projects\app`,
+		},
+	},
+	{
+		Name:    "check",
+		Summary: "ask whether one thing would be allowed",
+		Call:    "check <path> [--operation read|write|create|delete] [--dir project] [--json]",
+		Detail: `Asks Windows whether the sandbox could do something to a path, using
+the same restricted token a run would get. Nothing is opened for
+writing and nothing is created, so asking costs nothing and leaves no
+trace.
+
+This is the honest way to find out before trying. For a path that does
+not exist, "create" asks about the directory that would hold it.
+
+The answer is in the exit code as well as the text: 0 allowed, 3
+refused, 1 the question could not be asked.`,
+		Options: []Option{
+			{"--operation <op>", "read, write, create or delete (default: write)"},
+			{"--dir <d>", "project whose sandbox is meant (default: the current directory)"},
+			{"--json", "print the answer as JSON instead of lines"},
+		},
+		Examples: []string{
+			`wuserbox check C:\build\out --operation create`,
+			`wuserbox check .\notes.md --operation write`,
+			`wuserbox check C:\Windows\System32 --operation write --json`,
+		},
+	},
+	{
+		Name:    "config",
+		Summary: "read the rules file",
+		Call:    "config show|path|validate [--dir project] [--json]",
+		Detail: `Reads %USERPROFILE%\.wuserbox.ktav without opening an editor.
+
+  show      print the rules, or only the rule for one project
+  path      print where the file is
+  validate  check it without applying it
+
+The check looks for what a hand-edited file collects: a directory
+listed twice, a directory listed as both writable and readable, which
+quietly costs write access, and directories that no longer exist. The
+last is reported apart from the rest, because a directory going away is
+not a mistake in the file. A real problem ends with exit code 5.`,
+		Options: []Option{
+			{"--dir <d>", "show or check one project's rule only"},
+			{"--json", "print the result as JSON instead of lines"},
+		},
+		Examples: []string{
+			`wuserbox config show`,
+			`wuserbox config path`,
+			`wuserbox config validate --json`,
 		},
 	},
 	{

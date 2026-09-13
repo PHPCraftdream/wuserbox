@@ -69,6 +69,9 @@ else.
 | `wuserbox path <group>` | show the directory behind a group |
 | `wuserbox list` | list sandboxes |
 | `wuserbox rm` | delete group, permissions and temp directory |
+| `wuserbox explain` | what this sandbox may touch, and why |
+| `wuserbox check <path> --operation write` | ask whether one thing would be allowed |
+| `wuserbox config show\|path\|validate` | read and check the rules file |
 | `wuserbox audit [depth]` | list directories writable by Everyone |
 | `wuserbox version` | show the release this build came from |
 | `wuserbox help [command]` | the overview, or the full entry for one command |
@@ -82,6 +85,11 @@ the boundary is and which command to ask the user for.
 Options: `--dir <d>` picks the project, `--rw <d>` and `--ro <d>` hand over
 another directory, `--no-ai` withholds the agent directories, `--home-writes`
 opts into writing in the profile root.
+
+`--dry-run` shows what a command would change without changing it, `--json`
+gives the diagnostic commands machine-readable output, `--quiet` drops the
+progress messages, and `--non-interactive` fails instead of raising a consent
+prompt, so a script never stops at a dialog nobody can click.
 
 A directory handed over with `--rw` or `--ro` stays available on later runs
 too, until `wuserbox revoke` takes it back. Nothing is given up when the
@@ -158,6 +166,21 @@ hand. Paths are stored with forward slashes, because ktav reads a backslash as
 an escape, but every spelling above is accepted when the file is read, in the
 `dir` key as well as in the lists.
 
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | what was asked was done |
+| 1 | something went wrong |
+| 2 | the command line was wrong |
+| 3 | the answer is no: a refused access check, or a sandbox asking for more |
+| 4 | administrator rights are needed and prompts are switched off |
+| 5 | the rules file does not parse or contradicts itself |
+| 6 | what was named does not exist |
+
+`wuserbox run` is the exception: it returns whatever the command inside
+returned, so the code you read after it is the sandboxed program's own.
+
 ## Limits worth knowing
 
 * **Reading is not restricted.** The sandbox sees your keys, tokens and browser
@@ -190,15 +213,24 @@ internal/win      Windows calls: identifiers, permissions, tokens, processes, gr
 internal/policy   what a sandbox is allowed: grants, presets, rules, bookkeeping
 internal/sandbox  identity, creation, execution
 internal/cli      the commands
+internal/exit     the exit codes every failure maps to
 internal/e2e      escape attempts against a real sandbox
 .github           tests and release workflows, build recipe, npm wrapper
 ```
 
-## Tests
+## Tests and linting
 
 ```
 go test ./...
+go vet ./...
+golangci-lint run --config .github/golangci.yml ./...
 ```
+
+The linter configuration lives under `.github/` rather than the repository
+root, so it has to be named on the command line. It turns on errcheck, govet,
+staticcheck, ineffassign, unused, misspell, unconvert, nilerr and errorlint,
+and excuses only the Windows calls whose second return value carries nothing:
+releasing a handle or a buffer cannot usefully fail.
 
 The end-to-end tests create real permissions under a synthetic identifier and
 try to escape: writing outside the project, through a child process, into the
