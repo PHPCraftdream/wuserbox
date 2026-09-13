@@ -66,6 +66,13 @@ func Init(o Options) (*state.State, error) {
 	if err := grants.Extra(s, o.RW, o.RO, true); err != nil {
 		return nil, err
 	}
+	// Everything else the sandbox was ever given: a directory handed over
+	// once with grant or --rw is in the record and nowhere else, and repair
+	// has to reach it too, or the advice to run init again would only work
+	// for some of the permissions.
+	if err := grants.Reapply(s); err != nil {
+		return nil, err
+	}
 	if err := s.Save(); err != nil {
 		return nil, err
 	}

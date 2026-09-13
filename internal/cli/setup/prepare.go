@@ -47,6 +47,15 @@ func prepare(options sandbox.Options) (*state.State, error) {
 			s = repaired
 		}
 	}
+	if !options.NoAI {
+		// The sandbox is brought in line with the flags on every start, so a
+		// plain run after one with --no-ai gets the agent directories back,
+		// and --home-writes reaches a sandbox that was built without it.
+		if err := grants.ApplyPreset(s, options.HomeWrites); err != nil {
+			report(options, "%v", err)
+			return rebuild(options, name)
+		}
+	}
 	if err := grants.FromConfig(s, false); err != nil {
 		report(options, "%v", err)
 		return rebuild(options, name)
