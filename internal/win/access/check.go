@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"unsafe"
 
@@ -107,11 +108,36 @@ func impersonationCopy(source syscall.Token) (syscall.Token, error) {
 }
 
 // accessCheck wears the token for the length of one question.
-func accessCheck(impersonation syscall.Token, descriptor uintptr, wanted uint32) (uint32, bool, error) {
-	if r, _, err := procImpersonate.Call(uintptr(impersonation)); r == 0 {
-		return 0, false, fmt.Errorf("taking on the sandbox token: %w", err)
+//
+// Impersonation is a property of an operating-system thread, not of a
+// goroutine. Without pinning, the runtime is free to move the goroutine to
+// another thread, and the token would be taken off the wrong one, leaving the
+// first thread restricted for whatever runs on it next. That would show up
+// later as an unrelated operation failing for no visible reason.
+func accessCheck(impersonation syscall.Token, descriptor uintptr, wanted uint32) (granted uint32, allowed bool, err error) {
+	runtime.LockOSThread()
+	pinned := true
+	defer func() {
+		if pinned {
+			runtime.UnlockOSThread()
+		}
+	}()
+
+	if r, _, callErr := procImpersonate.Call(uintptr(impersonation)); r == 0 {
+		return 0, false, fmt.Errorf("taking on the sandbox token: %w", callErr)
 	}
-	defer procRevertToSelf.Call()
+	defer func() {
+		if r, _, revertErr := procRevertToSelf.Call(); r == 0 {
+			// The thread still wears the sandbox token. It must not go back
+			// into the pool, so it stays locked to this goroutine and the
+			// runtime retires it when the goroutine ends.
+			pinned = false
+			if err == nil {
+				err = fmt.Errorf("could not put the sandbox token down again: %w", revertErr)
+				granted, allowed = 0, false
+			}
+		}
+	}()
 
 	mapping := [4]uint32{
 		0x120089, // generic read
@@ -124,14 +150,13 @@ func accessCheck(impersonation syscall.Token, descriptor uintptr, wanted uint32)
 
 	privileges := make([]byte, 1024)
 	privilegeSize := uint32(len(privileges))
-	var granted uint32
 	var status int32
-	r, _, err := procAccessCheck.Call(descriptor, uintptr(impersonation), uintptr(desired),
+	r, _, callErr := procAccessCheck.Call(descriptor, uintptr(impersonation), uintptr(desired),
 		uintptr(unsafe.Pointer(&mapping)), uintptr(unsafe.Pointer(&privileges[0])),
 		uintptr(unsafe.Pointer(&privilegeSize)), uintptr(unsafe.Pointer(&granted)),
 		uintptr(unsafe.Pointer(&status)))
 	if r == 0 {
-		return 0, false, fmt.Errorf("asking Windows: %w", err)
+		return 0, false, fmt.Errorf("asking Windows: %w", callErr)
 	}
 	return granted, status != 0, nil
 }

@@ -1,8 +1,10 @@
 package access
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
@@ -131,5 +133,61 @@ func TestCheckAgreesWithARealWrite(t *testing.T) {
 	}
 	if !allowed.Allowed || refused.Allowed {
 		t.Errorf("granted=%v denied=%v", allowed.Allowed, refused.Allowed)
+	}
+}
+
+// TestCheckLeavesTheThreadAsItFoundIt is the regression guard for the subtlest
+// of the failures here: impersonation belongs to an operating-system thread,
+// so a check that ends on a different thread than it started on leaves the
+// first one wearing the sandbox token. Whatever the runtime schedules there
+// next would then fail for no visible reason.
+//
+// The test runs many checks from many goroutines, which is what makes the
+// runtime move them between threads, and then confirms that ordinary writes
+// still work from every one of them.
+func TestCheckLeavesTheThreadAsItFoundIt(t *testing.T) {
+	granted, denied := prepared(t)
+
+	var wait sync.WaitGroup
+	failures := make(chan string, 64)
+	for worker := 0; worker < 8; worker++ {
+		wait.Add(1)
+		go func(worker int) {
+			defer wait.Done()
+			for round := 0; round < 8; round++ {
+				if _, err := Check(testGroup, denied, Write); err != nil {
+					failures <- fmt.Sprintf("worker %d: %v", worker, err)
+					return
+				}
+				// The caller's own rights must be intact afterwards: this
+				// write goes to a directory the sandbox may not touch.
+				name := filepath.Join(denied, fmt.Sprintf("worker-%d-%d.txt", worker, round))
+				if err := os.WriteFile(name, []byte("x"), 0o644); err != nil {
+					failures <- fmt.Sprintf("worker %d lost its own rights: %v", worker, err)
+					return
+				}
+				if _, err := os.ReadDir(granted); err != nil {
+					failures <- fmt.Sprintf("worker %d cannot read: %v", worker, err)
+					return
+				}
+			}
+		}(worker)
+	}
+	wait.Wait()
+	close(failures)
+	for failure := range failures {
+		t.Error(failure)
+	}
+}
+
+func TestCheckReportsAFailureToAskRatherThanGuessing(t *testing.T) {
+	// A malformed group cannot produce a token, so the answer must be an
+	// error and not a cheerful "allowed".
+	result, err := Check("not-a-sid", t.TempDir(), Write)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if result.Allowed {
+		t.Error("a failed check reported the operation as allowed")
 	}
 }
