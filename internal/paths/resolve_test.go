@@ -68,7 +68,11 @@ func TestResolveExpandsVariablesAndTilde(t *testing.T) {
 }
 
 func TestResolveExpandsTildeWithSubdirectory(t *testing.T) {
-	home := t.TempDir()
+	home, err := Normalize(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("USERPROFILE", home)
 	sub := filepath.Join(home, "tools")
 	if err := os.Mkdir(sub, 0o755); err != nil {

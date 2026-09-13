@@ -6,14 +6,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 )
 
 func TestParseTargetResolvesAnyPathSpelling(t *testing.T) {
-	dir := t.TempDir()
-	project := t.TempDir()
+	dir := tempDir(t)
+	project := tempDir(t)
 	drive := strings.ToLower(dir[:1])
 	shellStyle := "/" + drive + filepath.ToSlash(dir[2:])
 
@@ -33,7 +34,7 @@ func TestParseTargetResolvesAnyPathSpelling(t *testing.T) {
 }
 
 func TestParseTargetReadsTheReadOnlySwitch(t *testing.T) {
-	got, err := parseTarget("grant", []string{t.TempDir(), "--ro", "--dir", t.TempDir()})
+	got, err := parseTarget("grant", []string{tempDir(t), "--ro", "--dir", tempDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,20 +70,20 @@ func TestTargetArgumentsRoundTrip(t *testing.T) {
 }
 
 func TestLoadReportsAnUninitializedSandbox(t *testing.T) {
-	t.Setenv("LOCALAPPDATA", t.TempDir())
-	_, err := load(t.TempDir())
+	t.Setenv("LOCALAPPDATA", tempDir(t))
+	_, err := load(tempDir(t))
 	if err == nil || !strings.Contains(err.Error(), "wuserbox init") {
 		t.Errorf("unhelpful error: %v", err)
 	}
 }
 
 func TestAddDirRejectsSomethingThatIsNotADirectory(t *testing.T) {
-	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
-	file := filepath.Join(t.TempDir(), "a-file.txt")
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
+	file := filepath.Join(tempDir(t), "a-file.txt")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := AddDir([]string{file, "--dir", t.TempDir()})
+	err := AddDir([]string{file, "--dir", tempDir(t)})
 	if err == nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Errorf("got %v", err)
 	}
@@ -91,9 +92,9 @@ func TestAddDirRejectsSomethingThatIsNotADirectory(t *testing.T) {
 func TestAddDirThenRemoveDirEditTheRules(t *testing.T) {
 	// LOCALAPPDATA is left alone: the ktav parser caches a library there and
 	// keeps it open, which would break the temporary directory cleanup.
-	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
-	project := t.TempDir()
-	tools := t.TempDir()
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
+	project := tempDir(t)
+	tools := tempDir(t)
 
 	if err := AddDir([]string{tools, "--dir", project}); err != nil {
 		t.Fatalf("add-dir: %v", err)
@@ -118,8 +119,8 @@ func TestAddDirThenRemoveDirEditTheRules(t *testing.T) {
 }
 
 func TestRemoveDirReportsAnUnlistedDirectory(t *testing.T) {
-	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
-	err := RemoveDir([]string{t.TempDir(), "--dir", t.TempDir()})
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
+	err := RemoveDir([]string{tempDir(t), "--dir", tempDir(t)})
 	if err == nil || !strings.Contains(err.Error(), "not listed") {
 		t.Errorf("got %v", err)
 	}
@@ -130,7 +131,7 @@ func TestRemoveDirReportsAnUnlistedDirectory(t *testing.T) {
 // access control entry: the rules already agreed, but the permission the
 // sandbox held did not.
 func TestPlannedSeesTheSandboxAndNotOnlyTheRules(t *testing.T) {
-	project, tools := t.TempDir(), t.TempDir()
+	project, tools := tempDir(t), tempDir(t)
 	rules := &config.Config{Projects: []config.Rule{{Dir: project, RO: []string{tools}}}}
 	held := &state.State{
 		Group:  "wub-preview-test",
@@ -156,7 +157,7 @@ func TestPlannedSeesTheSandboxAndNotOnlyTheRules(t *testing.T) {
 }
 
 func TestPlannedSaysNothingWhenBothAgree(t *testing.T) {
-	project, tools := t.TempDir(), t.TempDir()
+	project, tools := tempDir(t), tempDir(t)
 	rules := &config.Config{Projects: []config.Rule{{Dir: project, RW: []string{tools}}}}
 	held := &state.State{
 		Group:  "wub-preview-test",
@@ -170,9 +171,23 @@ func TestPlannedSaysNothingWhenBothAgree(t *testing.T) {
 }
 
 func TestPlannedWithoutASandboxOnlyChangesTheRules(t *testing.T) {
-	project, tools := t.TempDir(), t.TempDir()
+	project, tools := tempDir(t), tempDir(t)
 	actions := planned(&config.Config{}, nil, target{path: tools, project: project, kind: grant.RW})
 	if len(actions) != 1 || actions[0].Does != "record" {
 		t.Errorf("got %+v", actions)
 	}
+}
+
+// tempDir is t.TempDir() with the path reduced to one spelling, the way every
+// command reduces the paths it is given. Some machines hand out a temporary
+// directory under a shortened name, and comparing one spelling against another
+// would fail there for a reason that has nothing to do with what is being
+// tested.
+func tempDir(t *testing.T) string {
+	t.Helper()
+	resolved, err := paths.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }

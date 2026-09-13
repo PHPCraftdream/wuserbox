@@ -6,12 +6,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 )
 
 func useTempConfig(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "wuserbox.ktav")
+	path := filepath.Join(tempDir(t), "wuserbox.ktav")
 	t.Setenv(EnvPath, path)
 	return path
 }
@@ -131,7 +132,7 @@ func TestGrantsForMapsKinds(t *testing.T) {
 
 func TestRulesMatchAnyPathSpelling(t *testing.T) {
 	useTempConfig(t)
-	home := t.TempDir()
+	home := tempDir(t)
 	t.Setenv("USERPROFILE", home)
 	project := filepath.Join(home, "project")
 	tools := filepath.Join(home, "tools")
@@ -246,4 +247,18 @@ func TestRulesCannotContradictThemselvesThroughTheCommand(t *testing.T) {
 	if grants[0].Kind != grant.RO {
 		t.Errorf("the kept grant is %q, want %q", grants[0].Kind, grant.RO)
 	}
+}
+
+// tempDir is t.TempDir() with the path reduced to one spelling, the way every
+// command reduces the paths it is given. Some machines hand out a temporary
+// directory under a shortened name, and comparing one spelling against another
+// would fail there for a reason that has nothing to do with what is being
+// tested.
+func tempDir(t *testing.T) string {
+	t.Helper()
+	resolved, err := paths.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }

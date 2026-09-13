@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 )
@@ -28,17 +29,17 @@ func TestMain(m *testing.M) {
 
 func emptyProfile(t *testing.T) string {
 	t.Helper()
-	home := t.TempDir()
+	home := tempDir(t)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "Local"))
 	t.Setenv("APPDATA", filepath.Join(home, "Roaming"))
-	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
 	return home
 }
 
 func TestForAlwaysCoversTheProjectAndItsTemp(t *testing.T) {
 	emptyProfile(t)
-	project, temp := t.TempDir(), t.TempDir()
+	project, temp := tempDir(t), tempDir(t)
 	prepared, err := For(Input{Group: "wub-test", Dir: project, Temp: temp})
 	if err != nil {
 		t.Fatal(err)
@@ -64,14 +65,14 @@ func TestForRecordsWhereEachDirectoryCameFrom(t *testing.T) {
 	if err := os.Mkdir(agent, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	fromRules, fromFlag := t.TempDir(), t.TempDir()
-	rules := &config.Config{Projects: []config.Rule{{Dir: t.TempDir(), RW: []string{fromRules}}}}
+	fromRules, fromFlag := tempDir(t), tempDir(t)
+	rules := &config.Config{Projects: []config.Rule{{Dir: tempDir(t), RW: []string{fromRules}}}}
 	rules.Projects[0].Dir = filepath.Clean(rules.Projects[0].Dir)
 	if err := rules.Save(); err != nil {
 		t.Fatal(err)
 	}
 	prepared, err := For(Input{
-		Group: "wub-test", Dir: rules.Projects[0].Dir, Temp: t.TempDir(),
+		Group: "wub-test", Dir: rules.Projects[0].Dir, Temp: tempDir(t),
 		RW: []string{fromFlag},
 	})
 	if err != nil {
@@ -94,7 +95,7 @@ func TestForRecordsWhereEachDirectoryCameFrom(t *testing.T) {
 
 func TestForLetsALaterSourceWin(t *testing.T) {
 	emptyProfile(t)
-	shared := t.TempDir()
+	shared := tempDir(t)
 	rules := &config.Config{Projects: []config.Rule{{Dir: `C:\app`, RW: []string{shared}}}}
 	if err := rules.Save(); err != nil {
 		t.Fatal(err)
@@ -103,7 +104,7 @@ func TestForLetsALaterSourceWin(t *testing.T) {
 	// the command line. The plan has to show the access that would end up in
 	// force, not both.
 	prepared, err := For(Input{
-		Group: "wub-test", Dir: `C:\app`, Temp: t.TempDir(),
+		Group: "wub-test", Dir: `C:\app`, Temp: tempDir(t),
 		RO: []string{shared},
 	})
 	if err != nil {
@@ -125,7 +126,7 @@ func TestForLetsALaterSourceWin(t *testing.T) {
 
 func TestForSkipsTheProfileRootUnlessAsked(t *testing.T) {
 	home := emptyProfile(t)
-	withoutIt, err := For(Input{Group: "g", Dir: t.TempDir(), Temp: t.TempDir()})
+	withoutIt, err := For(Input{Group: "g", Dir: tempDir(t), Temp: tempDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +135,7 @@ func TestForSkipsTheProfileRootUnlessAsked(t *testing.T) {
 			t.Error("the profile root is in the plan by default")
 		}
 	}
-	withIt, err := For(Input{Group: "g", Dir: t.TempDir(), Temp: t.TempDir(), HomeWrites: true})
+	withIt, err := For(Input{Group: "g", Dir: tempDir(t), Temp: tempDir(t), HomeWrites: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,4 +212,18 @@ func TestRenderActionsHandlesAnEmptyList(t *testing.T) {
 	if back.Actions == nil || len(back.Actions) != 0 {
 		t.Errorf("an empty list should encode as [], got %v", back.Actions)
 	}
+}
+
+// tempDir is t.TempDir() with the path reduced to one spelling, the way every
+// command reduces the paths it is given. Some machines hand out a temporary
+// directory under a shortened name, and comparing one spelling against another
+// would fail there for a reason that has nothing to do with what is being
+// tested.
+func tempDir(t *testing.T) string {
+	t.Helper()
+	resolved, err := paths.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }

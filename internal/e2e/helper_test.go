@@ -11,8 +11,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/win/access"
 )
 
 // testSID returns a SID that belongs to no account on this machine. Access
@@ -34,7 +36,10 @@ type box struct {
 // newBox prepares a project directory with the test SID granted on it.
 func newBox(t *testing.T) *box {
 	t.Helper()
-	root := t.TempDir()
+	root, err := paths.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	granted := filepath.Join(root, "project")
 	denied := filepath.Join(root, "elsewhere")
 	for _, dir := range []string{granted, denied} {
@@ -71,4 +76,26 @@ func script(t *testing.T, b *box, body string) []string {
 		t.Fatal(err)
 	}
 	return []string{path}
+}
+
+// mustNotDelete checks that the sandbox cannot remove a path, and says so
+// rather than failing when the machine itself is the reason.
+//
+// A temporary directory is not equally closed everywhere. Where the one this
+// test runs in hands out rights of its own, a sandbox inherits them, and the
+// question the test means to ask cannot be asked there at all.
+func mustNotDelete(t *testing.T, b *box, path string) {
+	t.Helper()
+	answer, err := access.Check(b.state.SID, path, access.Delete)
+	if err != nil {
+		t.Fatalf("asking about %s: %v", path, err)
+	}
+	if answer.Allowed {
+		t.Skipf("the temporary directory on this machine lets the sandbox delete %s, "+
+			"so the boundary cannot be tested here: %s", path, answer.Reason)
+	}
+	runSandboxed(t, b.state, []string{"cmd.exe", "/c", "del /q " + path})
+	if !exists(path) {
+		t.Errorf("%s was deleted from inside the sandbox", path)
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/preset"
@@ -33,18 +34,18 @@ func TestMain(m *testing.M) {
 
 func newState(t *testing.T) *state.State {
 	t.Helper()
-	t.Setenv("LOCALAPPDATA", t.TempDir())
+	t.Setenv("LOCALAPPDATA", tempDir(t))
 	return &state.State{
 		Group: "wub-grants-test",
 		SID:   testAccount,
-		Dir:   t.TempDir(),
-		Temp:  t.TempDir(),
+		Dir:   tempDir(t),
+		Temp:  tempDir(t),
 	}
 }
 
 func TestExtraGrantsBothKinds(t *testing.T) {
 	s := newState(t)
-	writable, readable := t.TempDir(), t.TempDir()
+	writable, readable := tempDir(t), tempDir(t)
 	if err := Extra(s, []string{writable}, []string{readable}, false); err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +59,7 @@ func TestExtraGrantsBothKinds(t *testing.T) {
 
 func TestExtraAcceptsShellStylePaths(t *testing.T) {
 	s := newState(t)
-	dir := t.TempDir()
+	dir := tempDir(t)
 	shellStyle := "/" + strings.ToLower(dir[:1]) + filepath.ToSlash(dir[2:])
 	if err := Extra(s, []string{shellStyle}, nil, false); err != nil {
 		t.Fatal(err)
@@ -70,9 +71,9 @@ func TestExtraAcceptsShellStylePaths(t *testing.T) {
 
 func TestFromConfigSkipsDirectoriesThatAreGone(t *testing.T) {
 	s := newState(t)
-	present := t.TempDir()
-	missing := filepath.Join(t.TempDir(), "removed")
-	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
+	present := tempDir(t)
+	missing := filepath.Join(tempDir(t), "removed")
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
 
 	rules := &config.Config{Projects: []config.Rule{{Dir: s.Dir, RW: []string{present, missing}}}}
 	if err := rules.Save(); err != nil {
@@ -91,7 +92,7 @@ func TestFromConfigSkipsDirectoriesThatAreGone(t *testing.T) {
 
 func TestFromConfigIsHarmlessWithoutRules(t *testing.T) {
 	s := newState(t)
-	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "none.ktav"))
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "none.ktav"))
 	if err := FromConfig(s, false); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +103,7 @@ func TestFromConfigIsHarmlessWithoutRules(t *testing.T) {
 
 func TestProtectSettingsLocksTheRulesFile(t *testing.T) {
 	s := newState(t)
-	rulesPath := filepath.Join(t.TempDir(), "rules.ktav")
+	rulesPath := filepath.Join(tempDir(t), "rules.ktav")
 	t.Setenv(config.EnvPath, rulesPath)
 	if err := (&config.Config{}).Save(); err != nil {
 		t.Fatal(err)
@@ -120,7 +121,7 @@ func TestProtectSettingsLocksTheRulesFile(t *testing.T) {
 }
 
 func TestRefuseHomeFilesLeavesGrantedFilesAlone(t *testing.T) {
-	home := t.TempDir()
+	home := tempDir(t)
 	t.Setenv("USERPROFILE", home)
 	s := newState(t)
 
@@ -161,7 +162,7 @@ func TestIsAllowedMatchesCompanionFiles(t *testing.T) {
 }
 
 func TestDropPresetTakesBackTheAgentDirectories(t *testing.T) {
-	home := t.TempDir()
+	home := tempDir(t)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "Local"))
 	t.Setenv("APPDATA", filepath.Join(home, "Roaming"))
@@ -203,7 +204,7 @@ func TestDropPresetTakesBackTheAgentDirectories(t *testing.T) {
 }
 
 func TestDropPresetIsHarmlessWhenNothingWasGranted(t *testing.T) {
-	t.Setenv("USERPROFILE", t.TempDir())
+	t.Setenv("USERPROFILE", tempDir(t))
 	s := newState(t)
 	if err := DropPreset(s); err != nil {
 		t.Fatal(err)
@@ -214,9 +215,9 @@ func TestProtectSettingsCreatesTheRulesFile(t *testing.T) {
 	// A sandbox that may create files in the profile root must not be able to
 	// write the rules file first: it would grant itself directories on the
 	// next ordinary run.
-	rulesPath := filepath.Join(t.TempDir(), "rules.ktav")
+	rulesPath := filepath.Join(tempDir(t), "rules.ktav")
 	t.Setenv(config.EnvPath, rulesPath)
-	t.Setenv("USERPROFILE", t.TempDir())
+	t.Setenv("USERPROFILE", tempDir(t))
 	s := newState(t)
 
 	if _, err := os.Stat(rulesPath); err == nil {
@@ -238,9 +239,9 @@ func TestProtectSettingsCreatesTheRulesFile(t *testing.T) {
 }
 
 func TestReserveSensitiveNamesTakesTheNamesFirst(t *testing.T) {
-	home := t.TempDir()
+	home := tempDir(t)
 	t.Setenv("USERPROFILE", home)
-	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
 
 	unguarded, err := ReserveSensitiveNames()
 	if err != nil {
@@ -257,7 +258,7 @@ func TestReserveSensitiveNamesTakesTheNamesFirst(t *testing.T) {
 }
 
 func TestReserveSensitiveNamesKeepsExistingContent(t *testing.T) {
-	home := t.TempDir()
+	home := tempDir(t)
 	t.Setenv("USERPROFILE", home)
 	existing := filepath.Join(home, ".gitconfig")
 	if err := os.WriteFile(existing, []byte("[user]\n\tname = someone\n"), 0o644); err != nil {
@@ -273,7 +274,7 @@ func TestReserveSensitiveNamesKeepsExistingContent(t *testing.T) {
 }
 
 func TestReserveSensitiveNamesReportsWhatItCannotTake(t *testing.T) {
-	home := t.TempDir()
+	home := tempDir(t)
 	t.Setenv("USERPROFILE", home)
 	if err := os.WriteFile(filepath.Join(home, ".profile"), []byte("export X=1\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -301,9 +302,9 @@ func TestReserveSensitiveNamesReportsWhatItCannotTake(t *testing.T) {
 // would break every tool that expects a directory there, inside the sandbox
 // and outside it.
 func TestReserveSensitiveNamesKeepsDirectoriesDirectories(t *testing.T) {
-	home := t.TempDir()
+	home := tempDir(t)
 	t.Setenv("USERPROFILE", home)
-	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
 
 	if _, err := ReserveSensitiveNames(); err != nil {
 		t.Fatal(err)
@@ -331,7 +332,7 @@ func TestReserveSensitiveNamesKeepsDirectoriesDirectories(t *testing.T) {
 }
 
 func TestReserveSensitiveNamesLeavesAnExistingDirectoryAlone(t *testing.T) {
-	home := t.TempDir()
+	home := tempDir(t)
 	t.Setenv("USERPROFILE", home)
 	keys := filepath.Join(home, ".ssh")
 	if err := os.Mkdir(keys, 0o700); err != nil {
@@ -352,7 +353,7 @@ func TestReserveSensitiveNamesLeavesAnExistingDirectoryAlone(t *testing.T) {
 // that kept its agent directories when the flag said to withhold them:
 // skipping the preset is not the same as taking it back.
 func TestDropPresetIsWhatWithholdingMeans(t *testing.T) {
-	home := t.TempDir()
+	home := tempDir(t)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "Local"))
 	t.Setenv("APPDATA", filepath.Join(home, "Roaming"))
@@ -384,7 +385,7 @@ func TestDropPresetIsWhatWithholdingMeans(t *testing.T) {
 // permission existed.
 func TestEnsurePutsBackAPermissionThatWasRemoved(t *testing.T) {
 	s := newState(t)
-	target := t.TempDir()
+	target := tempDir(t)
 	if err := s.Add(target, grant.RW); err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +439,7 @@ func TestEnsurePutsBackAPermissionThatWasRemoved(t *testing.T) {
 // past it and the advice to run init again did nothing for it.
 func TestReapplyReachesADirectoryGivenByHand(t *testing.T) {
 	s := newState(t)
-	byHand := t.TempDir()
+	byHand := tempDir(t)
 	if err := s.Add(byHand, grant.RW); err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +466,7 @@ func TestReapplyReachesADirectoryGivenByHand(t *testing.T) {
 
 func TestReapplySkipsWhatIsNoLongerThere(t *testing.T) {
 	s := newState(t)
-	gone := t.TempDir()
+	gone := tempDir(t)
 	if err := s.Add(gone, grant.RW); err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +482,7 @@ func TestReapplySkipsWhatIsNoLongerThere(t *testing.T) {
 // one of the agent directories: withholding the preset must not take away the
 // one permission the sandbox exists for.
 func TestDropPresetKeepsTheProjectItself(t *testing.T) {
-	home := t.TempDir()
+	home := tempDir(t)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "Local"))
 	t.Setenv("APPDATA", filepath.Join(home, "Roaming"))
@@ -489,12 +490,12 @@ func TestDropPresetKeepsTheProjectItself(t *testing.T) {
 	if err := os.Mkdir(project, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("LOCALAPPDATA", t.TempDir())
+	t.Setenv("LOCALAPPDATA", tempDir(t))
 	s := &state.State{
 		Group: "wub-inside-preset",
 		SID:   "S-1-5-21-1111111111-2222222222-3333333333-151515",
 		Dir:   project,
-		Temp:  t.TempDir(),
+		Temp:  tempDir(t),
 	}
 	if err := s.Add(project, grant.RW); err != nil {
 		t.Fatal(err)
@@ -512,11 +513,11 @@ func TestDropPresetKeepsTheProjectItself(t *testing.T) {
 // one with --no-ai left the agent directories withheld, and --home-writes did
 // nothing at all for a sandbox created without it.
 func TestApplyPresetBringsASandboxInLineWithTheFlags(t *testing.T) {
-	home := t.TempDir()
+	home := tempDir(t)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "Local"))
 	t.Setenv("APPDATA", filepath.Join(home, "Roaming"))
-	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
 	agent := filepath.Join(home, ".claude")
 	if err := os.Mkdir(agent, 0o755); err != nil {
 		t.Fatal(err)
@@ -549,4 +550,18 @@ func TestApplyPresetBringsASandboxInLineWithTheFlags(t *testing.T) {
 	if !s.Has(home) {
 		t.Error("--home-writes did not reach an existing sandbox")
 	}
+}
+
+// tempDir is t.TempDir() with the path reduced to one spelling, the way every
+// command reduces the paths it is given. Some machines hand out a temporary
+// directory under a shortened name, and comparing one spelling against another
+// would fail there for a reason that has nothing to do with what is being
+// tested.
+func tempDir(t *testing.T) string {
+	t.Helper()
+	resolved, err := paths.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }
