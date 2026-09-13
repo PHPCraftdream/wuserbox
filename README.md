@@ -86,7 +86,8 @@ Options: `--dir <d>` picks the project, `--rw <d>` and `--ro <d>` hand over
 another directory, `--no-ai` withholds the agent directories, `--home-writes`
 opts into writing in the profile root.
 
-`--dry-run` shows what a command would change without changing it, `--json`
+`--dry-run` shows what a command would change without changing it, taking both
+the rules file and the permissions the sandbox holds into account, `--json`
 gives the diagnostic commands machine-readable output, `--quiet` drops the
 progress messages, and `--non-interactive` fails instead of raising a consent
 prompt, so a script never stops at a dialog nobody can click.
@@ -137,9 +138,11 @@ Code running in the sandbox must not be able to widen its own permissions:
   from inside a sandbox, and wuserbox never asks for administrator rights from
   there. The check reads the kernel's restricted-token flag, which sandboxed
   code cannot clear.
-* Sensitive files that do not exist yet are created as empty placeholders
-  under the same locked permissions before the profile root is handed over, so
-  a sandbox cannot claim one of those names first. The one case that cannot be
+* Sensitive entries that do not exist yet are taken as empty placeholders under
+  the same locked permissions before the profile root is handed over, so a
+  sandbox cannot claim one of those names first. A name is taken as whatever it
+  is meant to be: `.ssh` becomes a directory, not an empty file that would
+  break every tool reading it. The one case that cannot be
   reserved is a shell startup file whose presence would hide another that is
   really there; wuserbox says so instead of creating it.
 * Each project has its own group and its own temp directory, so one sandbox

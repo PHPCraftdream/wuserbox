@@ -53,8 +53,9 @@ directory. Reach for it when you want the consent prompt out of the way
 before starting an agent, or when you want to hand over directories
 ahead of time.
 
-Running it again is safe. It repairs missing permissions and leaves the
-ones already in place alone.`,
+Running it again is safe, and is the way to repair a sandbox: every
+permission is applied afresh rather than taken on trust from the
+record, so an entry removed by hand comes back.`,
 		Options: []Option{
 			{"--dir <d>", "project directory (default: the current one)"},
 			{"--rw <d>", "hand over another directory for writing, repeatable"},
@@ -92,6 +93,7 @@ directory.`,
 			{"--ro", "read access only, no writing"},
 			{"--dry-run", "show what would change, change nothing"},
 			{"--json", "print the result as JSON instead of lines"},
+			{"--non-interactive", "fail instead of asking for administrator rights"},
 			{"--dir <d>", "project whose sandbox is meant (default: the current directory)"},
 		},
 		Examples: []string{
@@ -114,6 +116,7 @@ A directory listed in the rules file comes back on the next run. Use
 		Options: []Option{
 			{"--dry-run", "show what would change, change nothing"},
 			{"--json", "print the result as JSON instead of lines"},
+			{"--non-interactive", "fail instead of asking for administrator rights"},
 			{"--dir <d>", "project whose sandbox is meant (default: the current directory)"},
 		},
 		Examples: []string{
@@ -136,6 +139,7 @@ write was refused and the directory is one it should have.`,
 			{"--ro", "read access only, no writing"},
 			{"--dry-run", "show what would change, change nothing"},
 			{"--json", "print the result as JSON instead of lines"},
+			{"--non-interactive", "fail instead of asking for administrator rights"},
 			{"--dir <d>", "project the rule belongs to (default: the current directory)"},
 		},
 		Examples: []string{
@@ -154,6 +158,7 @@ holds it, revokes the permission too.`,
 		Options: []Option{
 			{"--dry-run", "show what would change, change nothing"},
 			{"--json", "print the result as JSON instead of lines"},
+			{"--non-interactive", "fail instead of asking for administrator rights"},
 			{"--dir <d>", "project the rule belongs to (default: the current directory)"},
 		},
 		Examples: []string{
@@ -211,6 +216,7 @@ starting the project again rebuilds the same sandbox.`,
 		Options: []Option{
 			{"--dry-run", "show what would change, change nothing"},
 			{"--json", "print the result as JSON instead of lines"},
+			{"--non-interactive", "fail instead of asking for administrator rights"},
 			{"--dir <d>", "project to remove (default: the current directory)"},
 		},
 		Examples: []string{
@@ -244,9 +250,12 @@ from. The source is the useful part: a directory the rules file asks
 for every time reads differently from one that was handed over once by
 hand.
 
-Each permission is then checked against Windows rather than trusted.
-A directory that was deleted, or whose permissions were changed by
-hand, shows as not in force, and "wuserbox init" puts it back.`,
+Each permission is then checked against Windows rather than trusted, in
+both directions. Less access than recorded means a permission was lost.
+More access than recorded matters even more: a directory written down
+as readable that the sandbox can write to is the situation this tool
+exists to prevent. Either way "wuserbox init" puts the permissions back
+as they were meant to be.`,
 		Options: []Option{
 			{"--dir <d>", "project to explain (default: the current directory)"},
 			{"--json", "print the report as JSON instead of lines"},
@@ -294,7 +303,9 @@ refused, 1 the question could not be asked.`,
 
 The check looks for what a hand-edited file collects: a directory
 listed twice, a directory listed as both writable and readable, which
-quietly costs write access, and directories that no longer exist. The
+quietly costs write access, a project written out more than once, where
+only the first rule is ever applied, and directories that no longer
+exist. The
 last is reported apart from the rest, because a directory going away is
 not a mistake in the file. A real problem ends with exit code 5.`,
 		Options: []Option{
