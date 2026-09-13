@@ -1,16 +1,17 @@
 package sandbox
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
-	"wuserbox/internal/paths"
-	"wuserbox/internal/policy/grant"
-	"wuserbox/internal/policy/preset"
-	"wuserbox/internal/policy/state"
-	"wuserbox/internal/sandbox/grants"
-	"wuserbox/internal/win/group"
-	"wuserbox/internal/win/sid"
+	"github.com/PHPCraftdream/wuserbox/internal/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/preset"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox/grants"
+	"github.com/PHPCraftdream/wuserbox/internal/win/group"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
 // Init creates the group if it is missing and applies every permission the
@@ -81,6 +82,16 @@ func applyPreset(s *state.State, o Options) error {
 	}
 	if !o.HomeWrites {
 		return nil
+	}
+	// Reserve the sensitive names before handing the directory over, so the
+	// sandbox cannot create one of them first.
+	unguarded, err := grants.ReserveSensitiveFiles()
+	if err != nil {
+		return err
+	}
+	for _, path := range unguarded {
+		fmt.Fprintf(os.Stderr, "wuserbox: %s does not exist and cannot be reserved; "+
+			"the sandbox may create it\n", path)
 	}
 	home := preset.Home()
 	if err := s.Add(home.Path, home.Kind); err != nil {

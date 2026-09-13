@@ -6,9 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"wuserbox/internal/policy/config"
-	"wuserbox/internal/policy/grant"
-	"wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/preset"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 )
 
 const testAccount = "S-1-5-21-1111111111-2222222222-3333333333-778899"
@@ -155,5 +156,141 @@ func TestIsAllowedMatchesCompanionFiles(t *testing.T) {
 		if got := isAllowed(path, allowed); got != want {
 			t.Errorf("isAllowed(%q) = %v, want %v", path, got, want)
 		}
+	}
+}
+
+func TestDropPresetTakesBackTheAgentDirectories(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "Local"))
+	t.Setenv("APPDATA", filepath.Join(home, "Roaming"))
+	agent := filepath.Join(home, ".claude")
+	if err := os.Mkdir(agent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := newState(t)
+	project := s.Dir
+
+	if err := s.Add(project, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	for _, spec := range preset.AI() {
+		if err := s.Add(spec.Path, spec.Kind); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !s.Has(agent) {
+		t.Fatal("the preset did not grant the agent directory")
+	}
+
+	if err := DropPreset(s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Has(agent) {
+		t.Error("the agent directory survived --no-ai")
+	}
+	if !s.Has(project) {
+		t.Error("the project directory was taken away as well")
+	}
+	stored, err := state.Load(s.Group)
+	if err != nil || stored == nil {
+		t.Fatalf("state was not persisted: %v", err)
+	}
+	if stored.Has(agent) {
+		t.Error("the persisted state still lists the agent directory")
+	}
+}
+
+func TestDropPresetIsHarmlessWhenNothingWasGranted(t *testing.T) {
+	t.Setenv("USERPROFILE", t.TempDir())
+	s := newState(t)
+	if err := DropPreset(s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProtectSettingsCreatesTheRulesFile(t *testing.T) {
+	// A sandbox that may create files in the profile root must not be able to
+	// write the rules file first: it would grant itself directories on the
+	// next ordinary run.
+	rulesPath := filepath.Join(t.TempDir(), "rules.ktav")
+	t.Setenv(config.EnvPath, rulesPath)
+	t.Setenv("USERPROFILE", t.TempDir())
+	s := newState(t)
+
+	if _, err := os.Stat(rulesPath); err == nil {
+		t.Fatal("the rules file exists before the test starts")
+	}
+	if err := ProtectSettings(s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(rulesPath); err != nil {
+		t.Fatalf("the rules file was not created: %v", err)
+	}
+	rules, err := config.Load()
+	if err != nil {
+		t.Fatalf("the created rules file does not parse: %v", err)
+	}
+	if len(rules.Projects) != 0 {
+		t.Errorf("the created rules file is not empty: %+v", rules.Projects)
+	}
+}
+
+func TestReserveSensitiveFilesTakesTheNamesFirst(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
+
+	unguarded, err := ReserveSensitiveFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unguarded) != 0 {
+		t.Errorf("nothing should be unreachable in an empty profile: %v", unguarded)
+	}
+	for _, name := range []string{".bashrc", ".gitconfig", ".netrc", ".bash_profile"} {
+		if _, err := os.Stat(filepath.Join(home, name)); err != nil {
+			t.Errorf("%s was not reserved: %v", name, err)
+		}
+	}
+}
+
+func TestReserveSensitiveFilesKeepsExistingContent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	existing := filepath.Join(home, ".gitconfig")
+	if err := os.WriteFile(existing, []byte("[user]\n\tname = someone\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReserveSensitiveFiles(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(existing)
+	if err != nil || !strings.Contains(string(data), "someone") {
+		t.Errorf("an existing file was overwritten: %q (%v)", data, err)
+	}
+}
+
+func TestReserveSensitiveFilesReportsWhatItCannotTake(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	if err := os.WriteFile(filepath.Join(home, ".profile"), []byte("export X=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	unguarded, err := ReserveSensitiveFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reported bool
+	for _, path := range unguarded {
+		if filepath.Base(path) == ".bash_profile" {
+			reported = true
+		}
+	}
+	if !reported {
+		t.Errorf("the caller was not told about .bash_profile: %v", unguarded)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".bash_profile")); err == nil {
+		t.Error(".bash_profile was created and now hides the real .profile")
 	}
 }

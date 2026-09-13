@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"os"
 
-	"wuserbox/internal/cli/setup"
-	"wuserbox/internal/policy/state"
-	"wuserbox/internal/sandbox"
-	"wuserbox/internal/sandbox/grants"
-	"wuserbox/internal/win/sid"
+	"github.com/PHPCraftdream/wuserbox/internal/cli/setup"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox/grants"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
 // prepare loads the sandbox, building or repairing it with administrator
@@ -26,6 +26,14 @@ func prepare(options sandbox.Options) (*state.State, error) {
 	if _, lookupErr := sid.Lookup(name); s == nil || lookupErr != nil {
 		fmt.Fprintf(os.Stderr, "wuserbox: creating sandbox %s\n", name)
 		return rebuild(options, name)
+	}
+	if options.NoAI {
+		// The flag has to mean the same thing on every run, not only on the
+		// one that created the sandbox.
+		if err := grants.DropPreset(s); err != nil {
+			fmt.Fprintf(os.Stderr, "wuserbox: %v\n", err)
+			return rebuild(options, name)
+		}
 	}
 	if err := grants.FromConfig(s); err != nil {
 		fmt.Fprintf(os.Stderr, "wuserbox: %v\n", err)
