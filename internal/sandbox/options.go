@@ -4,7 +4,10 @@ package sandbox
 type Options struct {
 	// Dir is the project directory; it is always writable.
 	Dir string
-	// RW and RO are extra directories for this invocation.
+	// RW and RO are extra directories to hand over. They are recorded like
+	// any other permission and stay in force for later runs, until `revoke`
+	// takes them back: a permission that disappeared when a process was
+	// killed would be a promise the tool could not keep.
 	RW, RO []string
 	// NoAI skips the preset for AI agent directories.
 	NoAI bool

@@ -71,10 +71,22 @@ else.
 | `wuserbox rm` | delete group, permissions and temp directory |
 | `wuserbox audit [depth]` | list directories writable by Everyone |
 | `wuserbox version` | show the release this build came from |
+| `wuserbox help [command]` | the overview, or the full entry for one command |
 
-Options: `--dir <d>` picks the project, `--rw <d>` and `--ro <d>` add
-directories for one invocation, `--no-ai` skips the agent preset,
-`--home-writes` opts into writing in the profile root.
+Every command carries its own entry: `wuserbox help grant` prints what it
+does, which options it reads, whether it asks for administrator rights and a
+few examples. `wuserbox grant --help` prints the same thing. The overview is
+written for a coding agent that has just been refused a write: it says where
+the boundary is and which command to ask the user for.
+
+Options: `--dir <d>` picks the project, `--rw <d>` and `--ro <d>` hand over
+another directory, `--no-ai` withholds the agent directories, `--home-writes`
+opts into writing in the profile root.
+
+A directory handed over with `--rw` or `--ro` stays available on later runs
+too, until `wuserbox revoke` takes it back. Nothing is given up when the
+process ends: a permission that vanished whenever a run was interrupted would
+be a promise the tool could not keep.
 
 Directories may be written in any usual form, and the option order does not
 matter:
@@ -117,6 +129,11 @@ Code running in the sandbox must not be able to widen its own permissions:
   from inside a sandbox, and wuserbox never asks for administrator rights from
   there. The check reads the kernel's restricted-token flag, which sandboxed
   code cannot clear.
+* Sensitive files that do not exist yet are created as empty placeholders
+  under the same locked permissions before the profile root is handed over, so
+  a sandbox cannot claim one of those names first. The one case that cannot be
+  reserved is a shell startup file whose presence would hide another that is
+  really there; wuserbox says so instead of creating it.
 * Each project has its own group and its own temp directory, so one sandbox
   cannot write into another's project.
 
@@ -155,6 +172,10 @@ an escape, but every spelling above is accepted when the file is read, in the
   anything that saves settings in the registry will fail to.
 * **Interface isolation is weak.** A sandboxed process shares your desktop and
   clipboard.
+* **A batch file's arguments still expand variables.** Starting a `.cmd` or
+  `.bat` goes through the command interpreter, which replaces `%NAME%` before
+  the script runs. Punctuation is quoted, so an argument cannot start a second
+  command, but there is no escape for expansion on a command line.
 * **The agent directories are shared.** Every sandbox may write `~/.claude` and
   its neighbours, so a poisoned hook there would run with full rights the next
   time you start an agent outside wuserbox. Use `--no-ai` if that matters.
