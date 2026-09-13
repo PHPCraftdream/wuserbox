@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
+	"github.com/PHPCraftdream/wuserbox/internal/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
@@ -27,7 +28,7 @@ func Rm(args []string) error {
 	nonInteractive := flags.Bool("non-interactive", false,
 		"fail instead of asking for administrator rights")
 	if err := flags.Parse(args); err != nil {
-		return err
+		return exit.Errorf(exit.Usage, "%v", err)
 	}
 	if *nonInteractive {
 		_ = os.Setenv(EnvNonInteractive, "1")

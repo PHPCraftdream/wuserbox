@@ -2,6 +2,7 @@ package inspect
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
@@ -9,7 +10,7 @@ import (
 
 // pathCmd prints the directory a group belongs to.
 func Path(args []string) error {
-	if len(args) != 1 {
+	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
 		return exit.Errorf(exit.Usage, "usage: wuserbox path <group>")
 	}
 	dir, exists, err := group.Comment(args[0])

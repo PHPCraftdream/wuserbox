@@ -194,12 +194,16 @@ disk and survives a reinstall.`,
 	{
 		Name:    "list",
 		Summary: "list the sandboxes on this machine",
-		Call:    "list",
+		Call:    "list [--json]",
 		Detail: `Prints every sandbox group and the directory it belongs to, one per
 line. Useful for finding sandboxes left behind by a project that was
 renamed or deleted; remove one with "rm --dir <directory>".`,
+		Options: []Option{
+			{"--json", "print the list as JSON instead of lines"},
+		},
 		Examples: []string{
 			`wuserbox list`,
+			`wuserbox list --json`,
 		},
 	},
 	{

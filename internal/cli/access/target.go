@@ -43,7 +43,7 @@ func parseTarget(name string, args []string) (target, error) {
 	// are separated here: the flag package would stop at the first of them.
 	options, operands := split(args)
 	if err := flags.Parse(options); err != nil {
-		return target{}, err
+		return target{}, exit.Errorf(exit.Usage, "%v", err)
 	}
 	if len(operands) != 1 {
 		return target{}, exit.Errorf(exit.Usage,

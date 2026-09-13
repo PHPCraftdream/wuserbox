@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 )
 
@@ -62,5 +63,31 @@ func TestVersionPrintsTheRelease(t *testing.T) {
 	}
 	if err := Version([]string{"extra"}); err == nil {
 		t.Error("an argument should have been rejected")
+	}
+}
+
+// TestListOffersJSONAndRejectsNonsense covers the contract a script relies on:
+// a machine-readable list, and a wrong command line that says so through the
+// exit code rather than through the general failure code.
+func TestListOffersJSONAndRejectsNonsense(t *testing.T) {
+	if err := List([]string{"--json"}); err != nil {
+		t.Errorf("list --json: %v", err)
+	}
+	if got := exit.Of(List([]string{"--nonsense"})); got != exit.Usage {
+		t.Errorf("an unknown flag gave %v, want %v", got, exit.Usage)
+	}
+	if got := exit.Of(List([]string{"extra"})); got != exit.Usage {
+		t.Errorf("a stray argument gave %v, want %v", got, exit.Usage)
+	}
+}
+
+func TestFlagFailuresAreUsageFailures(t *testing.T) {
+	// A mistyped flag is a wrong command line, not an unexplained failure.
+	for name, run := range map[string]func([]string) error{
+		"audit": Audit, "list": List, "name": Name, "path": Path, "version": Version,
+	} {
+		if got := exit.Of(run([]string{"--nonsense"})); got != exit.Usage {
+			t.Errorf("%s gave %v, want %v", name, got, exit.Usage)
+		}
 	}
 }

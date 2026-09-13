@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
+	"github.com/PHPCraftdream/wuserbox/internal/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 )
 
@@ -43,7 +44,7 @@ func ParseOptions(name string, args []string) (sandbox.Options, []string, error)
 	flags.Var(&rw, "rw", "extra writable directory")
 	flags.Var(&ro, "ro", "extra readable directory")
 	if err := flags.Parse(args); err != nil {
-		return sandbox.Options{}, nil, err
+		return sandbox.Options{}, nil, exit.Errorf(exit.Usage, "%v", err)
 	}
 	if *dir == "" {
 		cwd, err := os.Getwd()

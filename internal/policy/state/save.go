@@ -2,14 +2,21 @@ package state
 
 import (
 	"encoding/json"
-	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 	"os"
+	"path/filepath"
+
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
-// Save writes the state file.
+// Save writes the state file, creating the directory it belongs in. Asking
+// where that directory is does not create it, so the making happens here,
+// where something is actually written.
 func (s *State) Save() error {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(Path(s.Group)), 0o755); err != nil {
 		return err
 	}
 	if err := os.WriteFile(Path(s.Group), append(data, '\n'), 0o644); err != nil {

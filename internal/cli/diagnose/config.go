@@ -37,7 +37,7 @@ func Config(args []string) error {
 	project := flags.String("dir", "", "show the rule for one project only")
 	asJSON := flags.Bool("json", false, "print the result as JSON")
 	if err := flags.Parse(rest); err != nil {
-		return err
+		return exit.Errorf(exit.Usage, "%v", err)
 	}
 	switch action {
 	case "path":

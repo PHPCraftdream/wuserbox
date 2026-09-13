@@ -34,7 +34,7 @@ func Check(args []string) error {
 	asJSON := flags.Bool("json", false, "print the result as JSON")
 	options, operands := split(args)
 	if err := flags.Parse(options); err != nil {
-		return err
+		return exit.Errorf(exit.Usage, "%v", err)
 	}
 	if len(operands) != 1 {
 		return exit.Errorf(exit.Usage,
