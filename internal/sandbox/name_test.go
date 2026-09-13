@@ -80,3 +80,40 @@ func TestSlugKeepsGroupNamesLegal(t *testing.T) {
 		}
 	}
 }
+
+// TestNameAcceptsTheSameSpellingsAsEveryOtherPath is the regression guard for
+// a project directory that was parsed differently from the directories handed
+// to it. The shell form of a path picked a different sandbox from the Windows
+// form of the same place, so a project had two identities depending on how it
+// was typed.
+func TestNameAcceptsTheSameSpellingsAsEveryOtherPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("USERPROFILE", dir)
+	t.Setenv("WUSERBOX_NAME_TEST", dir)
+
+	want, _, err := Name(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drive := strings.ToLower(dir[:1])
+	spellings := []string{
+		filepath.ToSlash(dir),
+		"/" + drive + filepath.ToSlash(dir[2:]),
+		"/mnt/" + drive + filepath.ToSlash(dir[2:]),
+		"~",
+		"%USERPROFILE%",
+		"%WUSERBOX_NAME_TEST%",
+		"$WUSERBOX_NAME_TEST",
+		`"` + dir + `"`,
+	}
+	for _, spelling := range spellings {
+		got, _, err := Name(spelling)
+		if err != nil {
+			t.Errorf("%s: %v", spelling, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s picked sandbox %q, want %q", spelling, got, want)
+		}
+	}
+}

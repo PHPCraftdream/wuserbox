@@ -17,7 +17,10 @@ import (
 // hash keeps it unique, since Windows group names are limited to 256 characters
 // and paths are not.
 func Name(dir string) (string, string, error) {
-	norm, err := paths.Normalize(dir)
+	// The same parser as every other path the commands take, so the project
+	// directory can be written the same ways: a Windows path, the shell form,
+	// a tilde or a variable all have to land on one sandbox.
+	norm, err := paths.Resolve(dir)
 	if err != nil {
 		return "", "", err
 	}
