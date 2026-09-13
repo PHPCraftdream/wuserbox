@@ -8,7 +8,7 @@ import (
 func TestEveryCommandIsDocumented(t *testing.T) {
 	commands := []string{
 		"run", "init", "grant", "revoke", "add-dir", "remove-dir",
-		"name", "path", "list", "rm", "audit",
+		"name", "path", "list", "rm", "audit", "version",
 	}
 	for _, command := range commands {
 		if !strings.Contains(Text, "wuserbox "+command) {

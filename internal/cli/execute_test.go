@@ -43,7 +43,7 @@ func TestPermissionChangingCommandsAreMarked(t *testing.T) {
 			t.Errorf("%q is not marked as changing permissions", name)
 		}
 	}
-	for _, name := range []string{"run", "name", "path", "list", "audit"} {
+	for _, name := range []string{"run", "name", "path", "list", "audit", "version"} {
 		if commands[name].privileged {
 			t.Errorf("%q should be usable inside a sandbox", name)
 		}

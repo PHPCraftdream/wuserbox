@@ -52,3 +52,15 @@ func TestAuditAcceptsADepth(t *testing.T) {
 		t.Error("two arguments should have been rejected")
 	}
 }
+
+func TestVersionPrintsTheRelease(t *testing.T) {
+	if err := Version(nil); err != nil {
+		t.Errorf("version: %v", err)
+	}
+	if Release == "" {
+		t.Error("the release string is empty")
+	}
+	if err := Version([]string{"extra"}); err == nil {
+		t.Error("an argument should have been rejected")
+	}
+}

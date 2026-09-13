@@ -17,6 +17,7 @@ only to this directory and the directories you allow.
   wuserbox list                           list sandboxes
   wuserbox rm [--dir d]                   delete group, permissions and temp directory
   wuserbox audit [depth]                  list directories writable by Everyone
+  wuserbox version                        show the release this build came from
 
 options:
   --dir <d>       project directory (default: the current directory)

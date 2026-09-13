@@ -32,6 +32,7 @@ var commands = map[string]command{
 	"path":       {run: inspect.Path},
 	"list":       {run: inspect.List},
 	"audit":      {run: inspect.Audit},
+	"version":    {run: inspect.Version},
 }
 
 // aliases accept the spellings people reach for out of habit.
