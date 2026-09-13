@@ -33,10 +33,11 @@ jobs:
           base="https://github.com/ktav-lang/golang/releases/download/${KTAV_VERSION}"
           for arch in amd64 arm64; do
             name="ktav_cabi-windows-${arch}.dll"
-            # arm64 may be missing from a release; fall back to amd64, which
-            # runs under emulation.
-            curl -fsSL -o ".ktav/${name}" "${base}/${name}" \
-              || cp .ktav/ktav_cabi-windows-amd64.dll ".ktav/${name}"
+            # Each build gets the library for its own architecture. A process
+            # cannot load a library built for another one, so there is no
+            # substitute: if it is missing, the release stops here rather than
+            # shipping something that fails at run time.
+            curl -fsSL -o ".ktav/${name}" "${base}/${name}"
           done
           ls -l .ktav
 
