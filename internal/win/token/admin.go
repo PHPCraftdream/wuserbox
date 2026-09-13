@@ -1,6 +1,6 @@
 package token
 
-import "wuserbox/internal/win/w32"
+import "github.com/PHPCraftdream/wuserbox/internal/win/w32"
 
 var procIsUserAnAdmin = w32.Shell32.NewProc("IsUserAnAdmin")
 

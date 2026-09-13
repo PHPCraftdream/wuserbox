@@ -3,8 +3,8 @@ package acl
 import (
 	"unsafe"
 
-	"wuserbox/internal/win/sid"
-	"wuserbox/internal/win/w32"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
+	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
 var (

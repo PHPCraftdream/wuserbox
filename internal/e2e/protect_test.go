@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"wuserbox/internal/policy/grant"
-	"wuserbox/internal/win/acl"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
 func exists(path string) bool {

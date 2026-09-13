@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"wuserbox/internal/policy/config"
-	"wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 )
 
 func TestParseTargetResolvesAnyPathSpelling(t *testing.T) {

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	"wuserbox/internal/policy/config"
-	"wuserbox/internal/policy/state"
-	"wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 )
 
 // AddDir records a directory in the standing rules for this project, so every

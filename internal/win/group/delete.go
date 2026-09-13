@@ -3,7 +3,7 @@ package group
 import (
 	"unsafe"
 
-	"wuserbox/internal/win/w32"
+	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
 // Delete removes a local group. Requires administrator rights.

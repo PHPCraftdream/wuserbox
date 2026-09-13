@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"wuserbox/internal/win/sid"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
 const unusedAccount = "S-1-5-21-1111111111-2222222222-3333333333-543210"

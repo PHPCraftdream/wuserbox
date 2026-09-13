@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"wuserbox/internal/cli"
+	"github.com/PHPCraftdream/wuserbox/internal/cli"
 )
 
 func main() {

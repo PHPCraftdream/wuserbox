@@ -1,7 +1,7 @@
 // Package grant expresses sandbox permissions as access control entries.
 package grant
 
-import "wuserbox/internal/win/acl"
+import "github.com/PHPCraftdream/wuserbox/internal/win/acl"
 
 // Kind is the access a sandbox gets on one path.
 type Kind string

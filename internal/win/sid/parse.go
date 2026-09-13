@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"unsafe"
 
-	"wuserbox/internal/win/w32"
+	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
 var procConvertStringSidToSid = w32.Advapi32.NewProc("ConvertStringSidToSidW")

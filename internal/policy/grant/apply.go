@@ -3,7 +3,7 @@ package grant
 import (
 	"fmt"
 
-	"wuserbox/internal/win/acl"
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
 // Apply gives account the access described by kind on path. Applying the same

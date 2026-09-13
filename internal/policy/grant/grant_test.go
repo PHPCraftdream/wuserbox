@@ -1,10 +1,10 @@
 package grant
 
 import (
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 	"os"
 	"path/filepath"
 	"testing"
-	"wuserbox/internal/win/acl"
 )
 
 const unusedAccount = "S-1-5-21-1111111111-2222222222-3333333333-654321"

@@ -4,8 +4,8 @@ package grants
 import (
 	"os"
 
-	"wuserbox/internal/policy/config"
-	"wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 )
 
 // FromConfig grants the directories the standing rules list for this project.

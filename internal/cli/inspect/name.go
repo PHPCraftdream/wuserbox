@@ -3,7 +3,7 @@ package inspect
 import (
 	"fmt"
 
-	"wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 )
 
 // nameCmd prints the group name a directory maps to.

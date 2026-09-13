@@ -3,7 +3,7 @@ package inspect
 import (
 	"fmt"
 
-	"wuserbox/internal/win/group"
+	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 )
 
 // pathCmd prints the directory a group belongs to.

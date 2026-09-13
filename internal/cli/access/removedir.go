@@ -3,9 +3,9 @@ package access
 import (
 	"fmt"
 
-	"wuserbox/internal/policy/config"
-	"wuserbox/internal/policy/state"
-	"wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 )
 
 // RemoveDir forgets a directory in the standing rules and takes it back from

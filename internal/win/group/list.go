@@ -4,7 +4,7 @@ import (
 	"strings"
 	"unsafe"
 
-	"wuserbox/internal/win/w32"
+	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
 // Entry is one sandbox group: its name and the directory it belongs to.

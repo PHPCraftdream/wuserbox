@@ -3,7 +3,7 @@ package group
 import (
 	"unsafe"
 
-	"wuserbox/internal/win/w32"
+	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
 // Comment returns the project directory recorded on the group, and whether the

@@ -3,8 +3,8 @@ package setup
 import (
 	"fmt"
 
-	"wuserbox/internal/sandbox"
-	"wuserbox/internal/win/token"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
 
 // Init creates the sandbox for a directory, asking for administrator rights

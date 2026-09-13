@@ -3,7 +3,7 @@ package group
 import (
 	"unsafe"
 
-	"wuserbox/internal/win/w32"
+	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
 // SetComment rewrites the project directory recorded on an existing group.

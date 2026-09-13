@@ -3,7 +3,7 @@ package token
 import (
 	"syscall"
 
-	"wuserbox/internal/win/w32"
+	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
 var procIsTokenRestricted = w32.Advapi32.NewProc("IsTokenRestricted")

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"wuserbox/internal/cli/setup"
-	"wuserbox/internal/win/token"
+	"github.com/PHPCraftdream/wuserbox/internal/cli/setup"
+	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
 
 // Revoke takes one directory back from the sandbox of a project.

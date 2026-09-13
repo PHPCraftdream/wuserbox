@@ -2,11 +2,11 @@ package inspect
 
 import (
 	"fmt"
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 	"os"
 	"path/filepath"
 	"syscall"
 	"unsafe"
-	"wuserbox/internal/win/acl"
 )
 
 // auditCmd lists directories that Everyone may write to. The sandbox can write

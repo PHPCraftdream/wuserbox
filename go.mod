@@ -1,4 +1,4 @@
-module wuserbox
+module github.com/PHPCraftdream/wuserbox
 
 go 1.26
 

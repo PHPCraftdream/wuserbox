@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"wuserbox/internal/cli/setup"
-	"wuserbox/internal/sandbox/exec"
+	"github.com/PHPCraftdream/wuserbox/internal/cli/setup"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox/exec"
 )
 
 // Run starts a command in the sandbox, creating the sandbox on first use, and

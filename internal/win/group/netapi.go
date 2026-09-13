@@ -6,7 +6,7 @@ package group
 import (
 	"fmt"
 
-	"wuserbox/internal/win/w32"
+	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
 // Prefix marks groups owned by wuserbox.

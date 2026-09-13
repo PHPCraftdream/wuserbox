@@ -3,7 +3,7 @@ package state
 import (
 	"path/filepath"
 
-	"wuserbox/internal/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/paths"
 )
 
 // Path is the state file for a sandbox group.

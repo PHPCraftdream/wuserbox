@@ -3,9 +3,9 @@ package grants
 import (
 	"strings"
 
-	"wuserbox/internal/policy/grant"
-	"wuserbox/internal/policy/preset"
-	"wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/preset"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 )
 
 // RefuseHomeFiles blocks the sandbox from changing the files already sitting

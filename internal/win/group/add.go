@@ -3,7 +3,7 @@ package group
 import (
 	"unsafe"
 
-	"wuserbox/internal/win/w32"
+	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
 // Add creates a local group whose comment records the project directory.

@@ -1,9 +1,9 @@
 package grants
 
 import (
-	"wuserbox/internal/paths"
-	"wuserbox/internal/policy/grant"
-	"wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 )
 
 // Extra grants the directories passed on the command line for one invocation.

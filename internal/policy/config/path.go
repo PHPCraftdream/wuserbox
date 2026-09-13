@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"wuserbox/internal/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/paths"
 )
 
 // EnvPath overrides the config location; tests and unusual setups use it.

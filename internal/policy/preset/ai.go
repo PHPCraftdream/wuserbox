@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"wuserbox/internal/paths"
-	"wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 )
 
 // AI returns grants for the agent state directories that exist on this

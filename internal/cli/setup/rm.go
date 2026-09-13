@@ -6,12 +6,12 @@ import (
 	"io"
 	"os"
 
-	"wuserbox/internal/cli/usage"
-	"wuserbox/internal/policy/grant"
-	"wuserbox/internal/policy/state"
-	"wuserbox/internal/sandbox"
-	"wuserbox/internal/win/group"
-	"wuserbox/internal/win/token"
+	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/win/group"
+	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
 
 // Rm deletes a sandbox: every permission it applied, its temp directory, its

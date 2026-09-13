@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 )
 
 func useTempConfig(t *testing.T) string {

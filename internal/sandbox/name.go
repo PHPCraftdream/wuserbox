@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"wuserbox/internal/paths"
-	"wuserbox/internal/win/group"
+	"github.com/PHPCraftdream/wuserbox/internal/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 )
 
 // Name maps a directory to its sandbox group name and returns the normalized

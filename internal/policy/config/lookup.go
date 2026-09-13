@@ -4,8 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"wuserbox/internal/paths"
-	"wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 )
 
 // RuleFor returns the rule for a project directory. With create set it appends

@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"wuserbox/internal/cli/usage"
-	"wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 )
 
 // repeated collects a flag that may appear more than once.

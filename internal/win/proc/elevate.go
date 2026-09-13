@@ -7,7 +7,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	"wuserbox/internal/win/w32"
+	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
 var procShellExecuteEx = w32.Shell32.NewProc("ShellExecuteExW")

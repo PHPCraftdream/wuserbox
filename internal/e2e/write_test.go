@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"wuserbox/internal/paths"
-	"wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 )
 
 func TestWritesInsideTheProjectDirectory(t *testing.T) {

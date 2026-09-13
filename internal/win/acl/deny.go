@@ -1,6 +1,6 @@
 package acl
 
-import "wuserbox/internal/win/sid"
+import "github.com/PHPCraftdream/wuserbox/internal/win/sid"
 
 // Deny adds an explicit refusal for account on path. Windows checks refusals
 // before permissions, so this overrides anything inherited from a parent

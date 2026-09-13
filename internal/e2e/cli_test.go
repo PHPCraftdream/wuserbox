@@ -1,17 +1,17 @@
 package e2e
 
 import (
+	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
-	"wuserbox/internal/win/token"
 
-	"wuserbox/internal/policy/config"
-	"wuserbox/internal/policy/state"
-	"wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 )
 
 var buildOnce struct {
@@ -30,7 +30,7 @@ func binary(t *testing.T) string {
 			return
 		}
 		buildOnce.path = filepath.Join(dir, "wuserbox.exe")
-		out, err := exec.Command("go", "build", "-o", buildOnce.path, "wuserbox/cmd/wuserbox").CombinedOutput()
+		out, err := exec.Command("go", "build", "-o", buildOnce.path, "github.com/PHPCraftdream/wuserbox/cmd/wuserbox").CombinedOutput()
 		if err != nil {
 			buildOnce.err = err
 			t.Logf("build output: %s", out)

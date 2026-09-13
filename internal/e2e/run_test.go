@@ -4,8 +4,8 @@ import (
 	"os"
 	"testing"
 
-	"wuserbox/internal/policy/state"
-	"wuserbox/internal/sandbox/exec"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox/exec"
 )
 
 // runSandboxed executes args in the sandbox and returns the exit code.

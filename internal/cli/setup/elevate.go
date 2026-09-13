@@ -3,8 +3,8 @@ package setup
 import (
 	"fmt"
 
-	"wuserbox/internal/win/proc"
-	"wuserbox/internal/win/token"
+	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
+	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
 
 // Elevate re-runs wuserbox with administrator rights and reports a non-zero

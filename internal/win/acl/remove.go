@@ -1,6 +1,6 @@
 package acl
 
-import "wuserbox/internal/win/sid"
+import "github.com/PHPCraftdream/wuserbox/internal/win/sid"
 
 // Remove drops every entry for account from the permissions of path,
 // permissions and refusals alike.

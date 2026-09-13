@@ -4,9 +4,9 @@ package exec
 import (
 	"os"
 
-	"wuserbox/internal/policy/state"
-	"wuserbox/internal/win/proc"
-	"wuserbox/internal/win/token"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
+	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
 
 // Run executes a command in the sandbox described by s and returns its exit

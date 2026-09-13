@@ -3,7 +3,7 @@ package inspect
 import (
 	"fmt"
 
-	"wuserbox/internal/win/group"
+	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 )
 
 // listCmd prints every sandbox on this machine.

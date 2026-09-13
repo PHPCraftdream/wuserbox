@@ -3,7 +3,7 @@
 // record of what wuserbox itself applied.
 package state
 
-import "wuserbox/internal/policy/grant"
+import "github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 
 // State is one sandbox: its group, project directory, private temp directory
 // and the grants applied so far.

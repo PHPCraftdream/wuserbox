@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"wuserbox/internal/policy/grant"
-	"wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 )
 
 // testSID returns a SID that belongs to no account on this machine. Access

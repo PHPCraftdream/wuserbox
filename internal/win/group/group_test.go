@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"wuserbox/internal/win/token"
+	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
 
 // name for a group this test may create and delete.

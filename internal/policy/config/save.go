@@ -1,9 +1,9 @@
 package config
 
 import (
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 	"os"
 	"path/filepath"
-	"wuserbox/internal/win/acl"
 
 	ktav "github.com/ktav-lang/golang"
 )

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"wuserbox/internal/win/group"
+	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 )
 
 func TestNameAcceptsNoArgumentOrADirectory(t *testing.T) {
