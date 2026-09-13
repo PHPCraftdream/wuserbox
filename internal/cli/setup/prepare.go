@@ -32,17 +32,26 @@ func prepare(options sandbox.Options) (*state.State, error) {
 	}
 	if options.NoAI {
 		// The flag has to mean the same thing on every run, not only on the
-		// one that created the sandbox.
+		// one that created the sandbox. If the permissions cannot be taken
+		// back, the command must not start: running it anyway would hand it
+		// the very directories that were just refused.
 		if err := grants.DropPreset(s); err != nil {
 			report(options, "%v", err)
-			return rebuild(options, name)
+			repaired, repairErr := rebuild(options, name)
+			if repairErr != nil {
+				return nil, repairErr
+			}
+			if err := grants.DropPreset(repaired); err != nil {
+				return nil, fmt.Errorf("--no-ai could not take back the agent directories: %w", err)
+			}
+			s = repaired
 		}
 	}
-	if err := grants.FromConfig(s); err != nil {
+	if err := grants.FromConfig(s, false); err != nil {
 		report(options, "%v", err)
 		return rebuild(options, name)
 	}
-	if err := grants.Extra(s, options.RW, options.RO); err != nil {
+	if err := grants.Extra(s, options.RW, options.RO, false); err != nil {
 		report(options, "%v", err)
 		return rebuild(options, name)
 	}

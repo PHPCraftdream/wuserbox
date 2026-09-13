@@ -51,19 +51,19 @@ func Init(o Options) (*state.State, error) {
 	if err := os.MkdirAll(s.Temp, 0o755); err != nil {
 		return nil, err
 	}
-	if err := s.Add(s.Temp, grant.RW); err != nil {
+	if err := s.Ensure(s.Temp, grant.RW); err != nil {
 		return nil, err
 	}
-	if err := s.Add(dir, grant.RW); err != nil {
+	if err := s.Ensure(dir, grant.RW); err != nil {
 		return nil, err
 	}
 	if err := applyPreset(s, o); err != nil {
 		return nil, err
 	}
-	if err := grants.FromConfig(s); err != nil {
+	if err := grants.FromConfig(s, true); err != nil {
 		return nil, err
 	}
-	if err := grants.Extra(s, o.RW, o.RO); err != nil {
+	if err := grants.Extra(s, o.RW, o.RO, true); err != nil {
 		return nil, err
 	}
 	if err := s.Save(); err != nil {
@@ -74,10 +74,13 @@ func Init(o Options) (*state.State, error) {
 
 func applyPreset(s *state.State, o Options) error {
 	if o.NoAI {
-		return nil
+		// Skipping is not enough for a sandbox that already holds these
+		// directories: the flag has to take them back, or a later run would
+		// still reach them.
+		return grants.DropPreset(s)
 	}
 	for _, spec := range preset.AI() {
-		if err := s.Add(spec.Path, spec.Kind); err != nil {
+		if err := s.Ensure(spec.Path, spec.Kind); err != nil {
 			return err
 		}
 	}
@@ -86,7 +89,7 @@ func applyPreset(s *state.State, o Options) error {
 	}
 	// Reserve the sensitive names before handing the directory over, so the
 	// sandbox cannot create one of them first.
-	unguarded, err := grants.ReserveSensitiveFiles()
+	unguarded, err := grants.ReserveSensitiveNames()
 	if err != nil {
 		return err
 	}
@@ -95,7 +98,7 @@ func applyPreset(s *state.State, o Options) error {
 			"the sandbox may create it\n", path)
 	}
 	home := preset.Home()
-	if err := s.Add(home.Path, home.Kind); err != nil {
+	if err := s.Ensure(home.Path, home.Kind); err != nil {
 		return err
 	}
 	// That permission reaches every file already in the profile root, so
