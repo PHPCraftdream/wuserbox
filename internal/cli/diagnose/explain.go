@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
+	"github.com/PHPCraftdream/wuserbox/internal/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/plan"
@@ -46,7 +47,7 @@ func Explain(args []string) error {
 	project := flags.String("dir", "", "project to explain")
 	asJSON := flags.Bool("json", false, "print the result as JSON")
 	if err := flags.Parse(args); err != nil {
-		return err
+		return exit.Errorf(exit.Usage, "%v", err)
 	}
 	s, err := sandboxOf(*project)
 	if err != nil {
@@ -111,17 +112,34 @@ func inForce(account string, held grant.Spec) (bool, string) {
 	if err != nil {
 		return false, err.Error()
 	}
+	if !readable.Allowed {
+		return false, "cannot be read: " + readable.Reason
+	}
+	// Each kind is tested by the operation that shows it is in force, not by
+	// one operation for all of them: a permission meant to create files in a
+	// directory without creating subdirectories would fail a plain write and
+	// look broken while working exactly as intended.
+	proving, err := access.Parse(held.Kind.Proves())
+	if err != nil {
+		return false, err.Error()
+	}
+	granted, err := access.Check(account, held.Path, proving)
+	if err != nil {
+		return false, err.Error()
+	}
+	if held.Kind.Writable() {
+		if !granted.Allowed {
+			return false, "recorded as writable, but " + string(proving) + " is refused: " + granted.Reason
+		}
+		return true, ""
+	}
+	// For a read-only entry the question is the other way round: writing has
+	// to be refused, or the record is claiming less than the sandbox holds.
 	writable, err := access.Check(account, held.Path, access.Write)
 	if err != nil {
 		return false, err.Error()
 	}
-	if !readable.Allowed {
-		return false, "cannot be read: " + readable.Reason
-	}
-	switch expected := held.Kind.Writable(); {
-	case expected && !writable.Allowed:
-		return false, "recorded as writable, but writing is refused: " + writable.Reason
-	case !expected && writable.Allowed:
+	if writable.Allowed {
 		return false, "recorded as read-only, but the sandbox can write to it"
 	}
 	return true, ""

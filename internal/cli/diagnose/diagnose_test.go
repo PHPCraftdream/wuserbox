@@ -10,6 +10,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/win/access"
 )
 
 // TestMain loads the rules parser before any test moves the environment, so
@@ -307,5 +308,49 @@ func TestValidateAcceptsTheSameDirectoryInDifferentProjects(t *testing.T) {
 	}})
 	if err := Config([]string{"validate"}); err != nil {
 		t.Errorf("two projects may each name the same directory: %v", err)
+	}
+}
+
+// TestExplainJudgesAPermissionByItsOwnKind is the regression guard for a check
+// that asked one question about every kind. The permission that lets an agent
+// create files in the profile root, without creating directories there, fails
+// a plain write by design, and was reported as broken while working exactly as
+// intended.
+func TestExplainJudgesAPermissionByItsOwnKind(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
+	s := &state.State{
+		Group: "wub-kind-test",
+		SID:   "S-1-5-21-1111111111-2222222222-3333333333-161616",
+		Dir:   t.TempDir(),
+		Temp:  t.TempDir(),
+	}
+	if err := s.Add(home, grant.HomeTop); err != nil {
+		t.Fatal(err)
+	}
+	report, err := build(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range report.Accounts {
+		if !strings.EqualFold(account.Path, home) {
+			continue
+		}
+		if !account.InForce {
+			t.Errorf("a working permission was called broken: %s", account.Note)
+		}
+	}
+	if len(report.Drifted) != 0 {
+		t.Errorf("nothing is wrong, yet the report lists %v", report.Drifted)
+	}
+}
+
+func TestEveryKindHasAnOperationThatProvesIt(t *testing.T) {
+	for _, kind := range []grant.Kind{grant.RW, grant.RO, grant.File, grant.HomeTop} {
+		if _, err := access.Parse(kind.Proves()); err != nil {
+			t.Errorf("%q is proved by %q, which is not an operation: %v", kind, kind.Proves(), err)
+		}
 	}
 }

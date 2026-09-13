@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -189,5 +190,61 @@ func TestCheckReportsAFailureToAskRatherThanGuessing(t *testing.T) {
 	}
 	if result.Allowed {
 		t.Error("a failed check reported the operation as allowed")
+	}
+}
+
+// TestCheckHonoursTheReadOnlyMark is the regression guard for an answer that
+// consulted the permission list alone. A file marked read-only is refused by
+// the file system whatever the permissions say, so "allowed" was a promise the
+// write could not keep.
+func TestCheckHonoursTheReadOnlyMark(t *testing.T) {
+	granted, _ := prepared(t)
+	file := filepath.Join(granted, "locked.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := Check(testGroup, file, Write)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !before.Allowed {
+		t.Fatal("the file was not writable to begin with")
+	}
+
+	if err := os.Chmod(file, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	after, err := Check(testGroup, file, Write)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Allowed {
+		t.Error("a read-only file was reported as writable")
+	}
+	if !strings.Contains(after.Reason, "read-only") {
+		t.Errorf("the reason does not mention the mark: %q", after.Reason)
+	}
+	// Reading is unaffected by the mark.
+	readable, err := Check(testGroup, file, Read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !readable.Allowed {
+		t.Error("a read-only file was reported as unreadable")
+	}
+	_ = os.Chmod(file, 0o644)
+}
+
+func TestCheckIgnoresTheMarkOnDirectories(t *testing.T) {
+	// Windows sets the same bit on directories for unrelated reasons, so it
+	// must not be read as a refusal there.
+	granted, _ := prepared(t)
+	result, err := Check(testGroup, granted, Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Allowed {
+		t.Errorf("a writable directory was refused: %s", result.Reason)
 	}
 }

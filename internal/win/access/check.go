@@ -75,6 +75,14 @@ func Check(group string, path string, operation Operation) (Result, error) {
 		return result, err
 	}
 	result.Allowed = allowed
+	// The permission list is not the whole story. A file marked read-only is
+	// refused by the file system whatever the permissions say, so an answer
+	// that looked only at the list would promise a write that cannot happen.
+	if allowed && operation.changes() && readOnlyAttribute(target) {
+		result.Allowed = false
+		result.Reason = "the permissions allow it, but the file is marked read-only"
+		return result, nil
+	}
 	if allowed {
 		result.Reason = "the sandbox has a permission that covers it"
 	} else {
@@ -159,4 +167,19 @@ func accessCheck(impersonation syscall.Token, descriptor uintptr, wanted uint32)
 		return 0, false, fmt.Errorf("asking Windows: %w", callErr)
 	}
 	return granted, status != 0, nil
+}
+
+// readOnlyAttribute reports whether a file carries the read-only mark. It is
+// meaningless on a directory, which Windows marks for unrelated reasons.
+func readOnlyAttribute(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	attributes, err := syscall.GetFileAttributes(w32.UTF16(path))
+	if err != nil {
+		return false
+	}
+	const readOnly = 0x1
+	return attributes&readOnly != 0
 }

@@ -57,3 +57,7 @@ func (o Operation) mask() uint32 {
 // onParent reports whether the question is really about the directory that
 // would hold the object: creating something that does not exist yet.
 func (o Operation) onParent() bool { return o == Create }
+
+// changes reports whether the operation alters the object rather than reading
+// it, which is what the read-only mark stands in the way of.
+func (o Operation) changes() bool { return o == Write || o == Delete }
