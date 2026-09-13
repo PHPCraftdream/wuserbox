@@ -1,5 +1,5 @@
-// Package setup creates and removes sandboxes, and raises the rights needed
-// for both.
+// Package setup owns the life of a sandbox: creating it, running commands in
+// it, and removing it, together with the rights those need.
 package setup
 
 import (
@@ -32,10 +32,14 @@ func ParseOptions(name string, args []string) (sandbox.Options, []string, error)
 	var rw, ro repeated
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	flags.Usage = func() { io.WriteString(os.Stderr, usage.Text) }
+	flags.Usage = func() { _, _ = io.WriteString(os.Stderr, usage.Text) }
 	dir := flags.String("dir", "", "project directory")
 	noAI := flags.Bool("no-ai", false, "skip the preset for AI agent directories")
 	homeWrites := flags.Bool("home-writes", false, "let the sandbox create files in the profile root")
+	quiet := flags.Bool("quiet", false, "no progress messages, errors only")
+	nonInteractive := flags.Bool("non-interactive", false, "fail instead of asking for administrator rights")
+	dryRun := flags.Bool("dry-run", false, "show what would change, change nothing")
+	asJSON := flags.Bool("json", false, "print the result as JSON")
 	flags.Var(&rw, "rw", "extra writable directory")
 	flags.Var(&ro, "ro", "extra readable directory")
 	if err := flags.Parse(args); err != nil {
@@ -48,6 +52,13 @@ func ParseOptions(name string, args []string) (sandbox.Options, []string, error)
 		}
 		*dir = cwd
 	}
-	options := sandbox.Options{Dir: *dir, RW: rw, RO: ro, NoAI: *noAI, HomeWrites: *homeWrites}
+	if *nonInteractive {
+		_ = os.Setenv(EnvNonInteractive, "1")
+	}
+	options := sandbox.Options{
+		Dir: *dir, RW: rw, RO: ro,
+		NoAI: *noAI, HomeWrites: *homeWrites, Quiet: *quiet,
+		DryRun: *dryRun, JSON: *asJSON,
+	}
 	return options, append(flags.Args(), command...), nil
 }

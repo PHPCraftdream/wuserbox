@@ -11,6 +11,13 @@ type Options struct {
 	RW, RO []string
 	// NoAI skips the preset for AI agent directories.
 	NoAI bool
+	// Quiet silences the progress messages, leaving errors alone.
+	Quiet bool
+	// DryRun works out what would change and prints it, changing nothing and
+	// starting nothing.
+	DryRun bool
+	// JSON asks for machine-readable output where a command offers it.
+	JSON bool
 	// HomeWrites lets the sandbox create files directly in the profile root.
 	// Off by default, because the same permission reaches every file already
 	// there. When it is on, the sensitive files are refused one by one.

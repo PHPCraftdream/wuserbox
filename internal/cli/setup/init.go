@@ -14,6 +14,9 @@ func Init(args []string) error {
 	if err != nil {
 		return err
 	}
+	if options.DryRun {
+		return Preview(options)
+	}
 	if !token.IsAdmin() {
 		return Elevate(options.Args())
 	}

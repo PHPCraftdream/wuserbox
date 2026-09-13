@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/PHPCraftdream/wuserbox/internal/exit"
 )
 
 func TestParseOptionsDefaultsToTheCurrentDirectory(t *testing.T) {
@@ -90,5 +92,59 @@ func TestOptionsSurviveARoundTripThroughArguments(t *testing.T) {
 		rebuilt.HomeWrites != original.HomeWrites ||
 		len(rebuilt.RW) != len(original.RW) || len(rebuilt.RO) != len(original.RO) {
 		t.Errorf("options changed across the round trip: %+v then %+v", original, rebuilt)
+	}
+}
+
+func TestRunNeedsACommand(t *testing.T) {
+	err := Run([]string{"--dir", t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "no command given") {
+		t.Errorf("got %v", err)
+	}
+}
+
+func TestRunReportsAMissingProgramBeforeTouchingTheSandbox(t *testing.T) {
+	// The program is resolved first, so a typo fails without creating
+	// anything or asking for administrator rights.
+	err := Run([]string{"--dir", t.TempDir(), "--", "no-such-program-wuserbox"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), "administrator") {
+		t.Errorf("elevation was attempted before checking the command: %v", err)
+	}
+}
+
+func TestRunRejectsUnknownOptions(t *testing.T) {
+	if err := Run([]string{"--nonsense", "--", "cmd"}); err == nil {
+		t.Error("expected an error")
+	}
+}
+
+func TestParseOptionsReadsQuietAndNonInteractive(t *testing.T) {
+	os.Unsetenv(EnvNonInteractive)
+	options, _, err := ParseOptions("run", []string{"--dir", `C:\p`, "--quiet", "--non-interactive", "--", "cmd"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.Quiet {
+		t.Error("--quiet was not read")
+	}
+	if os.Getenv(EnvNonInteractive) == "" {
+		t.Error("--non-interactive did not reach the environment")
+	}
+	os.Unsetenv(EnvNonInteractive)
+}
+
+func TestElevateRefusesWhenPromptsAreOff(t *testing.T) {
+	t.Setenv(EnvNonInteractive, "1")
+	err := Elevate([]string{"init", "--dir", t.TempDir()})
+	if err == nil {
+		t.Fatal("elevation should have been refused")
+	}
+	if got := exit.Of(err); got != exit.NeedsElevation {
+		t.Errorf("exit code is %v, want %v", got, exit.NeedsElevation)
+	}
+	if !strings.Contains(err.Error(), "administrator rights") {
+		t.Errorf("unhelpful message: %v", err)
 	}
 }

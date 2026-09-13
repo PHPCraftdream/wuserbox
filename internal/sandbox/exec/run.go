@@ -19,9 +19,9 @@ func Run(s *state.State, commandLine string) (int, error) {
 	}
 	defer restricted.Close()
 
-	os.Setenv("TEMP", s.Temp)
-	os.Setenv("TMP", s.Temp)
-	os.Setenv("WUSERBOX_GROUP", s.Group)
-	os.Setenv("WUSERBOX_DIR", s.Dir)
+	_ = os.Setenv("TEMP", s.Temp)
+	_ = os.Setenv("TMP", s.Temp)
+	_ = os.Setenv("WUSERBOX_GROUP", s.Group)
+	_ = os.Setenv("WUSERBOX_DIR", s.Dir)
 	return proc.Run(restricted, commandLine, s.Dir)
 }

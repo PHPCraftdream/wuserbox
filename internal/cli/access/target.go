@@ -4,16 +4,17 @@ package access
 
 import (
 	"flag"
-	"fmt"
 	"io"
 	"os"
 	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
+	"github.com/PHPCraftdream/wuserbox/internal/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox/plan"
 )
 
 // target is the "<dir> [--ro] [--dir project]" shape these commands share.
@@ -21,6 +22,8 @@ type target struct {
 	path    string
 	project string
 	kind    grant.Kind
+	dryRun  bool
+	asJSON  bool
 }
 
 // parseTarget reads that shape. The directory may be written in any usual
@@ -28,9 +31,11 @@ type target struct {
 func parseTarget(name string, args []string) (target, error) {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	flags.Usage = func() { io.WriteString(os.Stderr, usage.Text) }
+	flags.Usage = func() { _, _ = io.WriteString(os.Stderr, usage.Text) }
 	readOnly := flags.Bool("ro", false, "read-only")
 	dir := flags.String("dir", "", "project directory")
+	dryRun := flags.Bool("dry-run", false, "show what would change, change nothing")
+	asJSON := flags.Bool("json", false, "print the result as JSON")
 	// The directory may be written before or after the options, so the two
 	// are separated here: the flag package would stop at the first of them.
 	options, operands := split(args)
@@ -38,7 +43,8 @@ func parseTarget(name string, args []string) (target, error) {
 		return target{}, err
 	}
 	if len(operands) != 1 {
-		return target{}, fmt.Errorf("usage: wuserbox %s <dir> [--ro] [--dir project]", name)
+		return target{}, exit.Errorf(exit.Usage,
+			"usage: wuserbox %s <dir> [--ro] [--dir project] [--dry-run] [--json]", name)
 	}
 	path, err := paths.Resolve(operands[0])
 	if err != nil {
@@ -58,7 +64,7 @@ func parseTarget(name string, args []string) (target, error) {
 	if *readOnly {
 		kind = grant.RO
 	}
-	return target{path: path, project: project, kind: kind}, nil
+	return target{path: path, project: project, kind: kind, dryRun: *dryRun, asJSON: *asJSON}, nil
 }
 
 // args rebuilds the command line for a second attempt with more rights.
@@ -81,7 +87,8 @@ func load(project string) (*state.State, error) {
 		return nil, err
 	}
 	if s == nil {
-		return nil, fmt.Errorf("no sandbox for %s yet; run `wuserbox init` there", project)
+		return nil, exit.Errorf(exit.NotFound,
+			"no sandbox for %s yet; run `wuserbox init` there", project)
 	}
 	return s, nil
 }
@@ -103,4 +110,15 @@ func split(args []string) (options, operands []string) {
 		}
 	}
 	return options, operands
+}
+
+// preview prints the changes a command would make and returns without making
+// them.
+func (t target) preview(actions ...plan.Action) error {
+	text, err := plan.RenderActions(actions, t.asJSON)
+	if err != nil {
+		return err
+	}
+	_, _ = io.WriteString(os.Stdout, text)
+	return nil
 }
