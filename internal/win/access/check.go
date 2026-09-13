@@ -75,6 +75,17 @@ func Check(group string, path string, operation Operation) (Result, error) {
 		return result, err
 	}
 	result.Allowed = allowed
+	// Deleting has two doors. Windows lets something go when the thing itself
+	// may be deleted, or when the directory holding it may have things
+	// removed from it, and an answer that knew only the first would promise a
+	// refusal that does not happen.
+	if !allowed && operation == Delete {
+		if throughParent, err := deleteThroughParent(group, target); err == nil && throughParent {
+			result.Allowed = true
+			result.Reason = "the directory holding it lets the sandbox remove what is inside"
+			return result, nil
+		}
+	}
 	// The permission list is not the whole story. A file marked read-only is
 	// refused by the file system whatever the permissions say, so an answer
 	// that looked only at the list would promise a write that cannot happen.
@@ -182,4 +193,33 @@ func readOnlyAttribute(path string) bool {
 	}
 	const readOnly = 0x1
 	return attributes&readOnly != 0
+}
+
+// deleteThroughParent reports whether the directory holding a path lets the
+// sandbox remove what is inside it.
+func deleteThroughParent(group, path string) (bool, error) {
+	parent := filepath.Dir(path)
+	if parent == path {
+		return false, nil
+	}
+	descriptor, err := securityOf(parent)
+	if err != nil {
+		return false, err
+	}
+	defer w32.Free(descriptor)
+
+	restricted, err := token.Restricted(group)
+	if err != nil {
+		return false, err
+	}
+	defer restricted.Close()
+
+	impersonation, err := impersonationCopy(restricted)
+	if err != nil {
+		return false, err
+	}
+	defer impersonation.Close()
+
+	_, allowed, err := accessCheck(impersonation, descriptor, DeleteChild)
+	return allowed, err
 }

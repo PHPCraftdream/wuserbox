@@ -61,3 +61,9 @@ func (o Operation) onParent() bool { return o == Create }
 // changes reports whether the operation alters the object rather than reading
 // it, which is what the read-only mark stands in the way of.
 func (o Operation) changes() bool { return o == Write || o == Delete }
+
+// DeleteChild is the right to remove something from a directory. Windows
+// allows a deletion when the object itself may be deleted or when the
+// directory holding it carries this, so an answer about deleting has to ask
+// both questions.
+const DeleteChild uint32 = 0x40

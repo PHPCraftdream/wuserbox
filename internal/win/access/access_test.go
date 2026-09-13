@@ -10,6 +10,7 @@ import (
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
 const testGroup = "S-1-5-21-1111111111-2222222222-3333333333-909090"
@@ -246,5 +247,57 @@ func TestCheckIgnoresTheMarkOnDirectories(t *testing.T) {
 	}
 	if !result.Allowed {
 		t.Errorf("a writable directory was refused: %s", result.Reason)
+	}
+}
+
+// TestCheckSeesDeletionThroughTheParent is the regression guard for an answer
+// that knew only half the rule. Windows lets something go when the thing
+// itself may be deleted, or when the directory holding it may have things
+// removed from it. An answer that asked only about the file promised a refusal
+// that did not happen.
+func TestCheckSeesDeletionThroughTheParent(t *testing.T) {
+	granted, _ := prepared(t)
+	file := filepath.Join(granted, "child.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The file itself says no to everyone but its owner.
+	if err := acl.Protect(file); err != nil {
+		t.Fatal(err)
+	}
+	onTheFile, err := Check(testGroup, file, Delete)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Whatever the answer is, it has to match what happens. The directory was
+	// handed over with the ordinary permission, which does not carry the right
+	// to remove things from it, so the file stays.
+	if onTheFile.Allowed {
+		t.Errorf("deletion was allowed without either door being open: %s", onTheFile.Reason)
+	}
+
+	// Open the second door and the answer has to change. It takes both sides:
+	// a sandbox is bounded by its own permission and by the caller's, so the
+	// right to remove things from the directory has to be there for each.
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range []string{owner, testGroup} {
+		if err := acl.Set(granted, account, []acl.ACE{
+			{Access: acl.AccessModify | DeleteChild, Inheritance: acl.InheritObjects | acl.InheritContainers},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	throughParent, err := Check(testGroup, file, Delete)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !throughParent.Allowed {
+		t.Errorf("deletion through the directory was not noticed: %s", throughParent.Reason)
+	}
+	if !strings.Contains(throughParent.Reason, "directory holding it") {
+		t.Errorf("the reason does not say which door is open: %q", throughParent.Reason)
 	}
 }
