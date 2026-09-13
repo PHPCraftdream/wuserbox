@@ -35,7 +35,9 @@ func For(in Input) (Plan, error) {
 		if in.HomeWrites {
 			home := preset.Home()
 			p.add(home.Path, home.Kind, FromPreset)
-			p.Reserved = preset.Missing()
+			for _, entry := range preset.Missing() {
+				p.Reserved = append(p.Reserved, entry.Path)
+			}
 			p.Unreserved = preset.Shadowable()
 		}
 	}

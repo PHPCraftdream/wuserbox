@@ -50,9 +50,9 @@ func TestMissingListsNamesThatCanBeReserved(t *testing.T) {
 	if len(missing) == 0 {
 		t.Fatal("an empty profile root should offer names to reserve")
 	}
-	for _, path := range missing {
-		if filepath.Dir(path) != home {
-			t.Errorf("%s is not in the profile root", path)
+	for _, entry := range missing {
+		if filepath.Dir(entry.Path) != home {
+			t.Errorf("%s is not in the profile root", entry.Path)
 		}
 	}
 	// With nothing in place yet, every startup file is safe to reserve.
@@ -69,9 +69,9 @@ func TestMissingLeavesAStartupFileThatWouldHideAnother(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".profile"), []byte("export X=1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range Missing() {
-		if filepath.Base(path) == ".bash_profile" || filepath.Base(path) == ".bash_login" {
-			t.Errorf("%s would hide the existing .profile", path)
+	for _, entry := range Missing() {
+		if name := filepath.Base(entry.Path); name == ".bash_profile" || name == ".bash_login" {
+			t.Errorf("%s would hide the existing .profile", entry.Path)
 		}
 	}
 	var reported bool
@@ -97,5 +97,27 @@ func TestSensitiveListsOnlyWhatExists(t *testing.T) {
 	found := Sensitive()
 	if len(found) != 1 || filepath.Base(found[0]) != ".gitconfig" {
 		t.Errorf("got %v", found)
+	}
+}
+
+// TestMissingSaysWhichNamesAreDirectories is what keeps a reserved .ssh from
+// being taken as an empty file, which would break the tools that read it.
+func TestMissingSaysWhichNamesAreDirectories(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+
+	kinds := map[string]bool{}
+	for _, entry := range Missing() {
+		kinds[filepath.Base(entry.Path)] = entry.IsDirectory
+	}
+	for _, name := range []string{".ssh", ".gnupg", ".aws", ".azure", ".docker", ".kube"} {
+		if !kinds[name] {
+			t.Errorf("%s is not marked as a directory", name)
+		}
+	}
+	for _, name := range []string{".bashrc", ".gitconfig", ".netrc", ".wuserbox.ktav"} {
+		if kinds[name] {
+			t.Errorf("%s is marked as a directory", name)
+		}
 	}
 }
