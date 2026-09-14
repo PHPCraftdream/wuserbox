@@ -2,7 +2,7 @@ package usage
 
 import "strings"
 
-// Text is what "wuserbox help" prints. It is written for whoever reads it
+// Text is what "wuserbox --help" prints. It is written for whoever reads it
 // first after a write was refused, which is usually a coding agent rather than
 // a person, so it says what the boundary is and what to ask the user for.
 //
@@ -26,8 +26,8 @@ USAGE
   Commands carry a dash, and that is what tells them from a program:
   "wuserbox --list" asks wuserbox, "wuserbox list" starts a program called
   list. Nothing without a dash is a command, so a program is never shadowed
-  by one. The exception is "help", which is answered whichever way it is
-  written.
+  by one, help included: "wuserbox help" tries to run a program called help,
+  and "wuserbox --help" or "-h" is what asks.
 
 WHAT THIS MEANS FOR A PROGRAM RUNNING INSIDE
 
@@ -66,7 +66,7 @@ COMMANDS
 `
 
 const options = `
-  Run "wuserbox help <command>" for the full entry on any of them.
+  Run "wuserbox --help <command>" for the full entry on any of them.
 
 RUNNING AND CONFIGURING ARE SEPARATE
 

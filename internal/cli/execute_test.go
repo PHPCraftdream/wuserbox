@@ -21,9 +21,29 @@ func TestNoArgumentsIsReported(t *testing.T) {
 }
 
 func TestHelpSucceeds(t *testing.T) {
-	for _, spelling := range []string{"help", "-h", "--help"} {
+	for _, spelling := range []string{"-h", "--help"} {
 		if err := Execute([]string{spelling}); err != nil {
 			t.Errorf("%s: %v", spelling, err)
+		}
+	}
+}
+
+// TestBareHelpIsNotARequestForHelp is the regression guard for the one
+// exception the dash rule used to carry. "help" without a dash is a program
+// name like any other now, so asking for help needs "-h" or "--help".
+//
+// This checks the dispatch decision directly instead of going through
+// Execute: "help" resolves to a real program on an ordinary Windows install
+// (%SystemRoot%\System32\help.exe), so driving it through Run would risk
+// actually starting a sandboxed process and, on success, the os.Exit that
+// ends this test binary along with it.
+func TestBareHelpIsNotARequestForHelp(t *testing.T) {
+	if isHelpRequest("help") {
+		t.Error("bare \"help\" should not be recognized; only -h and --help are")
+	}
+	for _, spelling := range []string{"-h", "--help"} {
+		if !isHelpRequest(spelling) {
+			t.Errorf("%q should be recognized as a request for help", spelling)
 		}
 	}
 }
@@ -86,24 +106,24 @@ func TestHelpMarksTheSameCommandsAsPrivileged(t *testing.T) {
 
 func TestHelpForOneCommandSucceeds(t *testing.T) {
 	for _, entry := range usage.Commands {
-		if err := Execute([]string{"help", entry.Name}); err != nil {
+		if err := Execute([]string{"--help", entry.Name}); err != nil {
 			t.Errorf("help %s: %v", entry.Name, err)
 		}
 	}
 }
 
 func TestHelpResolvesAliases(t *testing.T) {
-	if err := Execute([]string{"help", "--add_dir"}); err != nil {
+	if err := Execute([]string{"--help", "--add_dir"}); err != nil {
 		t.Errorf("an alias was not resolved: %v", err)
 	}
 }
 
 func TestHelpRejectsAnUnknownCommand(t *testing.T) {
-	err := Execute([]string{"help", "frobnicate"})
+	err := Execute([]string{"--help", "frobnicate"})
 	if err == nil || !strings.Contains(err.Error(), "no command named") {
 		t.Errorf("got %v", err)
 	}
-	if err := Execute([]string{"help", "run", "extra"}); err == nil {
+	if err := Execute([]string{"--help", "run", "extra"}); err == nil {
 		t.Error("two arguments should have been rejected")
 	}
 }
@@ -134,7 +154,7 @@ func TestHelpAfterTheSeparatorBelongsToTheCommand(t *testing.T) {
 }
 
 // TestAPathNamedHelpIsNotARequestForHelp is the regression guard for a word
-// that was read as a question wherever it appeared. `wuserbox add-dir help
+// that was read as a question wherever it appeared. `wuserbox --add-dir help
 // --dir <project>` printed the help text, changed nothing and reported
 // success, so a command that had done none of its work looked as though it had.
 func TestAPathNamedHelpIsNotARequestForHelp(t *testing.T) {
@@ -168,8 +188,8 @@ func TestTheHelpFlagsStillAsk(t *testing.T) {
 // TestHelpForACommandIsStillReachable covers the way the word still works:
 // at the front, where it is dispatched before any command sees its arguments.
 func TestHelpForACommandIsStillReachable(t *testing.T) {
-	if err := Execute([]string{"help", "add-dir"}); err != nil {
-		t.Errorf("`wuserbox help add-dir` failed: %v", err)
+	if err := Execute([]string{"--help", "add-dir"}); err != nil {
+		t.Errorf("`wuserbox --help add-dir` failed: %v", err)
 	}
 	if err := Execute([]string{"--add-dir", "--help"}); err != nil {
 		t.Errorf("`wuserbox --add-dir --help` failed: %v", err)

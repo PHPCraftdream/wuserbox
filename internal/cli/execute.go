@@ -71,8 +71,7 @@ func Execute(args []string) error {
 		_, _ = io.WriteString(os.Stderr, usage.Text)
 		return exit.Errorf(exit.Usage, "no command given")
 	}
-	switch args[0] {
-	case "help", "-h", "--help":
+	if isHelpRequest(args[0]) {
 		return help(args[1:])
 	}
 	name, isCommand := commandFor(args[0])
@@ -97,6 +96,14 @@ func Execute(args []string) error {
 	return cmd.run(rest)
 }
 
+// isHelpRequest reports whether word is one of the two spellings that ask for
+// help at the front of the command line. "help" without a dash is not one of
+// them: nothing without a dash is a command, and that includes this one, so
+// it is read as a program like any other.
+func isHelpRequest(word string) bool {
+	return word == "-h" || word == "--help"
+}
+
 // help prints the overview, or the full entry for one command.
 func help(args []string) error {
 	switch len(args) {
@@ -110,12 +117,12 @@ func help(args []string) error {
 		}
 		detail, known := usage.Detail(name)
 		if !known {
-			return exit.Errorf(exit.NotFound, "no command named %q (try `wuserbox help` for the list)", args[0])
+			return exit.Errorf(exit.NotFound, "no command named %q (try `wuserbox --help` for the list)", args[0])
 		}
 		_, _ = io.WriteString(os.Stdout, detail)
 		return nil
 	default:
-		return exit.Errorf(exit.Usage, "usage: wuserbox help [command]")
+		return exit.Errorf(exit.Usage, "usage: wuserbox --help [command]")
 	}
 }
 
@@ -124,10 +131,11 @@ func help(args []string) error {
 // run rather than to wuserbox.
 //
 // Only the flags count, never the bare word. A directory may be called help,
-// and `wuserbox add-dir help --dir <project>` used to print the help text,
+// and `wuserbox --add-dir help --dir <project>` used to print the help text,
 // change nothing and report success: a command that looked as though it had
-// done its work. The word is still a way to ask, but at the front, where
-// `wuserbox help add-dir` is answered before any command sees its arguments.
+// done its work. Asking still works, but only with a dash, at the front,
+// where `wuserbox --help add-dir` is answered before any command sees its
+// arguments.
 func asksForHelp(args []string) bool {
 	for _, a := range args {
 		if a == "--" {

@@ -84,13 +84,15 @@ else.
 | `wuserbox --config show\|path\|validate` | read and check the rules file |
 | `wuserbox --audit [depth]` | list directories writable by Everyone |
 | `wuserbox --version` | show the release this build came from |
-| `wuserbox help [command]` | the overview, or the full entry for one command |
+| `wuserbox --help [command]` | the overview, or the full entry for one command |
 
 A command carries a dash, and that is what tells it from a program:
 `wuserbox --list` asks wuserbox, `wuserbox list` starts a program called list.
-Nothing without a dash is a command, so a program is never shadowed by one.
+Nothing without a dash is a command, so a program is never shadowed by one —
+help included: `wuserbox help` tries to run a program called help, and
+`wuserbox --help` or `-h` is what asks.
 
-Every command carries its own entry: `wuserbox help grant` prints what it
+Every command carries its own entry: `wuserbox --help grant` prints what it
 does, which options it reads, whether it asks for administrator rights and a
 few examples. `wuserbox --grant --help` prints the same thing. The overview is
 written for a coding agent that has just been refused a write: it says where

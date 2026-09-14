@@ -32,7 +32,7 @@ func TestOverviewTellsAnAgentWhatToAskFor(t *testing.T) {
 		"NOT inside the",
 		"WUSERBOX_DIR",
 		"refuse to run from inside a",
-		`Run "wuserbox help <command>"`,
+		`Run "wuserbox --help <command>"`,
 	} {
 		if !strings.Contains(Text, phrase) {
 			t.Errorf("the overview does not mention %q", phrase)
