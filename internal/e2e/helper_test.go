@@ -14,6 +14,8 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
 // testSID returns a SID that belongs to no account on this machine. Access
@@ -40,6 +42,18 @@ func newBox(t *testing.T) *box {
 	t.Helper()
 	root, err := paths.Resolve(t.TempDir())
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Everyone reads the whole tree, the way it reads Program Files. Without
+	// this, whether an un-granted file under root is readable at all depends
+	// on wherever the machine happens to keep its temporary directory: some
+	// redirect it somewhere ordinary users can read, and a real Windows
+	// profile's own %TEMP% grants nothing beyond its owner, system and
+	// administrators by default. These tests are about what a sandbox's
+	// restricted list does with a permission, not about that accident.
+	if err := acl.Set(root, sid.Everyone, []acl.ACE{
+		{Access: acl.AccessReadExecute, Inheritance: acl.InheritObjects | acl.InheritContainers},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	granted := filepath.Join(root, "project")
