@@ -12,6 +12,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 )
 
 // TestMain loads the rules parser before any test moves LOCALAPPDATA. The
@@ -329,4 +330,86 @@ func hold(name string) (func(), error) {
 			<-released
 		})
 	}, nil
+}
+
+// TestARuleAndItsPermissionCannotDisagree is the regression guard for the gap
+// between writing a rule and applying it. add-dir used to take one lock for the
+// rules file and another for the sandbox, and a remove-dir arriving between the
+// two deleted the rule and finished; the grant that followed then left a
+// writable directory that no rule accounted for, with both commands reporting
+// success.
+func TestARuleAndItsPermissionCannotDisagree(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", tempDir(t))
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
+	project, shared := tempDir(t), tempDir(t)
+	name, _, err := sandbox.Name(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &state.State{
+		Group: name,
+		SID:   "S-1-5-21-1111111111-2222222222-3333333333-242424",
+		Dir:   project,
+		Temp:  tempDir(t),
+	}
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Something else is working on this sandbox, so add-dir gets as far as the
+	// rule and then has to wait.
+	releaseSandbox, err := hold(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	added := make(chan error, 1)
+	go func() { added <- AddDir([]string{shared, "--dir", project}) }()
+	select {
+	case err := <-added:
+		releaseSandbox()
+		t.Fatalf("add-dir finished without waiting for the sandbox: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// remove-dir must not slip past it. If it can, it deletes the rule that
+	// add-dir has already written and the grant still lands afterwards.
+	removed := make(chan error, 1)
+	go func() { removed <- RemoveDir([]string{shared, "--dir", project}) }()
+	select {
+	case err := <-removed:
+		releaseSandbox()
+		t.Fatalf("remove-dir went ahead while add-dir was half done: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	releaseSandbox()
+	for _, done := range []chan error{added, removed} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("a command never finished after the sandbox was let go")
+		}
+	}
+
+	// Whichever order they finished in, the rules file and the permissions
+	// have to say the same thing.
+	rules, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := false
+	if rule := rules.RuleFor(project, false); rule != nil {
+		_, listed = rule.Kind(shared)
+	}
+	final, err := state.Load(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listed != final.Has(shared) {
+		t.Errorf("the rules file says %v and the sandbox says %v about %s",
+			listed, final.Has(shared), shared)
+	}
 }

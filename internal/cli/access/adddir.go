@@ -30,21 +30,38 @@ func AddDir(args []string) error {
 		held, _ := load(t.project) // a sandbox that does not exist yet holds nothing
 		return t.preview(planned(rules, held, t)...)
 	}
-	// The rules file is read, changed and written back as one operation: two
-	// commands doing that at once would each save a file built before the
-	// other's change, and one of the rules would be gone.
-	if err := state.Locked(state.RulesLock, func() error { return record(t) }); err != nil {
+	// The rule and the permission it stands for are one change, so one lock
+	// covers both. Writing the rule and then handing the directory over under
+	// a second lock leaves a gap: a remove-dir arriving in it deletes the rule
+	// and finishes, and the grant that follows leaves a writable directory no
+	// rule accounts for, with both commands reporting success.
+	//
+	// The rules file is taken first and the sandbox second, always in that
+	// order, so two commands can never hold one lock each and wait for the
+	// other's.
+	if err := state.Locked(state.RulesLock, func() error {
+		if err := record(t); err != nil {
+			return err
+		}
+		fmt.Printf("%s: %s -> %s (%s)\n", config.Path(), t.project, t.path, t.kind)
+		return grantIfBuilt(t)
+	}); err != nil {
 		return err
 	}
-	fmt.Printf("%s: %s -> %s (%s)\n", config.Path(), t.project, t.path, t.kind)
+	return nil
+}
 
+// grantIfBuilt hands the directory over when the sandbox already exists. A
+// project that has never been initialized needs nothing here: the rule is in
+// the file and the next run applies it.
+func grantIfBuilt(t target) error {
 	name, _, err := sandbox.Name(t.project)
 	if err != nil {
 		return err
 	}
 	s, err := state.Load(name)
 	if err != nil || s == nil {
-		return err // not initialized yet: the next run picks the rule up
+		return err
 	}
 	return Grant(t.args("grant")[1:])
 }

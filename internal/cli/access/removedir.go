@@ -32,11 +32,22 @@ func RemoveDir(args []string) error {
 			plan.Action{Does: "revoke", What: t.path},
 		)
 	}
-	// Held while the file is read again, changed and written back, so a rule
-	// another command adds at the same moment is not lost.
-	if err := state.Locked(state.RulesLock, func() error { return forget(t) }); err != nil {
-		return err
-	}
+	// One lock covers the rule and the permission it stands for, in the same
+	// order add-dir takes them: the rules file first, the sandbox second.
+	// Under two locks a gap opens between forgetting the rule and taking the
+	// directory back, and an add-dir arriving in it leaves a permission behind
+	// that no rule accounts for.
+	return state.Locked(state.RulesLock, func() error {
+		if err := forget(t); err != nil {
+			return err
+		}
+		return revokeIfHeld(t)
+	})
+}
+
+// revokeIfHeld takes the directory back when the sandbox holds it. A sandbox
+// that never held it, or was never built, needs nothing here.
+func revokeIfHeld(t target) error {
 	name, _, err := sandbox.Name(t.project)
 	if err != nil {
 		return err

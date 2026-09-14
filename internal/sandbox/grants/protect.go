@@ -38,14 +38,23 @@ func ProtectSettings(s *state.State) error {
 	return nil
 }
 
-// ensureRules writes an empty rules file when there is none.
+// ensureRules writes an empty rules file when there is none. It is held while
+// doing so, like every other change to that file, so it cannot overwrite a rule
+// another command is writing at the same moment.
 func ensureRules() error {
 	if _, err := os.Stat(config.Path()); err == nil {
 		return nil
 	}
-	rules, err := config.Load()
-	if err != nil {
-		return err
-	}
-	return rules.Save()
+	return state.Locked(state.RulesLock, func() error {
+		// Asked again inside the lock: whoever held it may have been creating
+		// the very file this was about to create.
+		if _, err := os.Stat(config.Path()); err == nil {
+			return nil
+		}
+		rules, err := config.Load()
+		if err != nil {
+			return err
+		}
+		return rules.Save()
+	})
 }
