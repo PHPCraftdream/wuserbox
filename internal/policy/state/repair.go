@@ -91,8 +91,14 @@ func (s *State) settle(path string) error {
 // They are why the sandbox exists, and a project that happens to sit inside a
 // directory being narrowed is not what anyone means to take away.
 func (s *State) narrow(path string) error {
-	for _, held := range append([]grant.Spec(nil), s.Grants...) {
-		if !inside(held.Path, path) || s.isOwn(held.Path) {
+	for _, listed := range append([]grant.Spec(nil), s.Grants...) {
+		// The list is walked over a copy, for the same reason FinishPending
+		// walks one: narrowing one entry can recurse into finish, which can
+		// narrow a directory inside it and remove entries this loop has not
+		// reached yet. Without looking each one up again, this loop would act
+		// on an entry a nested call already took back, and find it gone.
+		held, still := s.current(listed.Path)
+		if !still || !inside(held.Path, path) || s.isOwn(held.Path) {
 			continue
 		}
 		if !held.Kind.Writable() {

@@ -768,6 +768,54 @@ func TestNarrowingFinishesAChildsUnappliedRefusal(t *testing.T) {
 	}
 }
 
+// TestNarrowingHandlesANestedPendingChildRemovingAGrandchild is the
+// regression guard for narrow() acting on a copy of its own list without
+// looking each entry up again, the same flaw FinishPending was fixed against
+// at its own level. Narrowing a parent can meet a child that is itself
+// pending and still writable on disk; finishing that child recurses into
+// narrow(child), which removes a grandchild — handed out to the child on its
+// own, separately from the parent — from the real record. The outer
+// narrow(parent), still working from the snapshot it started with, then tried
+// to remove that same grandchild again, found it gone, and failed before the
+// parent's own change was ever settled.
+func TestNarrowingHandlesANestedPendingChildRemovingAGrandchild(t *testing.T) {
+	s := newState(t)
+	parent := t.TempDir()
+	child := filepath.Join(parent, "child")
+	leaf := filepath.Join(child, "leaf")
+	if err := os.MkdirAll(leaf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(child, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(leaf, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	// What an interrupted narrowing of the child leaves: read-only and marked
+	// in the record, still writable on disk.
+	index, _ := s.find(child)
+	s.Grants[index].Kind = grant.RO
+	s.Grants[index].Pending = true
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Add(parent, grant.RO); err != nil {
+		t.Fatalf("narrowing the parent failed: %v", err)
+	}
+	if index, found := s.find(parent); !found || s.Grants[index].Pending {
+		t.Error("the parent's own change is still marked as unfinished")
+	}
+	answer, err := access.Check(s.SID, leaf, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Allowed {
+		t.Errorf("the grandchild is still writable after the parent was narrowed: %s", answer.Reason)
+	}
+}
+
 // TestOfferManyRecordsAndAppliesEveryDirectory covers the path a sandbox is
 // built through: several directories handed over at once, each applied and
 // each left in the record with no mark on it.
