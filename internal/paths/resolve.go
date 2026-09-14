@@ -20,34 +20,57 @@ import (
 //
 // When a spelling is ambiguous every reading is tried and the one that exists
 // on disk wins, so `/c/tools` finds C:\tools without guessing.
+//
+// A path that already names something is taken as written. A directory may
+// legitimately be called project$TAG or %build%, and reading a real name as a
+// variable would quietly send the caller somewhere else.
 func Resolve(input string) (string, error) {
 	raw := strings.TrimSpace(input)
 	raw = strings.Trim(raw, `"'`)
 	if raw == "" {
 		return "", fmt.Errorf("empty path")
 	}
-	raw = expandVariables(raw)
 	raw = strings.TrimPrefix(raw, `\\?\`)
-
-	for _, candidate := range candidates(raw) {
-		if _, err := os.Stat(candidate); err == nil {
-			return Normalize(candidate)
-		}
+	if found, ok := onDisk(raw); ok {
+		return Normalize(found)
+	}
+	expanded := strings.TrimPrefix(expandVariables(raw), `\\?\`)
+	if found, ok := onDisk(expanded); ok {
+		return Normalize(found)
 	}
 	// Nothing exists yet: keep the most likely reading so the caller can
 	// report a sensible error or create the directory.
-	return Normalize(candidates(raw)[0])
+	return Normalize(candidates(expanded)[0])
+}
+
+// onDisk returns the first reading of p that names something.
+func onDisk(p string) (string, bool) {
+	for _, candidate := range candidates(p) {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, true
+		}
+	}
+	return "", false
 }
 
 // expandVariables handles both %NAME% and $NAME spellings, plus a leading ~.
+//
+// A name that is not set is left alone in either spelling. Replacing it with
+// nothing would turn C:\build\$STAGE into C:\build\, which is a real directory
+// and the wrong one.
 func expandVariables(p string) string {
-	p = percentVariable.ReplaceAllStringFunc(p, func(m string) string {
-		if value, ok := os.LookupEnv(strings.Trim(m, "%")); ok {
-			return value
-		}
-		return m
+	replace := func(expression *regexp.Regexp, nameOf func(string) string) {
+		p = expression.ReplaceAllStringFunc(p, func(m string) string {
+			if value, ok := os.LookupEnv(nameOf(m)); ok {
+				return value
+			}
+			return m
+		})
+	}
+	replace(percentVariable, func(m string) string { return strings.Trim(m, "%") })
+	replace(shellVariable, func(m string) string {
+		return strings.Trim(strings.TrimPrefix(m, "$"), "{}")
 	})
-	p = os.ExpandEnv(p)
 	if p == "~" {
 		return Home()
 	}
@@ -57,7 +80,10 @@ func expandVariables(p string) string {
 	return p
 }
 
-var percentVariable = regexp.MustCompile(`%[A-Za-z_][A-Za-z0-9_()]*%`)
+var (
+	percentVariable = regexp.MustCompile(`%[A-Za-z_][A-Za-z0-9_()]*%`)
+	shellVariable   = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*`)
+)
 
 // candidates lists the readings of a path, most likely first.
 func candidates(p string) []string {

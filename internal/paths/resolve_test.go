@@ -142,3 +142,63 @@ func TestResolveKeepsUnknownPathsUsable(t *testing.T) {
 		t.Errorf("got %q, want %q", got, missing)
 	}
 }
+
+// TestResolveKeepsALiteralDollarInAnExistingName is the regression guard for a
+// path that was expanded before anyone asked whether it already named
+// something. A directory called project$TAG resolved to project, so a sandbox
+// meant for one project was built for another project.
+func TestResolveKeepsALiteralDollarInAnExistingName(t *testing.T) {
+	for _, name := range []string{"project$WUSERBOX_UNSET", "build%WUSERBOX_UNSET%", "stage${WUSERBOX_UNSET}"} {
+		dir := filepath.Join(t.TempDir(), name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		want, err := Normalize(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := Resolve(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("%s resolved to %s", want, got)
+		}
+	}
+}
+
+// TestResolveLeavesAnUnsetVariableAlone covers the path that does not exist
+// yet. Replacing an unset name with nothing would turn C:\build\$STAGE into
+// C:\build, which is a real directory and the wrong one.
+func TestResolveLeavesAnUnsetVariableAlone(t *testing.T) {
+	parent := t.TempDir()
+	for _, spelling := range []string{"$WUSERBOX_UNSET", "${WUSERBOX_UNSET}", "%WUSERBOX_UNSET%"} {
+		got, err := Resolve(filepath.Join(parent, spelling))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(got, "WUSERBOX_UNSET") {
+			t.Errorf("%s resolved to %s, losing the name that was never set", spelling, got)
+		}
+	}
+}
+
+// TestResolveStillExpandsAVariableThatIsSet keeps the fix from taking the
+// expansion away: a name that is set is still replaced, in every spelling.
+func TestResolveStillExpandsAVariableThatIsSet(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WUSERBOX_TEST_ROOT", dir)
+	want, err := Normalize(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, spelling := range []string{"$WUSERBOX_TEST_ROOT", "${WUSERBOX_TEST_ROOT}", "%WUSERBOX_TEST_ROOT%"} {
+		got, err := Resolve(spelling)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("%s resolved to %s, want %s", spelling, got, want)
+		}
+	}
+}
