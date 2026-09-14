@@ -1,11 +1,13 @@
 package diagnose
 
 import (
+	"flag"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
 	"github.com/PHPCraftdream/wuserbox/internal/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
@@ -495,5 +497,25 @@ func TestExplainStillAsksADirectoryAboutCreating(t *testing.T) {
 		t.Error("a directory the sandbox can create files in was reported as read-only")
 	} else if !strings.Contains(note, "create") {
 		t.Errorf("the note does not name the operation that is allowed: %s", note)
+	}
+}
+
+// TestTheHelpListsExactlyTheFlagsDiagnoseTakes holds explain, check and config
+// to their entries, for the reason the others are held to theirs: the options
+// in the help are written by hand and nothing else keeps them true.
+func TestTheHelpListsExactlyTheFlagsDiagnoseTakes(t *testing.T) {
+	explain, _ := explainFlags()
+	ask, _ := checkFlags()
+	rules, _ := configFlags("show")
+	for command, flags := range map[string]*flag.FlagSet{
+		"explain": explain, "check": ask, "config": rules,
+	} {
+		undocumented, missing := usage.Mismatch(command, flags)
+		if len(undocumented) > 0 {
+			t.Errorf("%s takes %v, which its help never mentions", command, undocumented)
+		}
+		if len(missing) > 0 {
+			t.Errorf("the help offers %v on %s, which it would reject", missing, command)
+		}
 	}
 }

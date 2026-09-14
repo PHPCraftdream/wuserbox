@@ -25,11 +25,7 @@ import (
 // The answer is in the exit code as well as the output: allowed, refused, or
 // the question could not be asked.
 func Check(args []string) error {
-	flags := flag.NewFlagSet("check", flag.ContinueOnError)
-	usage.Quiet(flags)
-	operation := flags.String("operation", "write", "read, write, create or delete")
-	project := flags.String("dir", "", "project whose sandbox is meant")
-	asJSON := flags.Bool("json", false, "print the result as JSON")
+	flags, o := checkFlags()
 	options, operands := split(args)
 	if err := flags.Parse(options); err != nil {
 		return exit.Errorf(exit.Usage, "%v", err)
@@ -38,7 +34,7 @@ func Check(args []string) error {
 		return exit.Errorf(exit.Usage,
 			"usage: wuserbox --check <path> [--operation read|write|create|delete] [--dir project] [--json]")
 	}
-	wanted, err := access.Parse(*operation)
+	wanted, err := access.Parse(o.operation)
 	if err != nil {
 		return exit.Errorf(exit.Usage, "%v", err)
 	}
@@ -46,7 +42,7 @@ func Check(args []string) error {
 	if err != nil {
 		return err
 	}
-	s, err := sandboxOf(*project)
+	s, err := sandboxOf(o.dir)
 	if err != nil {
 		return err
 	}
@@ -54,13 +50,32 @@ func Check(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := printCheck(result, *asJSON); err != nil {
+	if err := printCheck(result, o.asJSON); err != nil {
 		return err
 	}
 	if !result.Allowed {
 		return exit.Errorf(exit.Denied, "%s on %s is refused", result.Operation, result.Path)
 	}
 	return nil
+}
+
+// question is every flag check reads.
+type question struct {
+	operation string
+	dir       string
+	asJSON    bool
+}
+
+// checkFlags builds that set, apart from the parsing, so a test can walk the
+// flags the command really takes and hold the help to exactly those.
+func checkFlags() (*flag.FlagSet, *question) {
+	flags := flag.NewFlagSet("check", flag.ContinueOnError)
+	usage.Quiet(flags)
+	o := &question{}
+	flags.StringVar(&o.operation, "operation", "write", "read, write, create or delete")
+	flags.StringVar(&o.dir, "dir", "", "project whose sandbox is meant")
+	flags.BoolVar(&o.asJSON, "json", false, "print the result as JSON")
+	return flags, o
 }
 
 func printCheck(result access.Result, asJSON bool) error {

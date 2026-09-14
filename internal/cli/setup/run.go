@@ -60,23 +60,32 @@ func Run(args []string) error {
 // a flag on one run and forgotten on the next is a sandbox nobody can reason
 // about.
 func onlyRunning(options sandbox.Options) error {
-	for _, configuring := range []struct {
-		used    bool
-		flag    string
-		instead string
-	}{
-		{len(options.RW) > 0, "--rw", "wuserbox --add-dir <dir>"},
-		{len(options.RO) > 0, "--ro", "wuserbox --add-dir <dir> --ro"},
-		{options.NoAI, "--no-ai", "wuserbox --init --no-ai"},
-		{options.HomeWrites, "--home-writes", "wuserbox --init --home-writes"},
-	} {
-		if configuring.used {
+	for _, configuring := range configuringFlags {
+		if configuring.used(options) {
 			return exit.Errorf(exit.Usage,
-				"%s says what the sandbox is, not how to run it; use `%s` first",
+				"--%s says what the sandbox is, not how to run it; use `%s` first",
 				configuring.flag, configuring.instead)
 		}
 	}
 	return nil
+}
+
+// configuringFlags are the flags a run knows only in order to turn down. They
+// belong to init, and a run parses them so that naming one is answered with
+// where it belongs rather than with "flag provided but not defined".
+//
+// A run's help entry therefore does not list them, and must not: they are not
+// options of running. This is the one list saying so, and the test that holds
+// each command's help to its flag set reads it here rather than repeating it.
+var configuringFlags = []struct {
+	flag    string
+	instead string
+	used    func(sandbox.Options) bool
+}{
+	{"rw", "wuserbox --add-dir <dir>", func(o sandbox.Options) bool { return len(o.RW) > 0 }},
+	{"ro", "wuserbox --add-dir <dir> --ro", func(o sandbox.Options) bool { return len(o.RO) > 0 }},
+	{"no-ai", "wuserbox --init --no-ai", func(o sandbox.Options) bool { return o.NoAI }},
+	{"home-writes", "wuserbox --init --home-writes", func(o sandbox.Options) bool { return o.HomeWrites }},
 }
 
 // notAProgram explains a first word that is neither a command nor anything

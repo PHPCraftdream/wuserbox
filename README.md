@@ -82,9 +82,10 @@ else.
 | `wuserbox --explain` | what this sandbox may touch, and why |
 | `wuserbox --check <path> --operation write` | ask whether one thing would be allowed |
 | `wuserbox --config show\|path\|validate` | read and check the rules file |
-| `wuserbox --audit [depth]` | list directories writable by Everyone |
+| `wuserbox --audit [depth]` | list directories writable by Everyone or `BUILTIN\Users` |
 | `wuserbox --version` | show the release this build came from |
 | `wuserbox --help [command]` | the overview, or the full entry for one command |
+| `wuserbox --help --all` | the whole manual: every entry, the rules file and the environment |
 
 A command carries a dash, and that is what tells it from a program:
 `wuserbox --list` asks wuserbox, `wuserbox list` starts a program called list.
@@ -93,10 +94,18 @@ help included: `wuserbox help` tries to run a program called help, and
 `wuserbox --help` or `-h` is what asks.
 
 Every command carries its own entry: `wuserbox --help grant` prints what it
-does, which options it reads, whether it asks for administrator rights and a
-few examples. `wuserbox --grant --help` prints the same thing. The overview is
-written for a coding agent that has just been refused a write: it says where
-the boundary is and which command to ask the user for.
+does, which options it reads, what it returns in its exit code, whether it asks
+for administrator rights and a few examples. `wuserbox --grant --help` prints
+the same thing. The overview is written for a coding agent that has just been
+refused a write: it says where the boundary is and which command to ask the
+user for.
+
+`wuserbox --help --all` prints all of it at once — every entry in full,
+followed by the format of the rules file and the environment wuserbox sets and
+reads. Nothing in it is written twice: the manual, the overview and the single
+entries are all rendered from one list, and a test holds each command's
+documented options to the flags it really registers, so the manual cannot fall
+behind the program.
 
 Running and configuring are separate. Starting a program takes the sandbox as
 it stands and changes nothing, so a run has no options that decide what may be
@@ -191,10 +200,28 @@ handing a directory over rewrites its whole permission list:
   touched it — a handed-down entry is a copy belonging to the parent — and
   Windows adds up every entry that matches, so the writable copy would have
   won back the part the narrowed one gave up;
-* nothing is *added* for those two. A directory they could not read stays one
-  they cannot read: widening is not isolating;
+* everything **below** is walked as well. Handing an entry down replaces only
+  the handed-down part of what is underneath, so a subdirectory with a
+  writable entry of its own keeps it, and every sandbox keeps reaching it.
+  This is what makes a grant take as long as it does on a large tree;
+* the right to rewrite a permission list counts as a changing right, and so
+  does taking ownership. Either one is enough on its own: a sandbox left
+  holding it hands itself the rest;
+* nothing is *added* for those two, and nothing is replaced: the changing
+  rights are taken out of what an entry already covers, and an entry left
+  with nothing goes. A directory they could not read stays one they cannot
+  read, because handing them reading in the name of narrowing is a widening
+  with better manners;
 * whatever was taken from them is handed back to the person doing the granting
   by name, so a grant never costs somebody the directory they were granting.
+
+Taking a directory back reaches as far as handing it over did. Pinning a
+granted directory's list copies into it whatever it was being handed at the
+time — including another sandbox's entry, where the directory sits inside one
+that sandbox holds. A copy answers to nobody: rewriting the directory above it
+no longer reaches it. So revoking a directory, or narrowing it to read-only,
+also takes that sandbox's own entries off everything underneath, except where
+the record says it was granted something inside in its own right.
 
 Reading is untouched by any of this: a sandbox still reads everything its
 user can read that `Everyone`, `BUILTIN\Users`, or its own account already
@@ -253,6 +280,27 @@ by hand. Paths are stored with forward slashes, because ktav reads a backslash a
 an escape, but every spelling above is accepted when the file is read, in the
 `dir` key as well as in the lists.
 
+## Environment
+
+Set for the program running inside a sandbox:
+
+| Variable | Holds |
+| --- | --- |
+| `WUSERBOX_DIR` | the project directory the sandbox belongs to |
+| `WUSERBOX_GROUP` | the name of the sandbox, which is also its group |
+| `TEMP`, `TMP` | the sandbox's own temporary directory, which `--rm` deletes |
+
+Read by wuserbox itself:
+
+| Variable | Effect |
+| --- | --- |
+| `WUSERBOX_CONFIG` | the rules file to read, instead of the one in the profile root |
+| `WUSERBOX_NON_INTERACTIVE` | set by `--non-interactive`, and passed on, so a command that re-runs itself with more rights never stops at a dialog |
+
+A program can tell it is inside a sandbox by `WUSERBOX_DIR` being set. What it
+may write is not in the environment and cannot be changed from there;
+`wuserbox --explain` is how to read it, from outside.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -282,13 +330,31 @@ returned, so the code you read after it is the sandboxed program's own.
   change, without that directory ever having been granted. Many machines ship
   `C:\ProgramData` that way. `wuserbox --audit` lists what it finds under
   either. So the guarantee to hold wuserbox to is **a sandbox cannot change
-  what the machine does not already let every local account change** —
-  somebody's own files, another sandbox's files, and anything named to its
-  owner alone are outside a sandbox's reach; a shared drop box is not.
-* **A directory inside a granted tree that switched inheritance off keeps its
-  own permissions**, so if those permissions hand `Everyone` or `Users` write
-  access, the point above applies to it as well, even though everything around
-  it was normalised.
+  what the machine does not already let every local account change, anywhere
+  it was not handed** — somebody's own files, another sandbox's files, and
+  anything named to its owner alone are outside a sandbox's reach; a shared
+  drop box that was never granted is not.
+
+  Inside a granted tree this does not apply: handing a directory over reaches
+  everything under it, so a subdirectory somebody left open to `Everyone` or
+  `Users` is narrowed along with the rest.
+
+  Only those two. A directory writable by some other group — `Authenticated
+  Users`, which several machines grant on a second drive — is out of a
+  sandbox's reach anyway, because a sandbox's restricted list does not carry
+  it, so `--audit` does not list it either.
+
+  **An AppContainer would close this, and would cost the other half of the
+  tool.** An AppContainer token ignores `Everyone` and `BUILTIN\Users`
+  entirely: it reaches a file only through the package's own identifier or
+  through `ALL APPLICATION PACKAGES`. Windows puts that on `C:\Windows\System32`
+  and `C:\Program Files`, measured on this machine, so the system and the
+  toolchain would still be readable. It is not on a Windows profile and not on
+  an ordinary data directory — also measured — so reading would stop being
+  free: every directory the sandbox reads would have to be granted first, and
+  "reads everything you can read" is the promise this tool opens with. Closing
+  the shared-writable hole that way makes a different, narrower tool, so it is
+  not a change to make quietly on top of this one.
 * **`HKEY_CURRENT_USER` is read-only.** Command-line tools rarely care;
   anything that saves settings in the registry will fail to.
 * **Interface isolation is weak.** A sandboxed process shares your desktop and

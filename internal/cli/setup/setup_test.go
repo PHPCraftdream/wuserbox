@@ -1,12 +1,14 @@
 package setup
 
 import (
+	"flag"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
 	"github.com/PHPCraftdream/wuserbox/internal/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
@@ -504,5 +506,71 @@ func TestRebuildOptionsLeavesANewSandboxAlone(t *testing.T) {
 	}
 	if got := rebuildOptions(plainRun, &state.State{NoAI: false}); got.NoAI {
 		t.Error("NoAI should stay false when the record agrees with the run")
+	}
+}
+
+// TestTheHelpListsExactlyTheFlagsSetupTakes holds init, run and rm to their
+// entries. The options in the help are written by hand; without this, a command
+// can gain a flag the manual never mentions or keep one it no longer reads.
+func TestTheHelpListsExactlyTheFlagsSetupTakes(t *testing.T) {
+	initFlags, _ := sharedFlags("init")
+	checkAgainstHelp(t, "init", initFlags, nil)
+	rm, _ := rmFlags()
+	checkAgainstHelp(t, "rm", rm, nil)
+
+	// A run shares init's flag set and turns four of them down by name, so that
+	// asking for one is answered with where it belongs. Its entry does not list
+	// them, because they are not options of running — and the exception is read
+	// from the list that defines it rather than written out again here, so a
+	// fifth one cannot be added without this seeing it.
+	refused := map[string]bool{}
+	for _, configuring := range configuringFlags {
+		refused[configuring.flag] = true
+	}
+	run, _ := sharedFlags("run")
+	checkAgainstHelp(t, "run", run, refused)
+}
+
+func checkAgainstHelp(t *testing.T, command string, flags *flag.FlagSet, refused map[string]bool) {
+	t.Helper()
+	undocumented, missing := usage.Mismatch(command, flags)
+	for _, name := range undocumented {
+		if refused[name] {
+			continue
+		}
+		t.Errorf("%s takes --%s, which its help never mentions", command, name)
+	}
+	if len(missing) > 0 {
+		t.Errorf("the help offers %v on %s, which it would reject", missing, command)
+	}
+}
+
+// TestARefusedFlagIsRefusedBySomethingTheHelpAgreesWith keeps the exception
+// above from becoming a hiding place: a flag a run turns down has to actually
+// be turned down, with the message that says where it belongs.
+func TestARefusedFlagIsRefusedBySomethingTheHelpAgreesWith(t *testing.T) {
+	for _, configuring := range configuringFlags {
+		options := sandbox.Options{}
+		switch configuring.flag {
+		case "rw":
+			options.RW = []string{`C:\tools`}
+		case "ro":
+			options.RO = []string{`C:\tools`}
+		case "no-ai":
+			options.NoAI = true
+		case "home-writes":
+			options.HomeWrites = true
+		default:
+			t.Fatalf("--%s is refused by a run, and this test does not know how to set it", configuring.flag)
+		}
+		err := onlyRunning(options)
+		if err == nil {
+			t.Errorf("--%s was accepted by a run", configuring.flag)
+			continue
+		}
+		if !strings.Contains(err.Error(), configuring.instead) {
+			t.Errorf("--%s is refused without saying to use %q: %v",
+				configuring.flag, configuring.instead, err)
+		}
 	}
 }

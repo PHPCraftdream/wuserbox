@@ -42,6 +42,7 @@ command line starts the program.`,
 			{"--quiet", "no progress messages, errors only"},
 			{"--non-interactive", "fail instead of asking for administrator rights"},
 		},
+		Exits: "Whatever the program inside returned, so the code you read is its own.",
 		Examples: []string{
 			`wuserbox claude`,
 			`wuserbox npm test`,
@@ -102,6 +103,13 @@ machine; use "--add-dir" for that.
 Administrator rights are asked for only if you do not own the target
 directory.
 
+Handing a directory over rewrites the permissions of everything in it,
+not only of the directory itself, so that no sandbox reaches it through
+a permission left lying about: anything letting "Everyone" or
+"BUILTIN\Users" change something is narrowed, above and below. That is
+why the first grant on a large tree takes a while. Reading is left as
+it was, and nothing is opened up that was not open before.
+
 What you ask for here outranks the agent preset. Narrowing one of the
 directories the preset hands over, say "--grant ~/.claude --ro", stays
 narrow: later runs apply the preset again and leave your decision alone.`,
@@ -126,6 +134,13 @@ narrow: later runs apply the preset again and leave your decision alone.`,
 		Detail: `Removes the sandbox's permission on a directory and forgets it. The
 directory itself is untouched; only the permission entry for the
 project's group goes away.
+
+It reaches inside as well. A directory handed to another sandbox keeps
+a permission list of its own, which may hold a copy of what this
+sandbox had at the time, and rewriting the directory above it would
+not reach that copy. Anything still naming this sandbox underneath is
+taken away too, except a directory inside that this same sandbox was
+granted in its own right.
 
 A directory listed in the rules file comes back on the next run. Use
 "--remove-dir" to forget it there as well.`,
@@ -244,6 +259,7 @@ what a second run needs to finish the removal.`,
 			{"--non-interactive", "fail instead of asking for administrator rights"},
 			{"--dir <d>", "project to remove (default: the current directory)"},
 		},
+		Exits: "1 when something would not go and the sandbox is left for a second attempt.",
 		Examples: []string{
 			`wuserbox --rm`,
 			`wuserbox --rm --dir C:\projects\old`,
@@ -251,12 +267,18 @@ what a second run needs to finish the removal.`,
 	},
 	{
 		Name:    "audit",
-		Summary: "list directories writable by Everyone",
+		Summary: "list directories writable by Everyone or BUILTIN\\Users",
 		Call:    "--audit [depth]",
-		Detail: `Walks the fixed drives and prints the directories that Everyone may
-write to. Those stay writable inside a sandbox as well, because Everyone
-has to be one of the restricting identifiers for programs to start at
-all, so this is the list of places the boundary does not cover.
+		Detail: `Walks the fixed drives and prints the directories that Everyone or
+BUILTIN\Users may write to, saying which of the two it found. Those stay
+writable inside a sandbox as well, because both have to be restricting
+identifiers for a program to start at all and to read the system it runs
+on, so this is the list of places the boundary does not cover.
+
+Nothing else is listed. A directory writable by some other group — by
+"Authenticated Users", say, which several machines grant on a second
+drive — is not reachable from inside a sandbox, because a sandbox's
+restricted list does not carry it.
 
 The depth is how many levels below each drive root to look; two by
 default. A larger number takes longer.`,
@@ -303,13 +325,14 @@ trace.
 This is the honest way to find out before trying. For a path that does
 not exist, "create" asks about the directory that would hold it.
 
-The answer is in the exit code as well as the text: 0 allowed, 3
-refused, 1 the question could not be asked.`,
+The answer is in the exit code as well as the text, so a script can act
+on it without reading the output.`,
 		Options: []Option{
 			{"--operation <op>", "read, write, create or delete (default: write)"},
 			{"--dir <d>", "project whose sandbox is meant (default: the current directory)"},
 			{"--json", "print the answer as JSON instead of lines"},
 		},
+		Exits: "0 allowed, 3 refused, 1 the question could not be asked.",
 		Examples: []string{
 			`wuserbox --check C:\build\out --operation create`,
 			`wuserbox --check .\notes.md --operation write`,
@@ -342,6 +365,7 @@ validate, rather than passing for having nothing to check.`,
 			{"--dir <d>", "show or check one project's rule only"},
 			{"--json", "print the result as JSON instead of lines"},
 		},
+		Exits: "5 when the file does not parse or contradicts itself, 6 when a named project has no rule.",
 		Examples: []string{
 			`wuserbox --config show`,
 			`wuserbox --config path`,

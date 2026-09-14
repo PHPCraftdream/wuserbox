@@ -30,35 +30,50 @@ func (r *repeated) Set(v string) error { *r = append(*r, v); return nil }
 // the program's own arguments — "wuserbox git checkout -- file.txt" — is never
 // looked at, so it reaches the program exactly as typed.
 func ParseOptions(name string, args []string) (sandbox.Options, []string, error) {
-	var rw, ro repeated
-	flags := flag.NewFlagSet(name, flag.ContinueOnError)
-	usage.Quiet(flags)
-	dir := flags.String("dir", "", "project directory")
-	noAI := flags.Bool("no-ai", false, "skip the preset for AI agent directories")
-	homeWrites := flags.Bool("home-writes", false, "let the sandbox create files in the profile root")
-	quiet := flags.Bool("quiet", false, "no progress messages, errors only")
-	nonInteractive := flags.Bool("non-interactive", false, "fail instead of asking for administrator rights")
-	dryRun := flags.Bool("dry-run", false, "show what would change, change nothing")
-	asJSON := flags.Bool("json", false, "print the result as JSON")
-	flags.Var(&rw, "rw", "extra writable directory")
-	flags.Var(&ro, "ro", "extra readable directory")
+	flags, o := sharedFlags(name)
 	if err := flags.Parse(args); err != nil {
 		return sandbox.Options{}, nil, exit.Errorf(exit.Usage, "%v", err)
 	}
-	if *dir == "" {
+	if o.dir == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return sandbox.Options{}, nil, err
 		}
-		*dir = cwd
+		o.dir = cwd
 	}
-	if *nonInteractive {
+	if o.nonInteractive {
 		_ = os.Setenv(EnvNonInteractive, "1")
 	}
 	options := sandbox.Options{
-		Dir: *dir, RW: rw, RO: ro,
-		NoAI: *noAI, HomeWrites: *homeWrites, Quiet: *quiet,
-		DryRun: *dryRun, JSON: *asJSON,
+		Dir: o.dir, RW: o.rw, RO: o.ro,
+		NoAI: o.noAI, HomeWrites: o.homeWrites, Quiet: o.quiet,
+		DryRun: o.dryRun, JSON: o.asJSON,
 	}
 	return options, flags.Args(), nil
+}
+
+// shared is every flag init and run read.
+type shared struct {
+	rw, ro                         repeated
+	dir                            string
+	noAI, homeWrites, quiet        bool
+	nonInteractive, dryRun, asJSON bool
+}
+
+// sharedFlags builds that set. It stands apart from the parsing so a test can
+// walk the flags a command really takes and hold the help to exactly those.
+func sharedFlags(name string) (*flag.FlagSet, *shared) {
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
+	usage.Quiet(flags)
+	o := &shared{}
+	flags.StringVar(&o.dir, "dir", "", "project directory")
+	flags.BoolVar(&o.noAI, "no-ai", false, "skip the preset for AI agent directories")
+	flags.BoolVar(&o.homeWrites, "home-writes", false, "let the sandbox create files in the profile root")
+	flags.BoolVar(&o.quiet, "quiet", false, "no progress messages, errors only")
+	flags.BoolVar(&o.nonInteractive, "non-interactive", false, "fail instead of asking for administrator rights")
+	flags.BoolVar(&o.dryRun, "dry-run", false, "show what would change, change nothing")
+	flags.BoolVar(&o.asJSON, "json", false, "print the result as JSON")
+	flags.Var(&o.rw, "rw", "extra writable directory")
+	flags.Var(&o.ro, "ro", "extra readable directory")
+	return flags, o
 }

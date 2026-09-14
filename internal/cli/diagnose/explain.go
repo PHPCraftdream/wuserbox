@@ -40,14 +40,11 @@ type Report struct {
 // Explain prints what a sandbox may touch and where each permission came
 // from, and checks each one against Windows rather than trusting the record.
 func Explain(args []string) error {
-	flags := flag.NewFlagSet("explain", flag.ContinueOnError)
-	usage.Quiet(flags)
-	project := flags.String("dir", "", "project to explain")
-	asJSON := flags.Bool("json", false, "print the result as JSON")
+	flags, o := explainFlags()
 	if err := flags.Parse(args); err != nil {
 		return exit.Errorf(exit.Usage, "%v", err)
 	}
-	s, err := sandboxOf(*project)
+	s, err := sandboxOf(o.dir)
 	if err != nil {
 		return err
 	}
@@ -55,7 +52,25 @@ func Explain(args []string) error {
 	if err != nil {
 		return err
 	}
-	return printReport(report, *asJSON)
+	return printReport(report, o.asJSON)
+}
+
+// narrowing is every flag explain and config read: which project, and what
+// shape the answer takes.
+type narrowing struct {
+	dir    string
+	asJSON bool
+}
+
+// explainFlags builds explain's set, apart from the parsing, so a test can
+// walk it.
+func explainFlags() (*flag.FlagSet, *narrowing) {
+	flags := flag.NewFlagSet("explain", flag.ContinueOnError)
+	usage.Quiet(flags)
+	o := &narrowing{}
+	flags.StringVar(&o.dir, "dir", "", "project to explain")
+	flags.BoolVar(&o.asJSON, "json", false, "print the result as JSON")
+	return flags, o
 }
 
 func build(s *state.State) (Report, error) {

@@ -111,6 +111,14 @@ func help(args []string) error {
 		_, _ = io.WriteString(os.Stdout, usage.Text)
 		return nil
 	case 1:
+		// The whole manual, for a reader with nothing else to hand. It carries
+		// a dash like everything else that asks wuserbox something, so the bare
+		// word stays free: "wuserbox --help all" still reports that there is no
+		// command called all, rather than quietly printing this instead.
+		if args[0] == "--all" {
+			_, _ = io.WriteString(os.Stdout, usage.Full())
+			return nil
+		}
 		name, isCommand := commandFor(args[0])
 		if !isCommand {
 			name = args[0]

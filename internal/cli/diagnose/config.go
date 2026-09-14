@@ -24,16 +24,24 @@ type Complaint struct {
 	Message string `json:"message"`
 }
 
+// configFlags builds config's set, apart from the parsing, so a test can walk
+// it. The action is only in the name a parse error carries.
+func configFlags(action string) (*flag.FlagSet, *narrowing) {
+	flags := flag.NewFlagSet("config "+action, flag.ContinueOnError)
+	usage.Quiet(flags)
+	o := &narrowing{}
+	flags.StringVar(&o.dir, "dir", "", "limit the command to one project's rule")
+	flags.BoolVar(&o.asJSON, "json", false, "print the result as JSON")
+	return flags, o
+}
+
 // Config reads the rules file: show it, say where it is, or check it.
 func Config(args []string) error {
 	if len(args) == 0 {
 		return exit.Errorf(exit.Usage, "usage: wuserbox --config show|path|validate [--dir project] [--json]")
 	}
 	action, rest := args[0], args[1:]
-	flags := flag.NewFlagSet("config "+action, flag.ContinueOnError)
-	usage.Quiet(flags)
-	project := flags.String("dir", "", "limit the command to one project's rule")
-	asJSON := flags.Bool("json", false, "print the result as JSON")
+	flags, o := configFlags(action)
 	if err := flags.Parse(rest); err != nil {
 		return exit.Errorf(exit.Usage, "%v", err)
 	}
@@ -42,9 +50,9 @@ func Config(args []string) error {
 		fmt.Println(config.Path())
 		return nil
 	case "show":
-		return showRules(*project, *asJSON)
+		return showRules(o.dir, o.asJSON)
 	case "validate":
-		return validateRules(*project, *asJSON)
+		return validateRules(o.dir, o.asJSON)
 	default:
 		return exit.Errorf(exit.Usage, "unknown config action %q (show, path or validate)", action)
 	}

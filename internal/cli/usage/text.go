@@ -72,7 +72,10 @@ COMMANDS
 `
 
 const options = `
-  Run "wuserbox --help <command>" for the full entry on any of them.
+  Run "wuserbox --help <command>" for the full entry on any of them, or
+  "wuserbox --help --all" for every entry at once, followed by the format of
+  the rules file and the environment wuserbox sets and reads. That is the
+  whole manual, and it needs nothing else to hand.
 
 RUNNING AND CONFIGURING ARE SEPARATE
 

@@ -128,7 +128,7 @@ func TestDetailRendersTheWholeEntry(t *testing.T) {
 	if !known {
 		t.Fatal("run has no entry")
 	}
-	for _, heading := range []string{"USAGE", "DESCRIPTION", "OPTIONS", "EXAMPLES"} {
+	for _, heading := range []string{"USAGE", "DESCRIPTION", "OPTIONS", "EXAMPLES", "EXIT CODES"} {
 		if !strings.Contains(rendered, heading) {
 			t.Errorf("the entry for run has no %s section", heading)
 		}
@@ -155,6 +155,97 @@ func TestDetailWarnsAboutElevationAndAboutTheSandbox(t *testing.T) {
 	plain, _ := Detail("version")
 	if strings.Contains(plain, "NOTES") {
 		t.Error("a command with nothing to warn about should have no notes")
+	}
+}
+
+// TestFullBeginsWithTheOverview keeps the manual usable from the top: whoever
+// reads it meets the same orientation the short help gives before the entries
+// start.
+func TestFullBeginsWithTheOverview(t *testing.T) {
+	if !strings.HasPrefix(Full(), Text) {
+		t.Error("the manual does not open with the overview")
+	}
+	if !strings.HasSuffix(Full(), "\n") {
+		t.Error("the manual should end with a newline")
+	}
+}
+
+// TestFullCarriesEveryEntryWhole is what makes the manual worth printing: not a
+// summary of each command but the entry itself, character for character, so
+// there is nothing a reader would have to go and ask for separately.
+func TestFullCarriesEveryEntryWhole(t *testing.T) {
+	manual := Full()
+	for _, command := range Commands {
+		entry, known := Detail(command.Name)
+		if !known {
+			t.Errorf("%q has no entry at all", command.Name)
+			continue
+		}
+		if !strings.Contains(manual, entry) {
+			t.Errorf("the manual does not carry the entry for %q whole", command.Name)
+		}
+	}
+}
+
+// TestFullSeparatesTheEntries keeps one command's examples from reading as the
+// next command's, which is the only way a single stream of entries misleads.
+func TestFullSeparatesTheEntries(t *testing.T) {
+	// One before each entry, and one more before the reference that closes it.
+	if got, want := strings.Count(Full(), rule), len(Commands)+1; got != want {
+		t.Errorf("the manual has %d separators, want %d", got, want)
+	}
+}
+
+// TestFullCarriesWhatNothingElseSays covers the two things wuserbox knows about
+// itself and never told anyone: the shape of the rules file, and the
+// environment it sets and reads. They belong to the manual rather than to the
+// overview, which is read by somebody who needs one answer quickly.
+func TestFullCarriesWhatNothingElseSays(t *testing.T) {
+	manual := Full()
+	for _, phrase := range []string{
+		"THE RULES FILE",
+		"projects: [",
+		"dir: C:/projects/app",
+		"forward slashes",
+		"ENVIRONMENT",
+		"WUSERBOX_DIR",
+		"WUSERBOX_GROUP",
+		"WUSERBOX_CONFIG",
+		"WUSERBOX_NON_INTERACTIVE",
+		"TEMP, TMP",
+	} {
+		if !strings.Contains(manual, phrase) {
+			t.Errorf("the manual says nothing about %q", phrase)
+		}
+	}
+	// And the overview stays the short answer it is for.
+	if strings.Contains(Text, "THE RULES FILE") {
+		t.Error("the reference has moved into the overview")
+	}
+}
+
+// TestEveryEntryAnswersAboutItsExitCode keeps a single entry readable on its
+// own: a command with codes of its own says them, and one without says that
+// too, so nobody has to guess which kind they are looking at.
+func TestEveryEntryAnswersAboutItsExitCode(t *testing.T) {
+	for _, command := range Commands {
+		rendered, _ := Detail(command.Name)
+		if !strings.Contains(rendered, "EXIT CODES") {
+			t.Errorf("the entry for %q says nothing about its exit code", command.Name)
+		}
+		if command.Exits != "" && !strings.Contains(rendered, command.Exits) {
+			t.Errorf("the entry for %q does not carry its own codes", command.Name)
+		}
+	}
+	// The commands that answer in their exit code have to say so.
+	for _, name := range []string{"run", "check", "config", "rm"} {
+		entry, known := Detail(name)
+		if !known {
+			t.Fatalf("%q has no entry", name)
+		}
+		if strings.Contains(entry, "The common set, with nothing of its own") {
+			t.Errorf("%q returns a code of its own, and its entry does not say which", name)
+		}
 	}
 }
 

@@ -19,6 +19,11 @@ type Command struct {
 	Options []Option
 	// Examples are complete command lines, most useful first.
 	Examples []string
+	// Exits are the codes this command returns that the common set does not
+	// cover, written as one line. Most commands have none and say so, which is
+	// the point: an entry read on its own should never leave a reader guessing
+	// whether the command has an answer of its own in its exit code.
+	Exits string
 	// Default marks the command wuserbox carries out when the first word is
 	// not a command at all. Its call and its examples are therefore written
 	// without a name in front, which is the shape people will type.
@@ -53,6 +58,13 @@ func (c Command) String() string {
 			b.WriteString("  " + e + "\n")
 		}
 	}
+	b.WriteString("\nEXIT CODES\n")
+	if c.Exits != "" {
+		b.WriteString("  " + c.Exits + "\n")
+	} else {
+		b.WriteString("  The common set, with nothing of its own.\n")
+	}
+	b.WriteString("  Run \"wuserbox --help\" for what each code means.\n")
 	if notes := c.notes(); notes != "" {
 		b.WriteString("\nNOTES\n" + notes)
 	}

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
 	"github.com/PHPCraftdream/wuserbox/internal/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
@@ -441,8 +442,14 @@ func TestTheShapeOfTheAnswerTravelsWithTheArguments(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%v does not parse back: %v", rebuilt, err)
 		}
-		if !back.asJSON || back.kind != asked.kind {
+		if !back.asJSON {
 			t.Errorf("the request came back as %+v", back)
+		}
+		// The kind only travels where the command reads it. Taking a directory
+		// back has no read-only half, and rebuilding the line with --ro would
+		// now be rejected by the very command the elevated attempt re-runs.
+		if readOnlyApplies(command) && back.kind != asked.kind {
+			t.Errorf("the kind came back as %q, want %q", back.kind, asked.kind)
 		}
 	}
 
@@ -451,6 +458,47 @@ func TestTheShapeOfTheAnswerTravelsWithTheArguments(t *testing.T) {
 	for _, arg := range plain.args("grant") {
 		if arg == "--json" {
 			t.Error("a plain request was rebuilt as a JSON one")
+		}
+	}
+}
+
+// TestTheHelpListsExactlyTheFlagsTheseCommandsTake holds the manual to what the
+// commands really are. The options in the help are written by hand, so nothing
+// else stops one from drifting: --ro was registered on all four of these and
+// read by two, which made "wuserbox --revoke <dir> --ro" a flag that looked as
+// though it narrowed what was taken back and did nothing at all.
+func TestTheHelpListsExactlyTheFlagsTheseCommandsTake(t *testing.T) {
+	for _, command := range []string{"grant", "revoke", "add-dir", "remove-dir"} {
+		flags, _ := targetFlags(command)
+		undocumented, missing := usage.Mismatch(command, flags)
+		if len(undocumented) > 0 {
+			t.Errorf("%s takes %v, which its help never mentions", command, undocumented)
+		}
+		if len(missing) > 0 {
+			t.Errorf("the help offers %v on %s, which it would reject", missing, command)
+		}
+	}
+}
+
+// TestTakingADirectoryBackHasNoReadOnlyHalf is the regression guard for a flag
+// that was accepted and ignored. Revoking and forgetting a directory take the
+// whole of it back; --ro on either used to parse, change nothing, and report
+// success, so a command line that read as though it narrowed what was withdrawn
+// withdrew everything.
+func TestTakingADirectoryBackHasNoReadOnlyHalf(t *testing.T) {
+	for _, command := range []string{"revoke", "remove-dir"} {
+		if _, err := parseTarget(command, []string{tempDir(t), "--ro"}); err == nil {
+			t.Errorf("wuserbox --%s <dir> --ro was accepted", command)
+		}
+	}
+	// And it still means something where it does.
+	for _, command := range []string{"grant", "add-dir"} {
+		got, err := parseTarget(command, []string{tempDir(t), "--ro"})
+		if err != nil {
+			t.Fatalf("%s: %v", command, err)
+		}
+		if got.kind != grant.RO {
+			t.Errorf("%s read --ro as %q", command, got.kind)
 		}
 	}
 }

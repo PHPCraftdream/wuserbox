@@ -28,17 +28,30 @@ import (
 // Granting a profile does not: its owner may do that themselves, which is why
 // the two are asked separately.
 func EnsureReadGroup() error {
-	return lock.Hold(group.ReadGroup, func() error {
-		home, err := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	return ensureReadable(group.ReadGroup, home)
+}
+
+// ensureReadable is the whole of it, with the two machine-wide names handed in
+// rather than reached for.
+//
+// They are parameters so the mechanism can be exercised at all. Reaching for
+// the real group and the real profile directly left both halves of this
+// untestable: the branch that creates the group never ran anywhere the group
+// already existed, which is every machine that had run wuserbox once, and the
+// branch that grants a profile could only be tried by granting the profile of
+// whoever was running the tests.
+func ensureReadable(name, home string) error {
+	return lock.Hold(name, func() error {
+		account, err := sid.Lookup(name)
 		if err != nil {
-			return err
-		}
-		account, err := sid.Lookup(group.ReadGroup)
-		if err != nil {
-			if err := group.Add(group.ReadGroup, "wuserbox: reads a profile from inside a sandbox"); err != nil {
+			if err := group.Add(name, "wuserbox: reads a profile from inside a sandbox"); err != nil {
 				return err
 			}
-			if account, err = sid.Lookup(group.ReadGroup); err != nil {
+			if account, err = sid.Lookup(name); err != nil {
 				return err
 			}
 		}

@@ -17,11 +17,17 @@ type Sandbox struct {
 	Dir   string `json:"dir"`
 }
 
-// List prints every sandbox on this machine.
-func List(args []string) error {
+// listFlags builds list's set, apart from the parsing, so a test can walk the
+// flags the command really takes and hold the help to exactly those.
+func listFlags() (*flag.FlagSet, *bool) {
 	flags := flag.NewFlagSet("list", flag.ContinueOnError)
 	usage.Quiet(flags)
-	asJSON := flags.Bool("json", false, "print the list as JSON")
+	return flags, flags.Bool("json", false, "print the list as JSON")
+}
+
+// List prints every sandbox on this machine.
+func List(args []string) error {
+	flags, asJSON := listFlags()
 	if err := flags.Parse(args); err != nil {
 		return exit.Errorf(exit.Usage, "%v", err)
 	}

@@ -112,6 +112,23 @@ func TestHelpForOneCommandSucceeds(t *testing.T) {
 	}
 }
 
+// TestHelpForEverythingAtOnceSucceeds covers the shape a reader reaches for
+// when they have no idea what to ask about yet.
+func TestHelpForEverythingAtOnceSucceeds(t *testing.T) {
+	if err := Execute([]string{"--help", "--all"}); err != nil {
+		t.Errorf("the whole manual: %v", err)
+	}
+	if err := Execute([]string{"-h", "--all"}); err != nil {
+		t.Errorf("the short spelling: %v", err)
+	}
+	// The bare word is not this command, for the same reason no bare word is:
+	// it would shadow a directory or a program called all.
+	err := Execute([]string{"--help", "all"})
+	if err == nil || !strings.Contains(err.Error(), "no command named") {
+		t.Errorf(`"--help all" should report an unknown command, got %v`, err)
+	}
+}
+
 func TestHelpResolvesAliases(t *testing.T) {
 	if err := Execute([]string{"--help", "--add_dir"}); err != nil {
 		t.Errorf("an alias was not resolved: %v", err)

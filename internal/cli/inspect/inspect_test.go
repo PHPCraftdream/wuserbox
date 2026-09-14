@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
 	"github.com/PHPCraftdream/wuserbox/internal/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 )
@@ -89,5 +90,17 @@ func TestFlagFailuresAreUsageFailures(t *testing.T) {
 		if got := exit.Of(run([]string{"--nonsense"})); got != exit.Usage {
 			t.Errorf("%s gave %v, want %v", name, got, exit.Usage)
 		}
+	}
+}
+
+// TestTheHelpListsExactlyTheFlagsListTakes holds list to its entry.
+func TestTheHelpListsExactlyTheFlagsListTakes(t *testing.T) {
+	flags, _ := listFlags()
+	undocumented, missing := usage.Mismatch("list", flags)
+	if len(undocumented) > 0 {
+		t.Errorf("list takes %v, which its help never mentions", undocumented)
+	}
+	if len(missing) > 0 {
+		t.Errorf("the help offers %v on list, which it would reject", missing)
 	}
 }

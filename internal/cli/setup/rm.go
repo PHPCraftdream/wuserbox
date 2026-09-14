@@ -21,13 +21,7 @@ import (
 // Rm deletes a sandbox: every permission it applied, its temp directory, its
 // bookkeeping and the group itself.
 func Rm(args []string) error {
-	flags := flag.NewFlagSet("rm", flag.ContinueOnError)
-	usage.Quiet(flags)
-	dir := flags.String("dir", "", "project directory")
-	dryRun := flags.Bool("dry-run", false, "show what would change, change nothing")
-	asJSON := flags.Bool("json", false, "print the result as JSON")
-	nonInteractive := flags.Bool("non-interactive", false,
-		"fail instead of asking for administrator rights")
+	flags, o := rmFlags()
 	if err := flags.Parse(args); err != nil {
 		return exit.Errorf(exit.Usage, "%v", err)
 	}
@@ -39,10 +33,10 @@ func Rm(args []string) error {
 			"wuserbox --rm takes no directory as an argument; "+
 				"name the project with --dir %s", flags.Arg(0))
 	}
-	if *nonInteractive {
+	if o.nonInteractive {
 		_ = os.Setenv(EnvNonInteractive, "1")
 	}
-	project := *dir
+	project := o.dir
 	if project == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -54,13 +48,32 @@ func Rm(args []string) error {
 	if err != nil {
 		return err
 	}
-	if *dryRun {
-		return previewRemoval(name, *asJSON)
+	if o.dryRun {
+		return previewRemoval(name, o.asJSON)
 	}
 	if !token.IsAdmin() {
 		return Elevate([]string{"--rm", "--dir", project})
 	}
-	return removeSandbox(name, *asJSON)
+	return removeSandbox(name, o.asJSON)
+}
+
+// removal is every flag rm reads.
+type removal struct {
+	dir                            string
+	dryRun, asJSON, nonInteractive bool
+}
+
+// rmFlags builds that set, apart from the parsing, so a test can walk it.
+func rmFlags() (*flag.FlagSet, *removal) {
+	flags := flag.NewFlagSet("rm", flag.ContinueOnError)
+	usage.Quiet(flags)
+	o := &removal{}
+	flags.StringVar(&o.dir, "dir", "", "project directory")
+	flags.BoolVar(&o.dryRun, "dry-run", false, "show what would change, change nothing")
+	flags.BoolVar(&o.asJSON, "json", false, "print the result as JSON")
+	flags.BoolVar(&o.nonInteractive, "non-interactive", false,
+		"fail instead of asking for administrator rights")
+	return flags, o
 }
 
 // removeSandbox does the deleting, once the right to do it is established.
