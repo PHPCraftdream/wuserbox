@@ -448,3 +448,52 @@ func TestExplainAcceptsAReadOnlyRecordThatHoldsUp(t *testing.T) {
 		t.Errorf("a sound read-only permission was called broken: %s", note)
 	}
 }
+
+// TestExplainJudgesAReadOnlyFileByTheFileItself is the regression guard for a
+// check that asked a single file whether something could be created. Creating
+// is a question about the directory that would hold the new thing, so a file
+// held read-only inside a project the sandbox may write to was reported as
+// writable because a neighbor could be made beside it.
+func TestExplainJudgesAReadOnlyFileByTheFileItself(t *testing.T) {
+	const account = "S-1-5-21-1111111111-2222222222-3333333333-222222"
+	project := t.TempDir()
+	guarded := filepath.Join(project, "settings.json")
+	if err := os.WriteFile(guarded, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &state.State{Group: "wub-ro-file", SID: account, Dir: project, Temp: t.TempDir()}
+	if err := s.Add(project, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(guarded, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+	if ok, note := inForce(account, grant.Spec{Path: guarded, Kind: grant.RO}); !ok {
+		t.Errorf("a file that is genuinely read-only was called broken: %s", note)
+	}
+
+	// Writing it must still be refused, or the check would say nothing at all.
+	writable, err := access.Check(account, guarded, access.Write)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writable.Allowed {
+		t.Error("the file was writable, so this test proves nothing")
+	}
+}
+
+// TestExplainStillAsksADirectoryAboutCreating keeps the narrowing from going
+// too far: a directory recorded as read-only that the sandbox can create files
+// in is still reported as not in force.
+func TestExplainStillAsksADirectoryAboutCreating(t *testing.T) {
+	const account = "S-1-5-21-1111111111-2222222222-3333333333-232323"
+	dir := t.TempDir()
+	if err := grant.Apply(account, dir, grant.HomeTop); err != nil {
+		t.Fatal(err)
+	}
+	if ok, note := inForce(account, grant.Spec{Path: dir, Kind: grant.RO}); ok {
+		t.Error("a directory the sandbox can create files in was reported as read-only")
+	} else if !strings.Contains(note, "create") {
+		t.Errorf("the note does not name the operation that is allowed: %s", note)
+	}
+}

@@ -329,3 +329,56 @@ func TestCheckSeesDeletionThroughTheParent(t *testing.T) {
 		t.Errorf("the reason does not say which door is open: %q", throughParent.Reason)
 	}
 }
+
+// TestCheckHonoursTheReadOnlyMarkOnDeletionThroughTheParent is the regression
+// guard for an answer that stopped as soon as the second door was open. A file
+// marked read-only is refused by the file system whatever a permission says,
+// including a deletion the holding directory would otherwise allow, and the
+// check promised one that a real attempt did not get.
+func TestCheckHonoursTheReadOnlyMarkOnDeletionThroughTheParent(t *testing.T) {
+	granted, _ := prepared(t)
+	file := filepath.Join(granted, "locked.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Open the door on the directory for both sides, so deletion would be
+	// allowed if the file were an ordinary one.
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range []string{owner, testGroup} {
+		if err := acl.Set(granted, account, []acl.ACE{
+			{Access: acl.AccessModify | DeleteChild, Inheritance: acl.InheritObjects | acl.InheritContainers},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// And close the file itself, so the only way in is through the directory.
+	if err := acl.Protect(file); err != nil {
+		t.Fatal(err)
+	}
+	through, err := deleteThroughParent(testGroup, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !through {
+		t.Skip("this machine does not pass the right to remove things down, " +
+			"so the door this test is about cannot be opened here")
+	}
+
+	if err := os.Chmod(file, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(file, 0o644) }()
+	answer, err := Check(testGroup, file, Delete)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Allowed {
+		t.Errorf("a read-only file was reported as deletable: %s", answer.Reason)
+	}
+	if !strings.Contains(answer.Reason, "read-only") {
+		t.Errorf("the reason does not mention the mark: %q", answer.Reason)
+	}
+}

@@ -75,6 +75,7 @@ func Check(group string, path string, operation Operation) (Result, error) {
 		return result, err
 	}
 	result.Allowed = allowed
+	through := ""
 	// Deleting has two doors. Windows lets something go when the thing itself
 	// may be deleted, or when the directory holding it may have things
 	// removed from it, and an answer that knew only the first would promise a
@@ -82,16 +83,20 @@ func Check(group string, path string, operation Operation) (Result, error) {
 	if !allowed && operation == Delete {
 		if throughParent, err := deleteThroughParent(group, target); err == nil && throughParent {
 			result.Allowed = true
-			result.Reason = "the directory holding it lets the sandbox remove what is inside"
-			return result, nil
+			through = "the directory holding it lets the sandbox remove what is inside"
 		}
 	}
-	// The permission list is not the whole story. A file marked read-only is
-	// refused by the file system whatever the permissions say, so an answer
-	// that looked only at the list would promise a write that cannot happen.
-	if allowed && operation.changes() && readOnlyAttribute(target) {
+	// The permission list is not the whole story, and it is the last word on
+	// neither door. A file marked read-only is refused by the file system
+	// whatever any permission says, so the mark is applied to the answer both
+	// doors arrive at rather than to one of them.
+	if result.Allowed && operation.changes() && readOnlyAttribute(target) {
 		result.Allowed = false
 		result.Reason = "the permissions allow it, but the file is marked read-only"
+		return result, nil
+	}
+	if through != "" {
+		result.Reason = through
 		return result, nil
 	}
 	if allowed {

@@ -143,6 +143,12 @@ func inForce(account string, held grant.Spec) (bool, string) {
 	// so asking only about writing would call that directory read-only while
 	// the sandbox fills it with files.
 	//
+	// Creating is asked about a directory alone. It is a question about the
+	// thing that would hold what is created, so putting it to a single file
+	// asks about the directory around it instead: a file held read-only
+	// inside a project the sandbox may write to would be called writable
+	// because a neighbor could be made beside it.
+	//
 	// Deleting the path itself is left out, and deliberately. Windows lets
 	// something go when the directory holding it may have things removed
 	// from it, whatever the thing's own entries say, so a read-only entry
@@ -150,7 +156,7 @@ func inForce(account string, held grant.Spec) (bool, string) {
 	// would report every such entry as broken on the machines that pass the
 	// right down, and a read-only entry does not promise what it cannot
 	// deliver.
-	for _, changing := range []access.Operation{access.Write, access.Create} {
+	for _, changing := range changingOperations(held.Path) {
 		answer, err := access.Check(account, held.Path, changing)
 		if err != nil {
 			return false, err.Error()
@@ -161,6 +167,15 @@ func inForce(account string, held grant.Spec) (bool, string) {
 		}
 	}
 	return true, ""
+}
+
+// changingOperations lists what has to be refused for a path to count as
+// read-only: writing it, and creating in it when it is a directory.
+func changingOperations(path string) []access.Operation {
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return []access.Operation{access.Write, access.Create}
+	}
+	return []access.Operation{access.Write}
 }
 
 func printReport(report Report, asJSON bool) error {
