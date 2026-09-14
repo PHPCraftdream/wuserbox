@@ -354,3 +354,97 @@ func TestEveryKindHasAnOperationThatProvesIt(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateScopedToAProjectIgnoresAnotherOne is the regression guard for a
+// check that read the flag and then threw it away: asking about a sound
+// project failed because a different project in the same file had a mistake.
+func TestValidateScopedToAProjectIgnoresAnotherOne(t *testing.T) {
+	sound, broken, tools := t.TempDir(), t.TempDir(), t.TempDir()
+	useRules(t, &config.Config{Projects: []config.Rule{
+		{Dir: sound, RW: []string{tools}},
+		{Dir: broken, RW: []string{tools}, RO: []string{tools}},
+	}})
+	if err := Config([]string{"validate", "--dir", sound}); err != nil {
+		t.Errorf("checking a project in order failed over another project's mistake: %v", err)
+	}
+	err := Config([]string{"validate", "--dir", broken})
+	if got := exit.Of(err); got != exit.BadConfig {
+		t.Errorf("the broken project passed: exit code %v, want %v", got, exit.BadConfig)
+	}
+	if err := Config([]string{"validate"}); exit.Of(err) != exit.BadConfig {
+		t.Error("the whole file should still fail when any project is broken")
+	}
+}
+
+// TestValidateScopedToAProjectWithoutARuleSaysSo keeps the flag meaning the
+// same thing in both actions: show reports a project with no rule rather than
+// printing nothing, and a check that silently passed would be worse.
+func TestValidateScopedToAProjectWithoutARuleSaysSo(t *testing.T) {
+	useRules(t, &config.Config{Projects: []config.Rule{{Dir: t.TempDir()}}})
+	err := Config([]string{"validate", "--dir", t.TempDir()})
+	if got := exit.Of(err); got != exit.NotFound {
+		t.Errorf("exit code is %v, want %v", got, exit.NotFound)
+	}
+}
+
+// TestValidateScopedToAProjectStillFindsARepeatedRule covers why the whole
+// file is inspected before the answer is narrowed: a second rule for the same
+// project is invisible to anything that only looks at the first.
+func TestValidateScopedToAProjectStillFindsARepeatedRule(t *testing.T) {
+	project, tools := t.TempDir(), t.TempDir()
+	useRules(t, &config.Config{Projects: []config.Rule{
+		{Dir: project, RW: []string{tools}},
+		{Dir: project, RW: []string{tools}},
+	}})
+	err := Config([]string{"validate", "--dir", project})
+	if got := exit.Of(err); got != exit.BadConfig {
+		t.Errorf("exit code is %v, want %v", got, exit.BadConfig)
+	}
+}
+
+// TestExplainNoticesCreationUnderAReadOnlyRecord is the regression guard for a
+// check that asked only about a plain write. A permission that creates files
+// without creating subdirectories is refused a write and allowed a create, so
+// a directory recorded as read-only while actually holding home-top was
+// reported as being in good order.
+func TestExplainNoticesCreationUnderAReadOnlyRecord(t *testing.T) {
+	const account = "S-1-5-21-1111111111-2222222222-3333333333-181818"
+	dir := t.TempDir()
+	s := &state.State{Group: "wub-ro-record", SID: account, Dir: t.TempDir(), Temp: t.TempDir()}
+	// The record says read-only; the file system says otherwise. That is the
+	// drift the report exists to catch, so it is built rather than asked for.
+	if err := grant.Apply(account, dir, grant.HomeTop); err != nil {
+		t.Fatal(err)
+	}
+	s.Grants = []grant.Spec{{Path: dir, Kind: grant.RO}}
+
+	inForce, note := inForce(account, s.Grants[0])
+	if inForce {
+		t.Fatal("a directory the sandbox can create files in was reported as read-only")
+	}
+	if !strings.Contains(note, "create") {
+		t.Errorf("the note does not name the operation that is allowed: %s", note)
+	}
+}
+
+// TestExplainAcceptsAReadOnlyRecordThatHoldsUp keeps the stricter check from
+// calling a sound read-only permission broken, including one that sits inside
+// a directory the sandbox may write to.
+func TestExplainAcceptsAReadOnlyRecordThatHoldsUp(t *testing.T) {
+	const account = "S-1-5-21-1111111111-2222222222-3333333333-191919"
+	project := t.TempDir()
+	inner := filepath.Join(project, "reference")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := &state.State{Group: "wub-ro-sound", SID: account, Dir: project, Temp: t.TempDir()}
+	if err := s.Add(project, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(inner, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+	if ok, note := inForce(account, grant.Spec{Path: inner, Kind: grant.RO}); !ok {
+		t.Errorf("a sound read-only permission was called broken: %s", note)
+	}
+}

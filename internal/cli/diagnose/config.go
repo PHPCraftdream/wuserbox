@@ -34,7 +34,7 @@ func Config(args []string) error {
 	flags := flag.NewFlagSet("config "+action, flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	flags.Usage = func() { _, _ = io.WriteString(os.Stderr, usage.Text) }
-	project := flags.String("dir", "", "show the rule for one project only")
+	project := flags.String("dir", "", "limit the command to one project's rule")
 	asJSON := flags.Bool("json", false, "print the result as JSON")
 	if err := flags.Parse(rest); err != nil {
 		return exit.Errorf(exit.Usage, "%v", err)
@@ -46,7 +46,7 @@ func Config(args []string) error {
 	case "show":
 		return showRules(*project, *asJSON)
 	case "validate":
-		return validateRules(*asJSON)
+		return validateRules(*project, *asJSON)
 	default:
 		return exit.Errorf(exit.Usage, "unknown config action %q (show, path or validate)", action)
 	}
@@ -92,7 +92,7 @@ func showRules(project string, asJSON bool) error {
 	return nil
 }
 
-func validateRules(asJSON bool) error {
+func validateRules(project string, asJSON bool) error {
 	rules, err := config.Load()
 	if err != nil {
 		complaints := []Complaint{{Kind: "syntax", Message: err.Error()}}
@@ -102,6 +102,12 @@ func validateRules(asJSON bool) error {
 		return exit.Errorf(exit.BadConfig, "%s does not parse", config.Path())
 	}
 	complaints := inspectRules(rules)
+	if project != "" {
+		complaints, err = onlyFor(complaints, rules, project)
+		if err != nil {
+			return err
+		}
+	}
 	if err := printComplaints(complaints, asJSON); err != nil {
 		return err
 	}
@@ -111,6 +117,28 @@ func validateRules(asJSON bool) error {
 		}
 	}
 	return nil
+}
+
+// onlyFor keeps the complaints belonging to one project.
+//
+// The whole file is inspected first and narrowed afterwards, rather than
+// inspected in part: a project written out twice is only visible when every
+// rule has been read, and that mistake belongs to the project it repeats.
+func onlyFor(complaints []Complaint, rules *config.Config, project string) ([]Complaint, error) {
+	_, dir, err := sandbox.Name(project)
+	if err != nil {
+		return nil, err
+	}
+	if rules.RuleFor(dir, false) == nil {
+		return nil, exit.Errorf(exit.NotFound, "%s has no rule in %s", dir, config.Path())
+	}
+	kept := make([]Complaint, 0, len(complaints))
+	for _, complaint := range complaints {
+		if complaint.Project != "" && config.SamePath(complaint.Project, dir) {
+			kept = append(kept, complaint)
+		}
+	}
+	return kept, nil
 }
 
 // inspectRules looks for the mistakes a hand-edited file collects: the same

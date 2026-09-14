@@ -133,14 +133,24 @@ func inForce(account string, held grant.Spec) (bool, string) {
 		}
 		return true, ""
 	}
-	// For a read-only entry the question is the other way round: writing has
-	// to be refused, or the record is claiming less than the sandbox holds.
-	writable, err := access.Check(account, held.Path, access.Write)
-	if err != nil {
-		return false, err.Error()
-	}
-	if writable.Allowed {
-		return false, "recorded as read-only, but the sandbox can write to it"
+	// For a read-only entry the question is the other way round: every
+	// operation that changes something has to be refused, or the record is
+	// claiming less than the sandbox holds.
+	//
+	// Each one is asked about separately, because they do not imply one
+	// another. A permission that creates files in a directory without
+	// creating subdirectories is refused a plain write and allowed a create,
+	// so asking only about writing would call that directory read-only while
+	// the sandbox fills it with files.
+	for _, changing := range []access.Operation{access.Write, access.Create, access.Delete} {
+		answer, err := access.Check(account, held.Path, changing)
+		if err != nil {
+			return false, err.Error()
+		}
+		if answer.Allowed {
+			return false, "recorded as read-only, but the sandbox can " +
+				string(changing) + " it: " + answer.Reason
+		}
 	}
 	return true, ""
 }
