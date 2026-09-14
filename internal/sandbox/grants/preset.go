@@ -45,19 +45,19 @@ func pathsOf(s *state.State) []string {
 // Reapply puts every recorded permission back on the file system, whatever
 // the record claims about it. It is how init repairs a sandbox whose entries
 // were changed or removed behind its back.
+//
+// Applied straight from the record, and several at a time: putting a
+// permission back does not change what the record says about it, including
+// whether it was asked for by hand, so nothing here has to be serialized.
 func Reapply(s *state.State) error {
-	for _, held := range append([]grant.Spec(nil), s.Grants...) {
+	var present []grant.Spec
+	for _, held := range s.Grants {
 		if _, err := os.Stat(held.Path); err != nil {
 			continue // gone; the record is kept, there is nothing to apply to
 		}
-		// Applied straight from the record: putting a permission back does
-		// not change what the record says about it, including whether it was
-		// asked for by hand.
-		if err := grant.Apply(s.SID, held.Path, held.Kind); err != nil {
-			return err
-		}
+		present = append(present, held)
 	}
-	return nil
+	return state.ApplyTogether(s.SID, present)
 }
 
 // ApplyPreset hands over the agent directories, and the profile root when it
@@ -66,13 +66,9 @@ func Reapply(s *state.State) error {
 // gets the directories back, and --home-writes reaches a sandbox that was
 // built without it.
 func ApplyPreset(s *state.State, homeWrites bool) error {
-	for _, spec := range preset.AI() {
-		if _, err := os.Stat(spec.Path); err != nil {
-			continue
-		}
-		if err := s.Offer(spec.Path, spec.Kind); err != nil {
-			return err
-		}
+	// Handed over together: see State.OfferMany for why that matters.
+	if err := s.OfferMany(preset.AI()); err != nil {
+		return err
 	}
 	if !homeWrites {
 		return nil

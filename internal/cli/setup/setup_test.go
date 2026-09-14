@@ -10,6 +10,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 )
 
 func TestParseOptionsDefaultsToTheCurrentDirectory(t *testing.T) {
@@ -345,5 +346,47 @@ func TestAMistypedCommandSaysSo(t *testing.T) {
 	pathLike := Run([]string{`C:\no\such\program.exe`})
 	if pathLike == nil || strings.Contains(pathLike.Error(), "unknown command") {
 		t.Errorf("a path was reported as a command: %v", pathLike)
+	}
+}
+
+// TestReconcilePresetHonoursTheSandboxsOwnDecision is the regression guard
+// for a decision that lapsed the moment nobody repeated it. A run never
+// carries --no-ai — configuring is not something a run does — so reading
+// options.NoAI to decide whether to reapply the preset meant a plain run
+// right after `init --no-ai` silently handed the agent directories back.
+func TestReconcilePresetHonoursTheSandboxsOwnDecision(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "Local"))
+	t.Setenv("APPDATA", filepath.Join(home, "Roaming"))
+	agent := filepath.Join(home, ".claude")
+	if err := os.Mkdir(agent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := &state.State{
+		Group: "wub-reconcile-test",
+		SID:   "S-1-5-21-1111111111-2222222222-3333333333-303030",
+		Dir:   t.TempDir(),
+		Temp:  t.TempDir(),
+		NoAI:  true, // what `init --no-ai` leaves behind
+	}
+
+	// A plain run's options never carry the flag; nothing here does.
+	plainRun := sandbox.Options{Dir: s.Dir}
+	if err := reconcilePreset(s, plainRun); err != nil {
+		t.Fatal(err)
+	}
+	if s.Has(agent) {
+		t.Error("a plain run handed the agent directory back, although --no-ai was never repeated")
+	}
+
+	// An explicit init without --no-ai is what is supposed to change the
+	// sandbox's mind, and it does so by clearing the field before this runs.
+	s.NoAI = false
+	if err := reconcilePreset(s, plainRun); err != nil {
+		t.Fatal(err)
+	}
+	if !s.Has(agent) {
+		t.Error("clearing the decision did not bring the agent directory back")
 	}
 }

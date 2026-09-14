@@ -767,3 +767,102 @@ func TestNarrowingFinishesAChildsUnappliedRefusal(t *testing.T) {
 		t.Error("the child's change is still marked as unfinished")
 	}
 }
+
+// TestOfferManyRecordsAndAppliesEveryDirectory covers the path a sandbox is
+// built through: several directories handed over at once, each applied and
+// each left in the record with no mark on it.
+func TestOfferManyRecordsAndAppliesEveryDirectory(t *testing.T) {
+	s := newState(t)
+	var specs []grant.Spec
+	for i := 0; i < 5; i++ {
+		specs = append(specs, grant.Spec{Path: t.TempDir(), Kind: grant.RW})
+	}
+	if err := s.OfferMany(specs); err != nil {
+		t.Fatal(err)
+	}
+	for _, spec := range specs {
+		kind, held := s.Kind(spec.Path)
+		if !held || kind != grant.RW {
+			t.Errorf("%s came back as %q (held: %v)", spec.Path, kind, held)
+		}
+		answer, err := access.Check(s.SID, spec.Path, access.Create)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !answer.Allowed {
+			t.Errorf("%s was recorded but not applied: %s", spec.Path, answer.Reason)
+		}
+	}
+	for _, held := range s.Grants {
+		if held.Pending {
+			t.Errorf("%s is still marked as unfinished", held.Path)
+		}
+	}
+
+	// And the record has to survive being read back by another process.
+	reread, err := Load(s.Group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reread.Grants) != len(specs) {
+		t.Errorf("the record holds %d of %d permissions", len(reread.Grants), len(specs))
+	}
+}
+
+// TestOfferManyYieldsToWhatSomebodyAskedFor keeps the rule that made offers
+// different from requests in the first place: doing several at once must not
+// quietly widen one that was narrowed by hand.
+func TestOfferManyYieldsToWhatSomebodyAskedFor(t *testing.T) {
+	s := newState(t)
+	narrowed, ordinary := t.TempDir(), t.TempDir()
+	if err := s.Add(narrowed, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.OfferMany([]grant.Spec{
+		{Path: narrowed, Kind: grant.RW},
+		{Path: ordinary, Kind: grant.RW},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if kind, _ := s.Kind(narrowed); kind != grant.RO {
+		t.Errorf("an offer overrode a request: the record says %q", kind)
+	}
+	if kind, _ := s.Kind(ordinary); kind != grant.RW {
+		t.Errorf("the other directory was not handed over: %q", kind)
+	}
+	answer, err := access.Check(s.SID, narrowed, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Allowed {
+		t.Errorf("the narrowed directory became writable: %s", answer.Reason)
+	}
+}
+
+// TestOfferManyNarrowsOneAtATime covers the kinds it will not take at once.
+// Narrowing reaches inside a directory and changes the record as it goes,
+// which is not something to do from several threads.
+func TestOfferManyNarrowsOneAtATime(t *testing.T) {
+	s := newState(t)
+	parent := t.TempDir()
+	child := filepath.Join(parent, "inside")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Offer(child, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.OfferMany([]grant.Spec{{Path: parent, Kind: grant.RO}}); err != nil {
+		t.Fatal(err)
+	}
+	if s.Has(child) {
+		t.Error("narrowing the parent left the entry inside it")
+	}
+	answer, err := access.Check(s.SID, child, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Allowed {
+		t.Errorf("the directory inside is still writable: %s", answer.Reason)
+	}
+}

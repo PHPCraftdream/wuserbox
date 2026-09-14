@@ -92,24 +92,9 @@ func adjust(options sandbox.Options, name string) (adjustment, error) {
 		report(options, "%v", err)
 		return adjustment{rebuild: true}, nil
 	}
-	if options.NoAI {
-		// The flag has to mean the same thing on every run, not only on the
-		// one that created the sandbox. If the permissions cannot be taken
-		// back, the command must not start: running it anyway would hand it
-		// the very directories that were just refused.
-		if err := grants.DropPreset(s); err != nil {
-			report(options, "%v", err)
-			return adjustment{rebuild: true, dropPreset: true}, nil
-		}
-	}
-	if !options.NoAI {
-		// The sandbox is brought in line with the flags on every start, so a
-		// plain run after one with --no-ai gets the agent directories back,
-		// and --home-writes reaches a sandbox that was built without it.
-		if err := grants.ApplyPreset(s, options.HomeWrites); err != nil {
-			report(options, "%v", err)
-			return adjustment{rebuild: true}, nil
-		}
+	if err := reconcilePreset(s, options); err != nil {
+		report(options, "%v", err)
+		return adjustment{rebuild: true, dropPreset: s.NoAI}, nil
 	}
 	if err := grants.FromConfig(s, false); err != nil {
 		report(options, "%v", err)
@@ -120,6 +105,24 @@ func adjust(options sandbox.Options, name string) (adjustment, error) {
 		return adjustment{rebuild: true}, nil
 	}
 	return adjustment{state: s}, nil
+}
+
+// reconcilePreset brings the agent preset in line with the sandbox's own
+// standing decision, not with the flags on this particular command line.
+//
+// A run never carries --no-ai: onlyRunning refuses it before options reaches
+// here. What decides this is s.NoAI, set once by an explicit `init --no-ai`
+// and read from every run after, so the decision means the same thing until
+// something explicitly changes it, rather than lapsing the moment the flag
+// stops being typed.
+func reconcilePreset(s *state.State, options sandbox.Options) error {
+	if s.NoAI {
+		return grants.DropPreset(s)
+	}
+	// The sandbox is brought in line with the preset on every start, so a
+	// directory the preset gained since the sandbox was built is reached, and
+	// --home-writes reaches a sandbox that was built without it.
+	return grants.ApplyPreset(s, options.HomeWrites)
 }
 
 func rebuild(options sandbox.Options, name string) (*state.State, error) {

@@ -20,4 +20,10 @@ type State struct {
 	// before that mark existed carries no such thing, and reading its entries
 	// as offers would let an upgrade undo a narrowing made by hand.
 	Marked bool `json:"marked"`
+	// NoAI says the agent preset was explicitly withheld, by `init --no-ai`.
+	// A plain run never carries that flag — configuring is not something a
+	// run does — so this is what makes the decision outlast the command that
+	// made it: without it, the very next run would have nothing to tell it
+	// apart from a sandbox that never asked, and would offer the preset back.
+	NoAI bool `json:"no_ai,omitempty"`
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/PHPCraftdream/wuserbox/internal/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/paths"
@@ -100,18 +101,38 @@ func build(name, dir string, o Options) (*state.State, error) {
 	return s, nil
 }
 
+// note says what is happening, unless the caller asked for quiet or for one
+// JSON document.
+func note(o Options, format string, args ...any) {
+	if o.Quiet || o.JSON {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "wuserbox: "+format+"\n", args...)
+}
+
 func applyPreset(s *state.State, o Options) error {
+	// Set before either branch acts, so every save either branch makes along
+	// the way already carries the decision: a plain run never repeats
+	// --no-ai, and reads this instead of taking a fresh run's silence for
+	// "presets are wanted again."
+	s.NoAI = o.NoAI
 	if o.NoAI {
 		// Skipping is not enough for a sandbox that already holds these
 		// directories: the flag has to take them back, or a later run would
 		// still reach them.
 		return grants.DropPreset(s)
 	}
-	for _, spec := range preset.AI() {
-		if err := s.Offer(spec.Path, spec.Kind); err != nil {
-			return err
-		}
+	// Together rather than one after another: each of these is a whole
+	// directory tree whose files all have their permissions rewritten, and
+	// they have nothing to do with one another.
+	handing := preset.AI()
+	note(o, "handing over %d agent directories; Windows writes the permission "+
+		"into every file already in them, which is why a first run waits", len(handing))
+	started := time.Now()
+	if err := s.OfferMany(handing); err != nil {
+		return err
 	}
+	note(o, "handed over in %s", time.Since(started).Round(time.Millisecond))
 	if !o.HomeWrites {
 		return nil
 	}
