@@ -95,6 +95,11 @@ func build(name, dir string, o Options) (*state.State, error) {
 	if err := grants.Reapply(s); err != nil {
 		return nil, err
 	}
+	// Everything writable was handed over just now, and every one of those
+	// calls carries the Low label or fails, so the sandbox can be run Low from
+	// here on. This is the only place that may say so: it is the only one that
+	// applies the whole set rather than one directory of it.
+	s.Labeled = true
 	if err := s.Save(); err != nil {
 		return nil, err
 	}

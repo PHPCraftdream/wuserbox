@@ -10,5 +10,5 @@ func Deny(path, account string, access uint32) error {
 	if err != nil {
 		return err
 	}
-	return apply(path, []explicitAccess{entry(value, access, InheritNone, denyAccess)})
+	return apply(path, []explicitAccess{entry(value, access, InheritNone, denyAccess)}, 0)
 }

@@ -1,10 +1,12 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
 // Has reports whether path was already granted to this sandbox.
@@ -82,7 +84,13 @@ func (s *State) record(path string, kind grant.Kind, always, explicit bool) erro
 	if unchanged {
 		// The record already says this; only the file system needs putting
 		// back, which is what repair is for.
-		return grant.Apply(s.SID, path, kind)
+		if err := grant.Apply(s.SID, path, kind); errors.Is(err, acl.ErrNotLabeled) {
+			s.Labeled = false
+			return s.Save()
+		} else if err != nil {
+			return err
+		}
+		return nil
 	}
 	before := append([]grant.Spec(nil), s.Grants...)
 	if found {
@@ -105,7 +113,13 @@ func (s *State) record(path string, kind grant.Kind, always, explicit bool) erro
 		s.Grants = before
 		return err
 	}
-	if err := grant.Apply(s.SID, path, kind); err != nil {
+	if err := grant.Apply(s.SID, path, kind); errors.Is(err, acl.ErrNotLabeled) {
+		// The permission is in force; only the integrity label is missing, and
+		// without it this sandbox cannot be run Low. Recording that is what
+		// makes a later run repair it with the rights the label needs, instead
+		// of the boundary quietly not being there.
+		s.Labeled = false
+	} else if err != nil {
 		s.Grants = before
 		if saveErr := s.Save(); saveErr != nil {
 			return fmt.Errorf("%w (and the record still claims it, because %w)", err, saveErr)

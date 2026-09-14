@@ -135,9 +135,11 @@ C:\tools    c:/tools    /c/tools    /mnt/c/tools    /cygdrive/c/tools
 ~/tools     %USERPROFILE%\tools     $HOME/tools     ..\tools
 ```
 
-Creating or deleting a group needs administrator rights, so `--init` and
-`--rm` raise a consent prompt once. A run does not, unless the sandbox does
-not exist yet.
+Deciding what a sandbox may write to needs administrator rights, so `--init`,
+`--rm`, `--grant`, `--revoke`, `--add-dir` and `--remove-dir` raise a consent
+prompt. Starting a program does not, unless the sandbox does not exist yet or
+was built before the delete boundary described below, in which case it is
+built again once.
 
 ## What is writable by default
 
@@ -155,6 +157,34 @@ down to the files that are already there. Agents that rewrite a dotfile in the
 profile root through a temporary file and a rename need `wuserbox --init
 --home-writes`; with that flag every sensitive file there is refused one by
 one.
+
+## The delete boundary
+
+Refusing writes is not enough on its own. Windows decides `DELETE` and
+`FILE_DELETE_CHILD` outside the mapping a write-restricted token checks a
+second time, so a sandbox held to its own directories by permissions alone
+still carried the user's own right to delete — and by default a Windows
+profile grants its owner Full Control over everything in it, which includes
+removing what is inside a directory whatever the thing inside says about
+itself. Writing to a file elsewhere was refused; deleting it was not.
+
+The boundary is held by mandatory integrity instead, which Windows checks
+separately from the permissions and which does cover those two rights:
+
+* the sandbox runs at Low integrity;
+* every directory handed to it is labeled Low in the same update that grants
+  the permission, so the sandbox can still write and delete inside it;
+* everything else keeps the ordinary level, and a Low process is refused
+  writing, deleting, taking ownership and changing permissions there
+  regardless of what the permissions say.
+
+Reading is untouched: the policy Windows applies by default is no-write-up,
+so a sandbox still reads everything its user can read.
+
+Writing those labels needs administrator rights, which is why the commands
+that hand a directory over ask for them. A sandbox whose labels could not be
+written records that, and is built again — once, with a consent prompt —
+before it is used, rather than running without the boundary.
 
 ## Protecting your settings
 
@@ -271,11 +301,16 @@ releasing a handle or a buffer cannot usefully fail.
 
 The end-to-end tests create real permissions under a synthetic identifier and
 try to escape: writing outside the project, through a child process, into the
-profile, into the registry, and deleting a whole tree. They need no elevation.
-The full lifecycle test creates an actual local group, so run it from an
-elevated shell:
+profile, into the registry, and deleting a whole tree. Most need no elevation.
+
+The ones that cover the delete boundary do, because writing an integrity label
+does: without administrator rights they skip rather than pass, so a run that
+cannot test the boundary never reports it as holding. The full lifecycle test
+creates an actual local group and needs elevation for the same reason. Run
+both from an elevated shell:
 
 ```
+go test ./... -count=1
 go test ./internal/e2e -run TestCLIFullLifecycle -v
 ```
 

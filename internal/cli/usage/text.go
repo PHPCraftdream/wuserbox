@@ -39,6 +39,12 @@ WHAT THIS MEANS FOR A PROGRAM RUNNING INSIDE
     * any directory the user has granted for this project
     * your own temporary directory, which TEMP and TMP point at
 
+  Deleting is bounded the same way, and separately: the sandbox runs at Low
+  mandatory integrity, and every directory handed to it is labeled to match,
+  so a delete anywhere else is refused however the permissions there read.
+  A sweep like "rmdir /s" or "rm -rf" started in the wrong place empties what
+  the sandbox was given and stops at its edge.
+
   Anywhere else a write fails with "Access is denied". That is Windows
   enforcing a permission boundary, not a broken tool and not a bug to work
   around. Retrying, changing permissions or asking for administrator rights
@@ -80,6 +86,11 @@ RUNNING AND CONFIGURING ARE SEPARATE
 
   A directory allowed this way stays in force for later runs, until
   "wuserbox --revoke" takes it back or "wuserbox --rm" removes the sandbox.
+
+  Each of those asks for administrator rights, and that is the point: what a
+  sandbox may write to and delete in is settled by someone who can answer a
+  consent prompt, not by the program running inside it. Starting a program
+  never asks.
 
   What a sandbox may write is therefore decided in one place and readable
   afterwards with "wuserbox --explain", instead of depending on which command

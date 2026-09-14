@@ -10,5 +10,5 @@ func Remove(path, account string) error {
 	if err != nil {
 		return err
 	}
-	return apply(path, []explicitAccess{entry(value, 0, InheritNone, setAccess)})
+	return apply(path, []explicitAccess{entry(value, 0, InheritNone, setAccess)}, 0)
 }

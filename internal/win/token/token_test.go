@@ -5,7 +5,7 @@ import "testing"
 const unusedGroup = "S-1-5-21-1111111111-2222222222-3333333333-543210"
 
 func TestRestrictedBuildsForAnyGroup(t *testing.T) {
-	restricted, err := Restricted(unusedGroup)
+	restricted, err := Restricted(unusedGroup, false)
 	if err != nil {
 		t.Fatalf("building the sandbox token: %v", err)
 	}
@@ -16,7 +16,7 @@ func TestRestrictedBuildsForAnyGroup(t *testing.T) {
 }
 
 func TestRestrictedRejectsNonsenseGroups(t *testing.T) {
-	if _, err := Restricted("not-a-sid"); err == nil {
+	if _, err := Restricted("not-a-sid", false); err == nil {
 		t.Error("expected an error")
 	}
 }

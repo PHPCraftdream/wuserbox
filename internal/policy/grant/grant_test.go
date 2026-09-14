@@ -1,6 +1,8 @@
 package grant
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,10 +72,54 @@ func TestGrantRejectsUnknownKind(t *testing.T) {
 	}
 }
 
+// TestLabelReachesExactlyAsFarAsThePermission pins the inheritance of the
+// integrity label to the permission it accompanies. Reaching further marks
+// somebody's whole profile as Low — the profile root may only take new files,
+// and labeling the subdirectories it already has is not what was asked for.
+// Reaching less far leaves the sandbox unable to write where it was just
+// allowed to, because a Low token is refused anything that is not labeled Low.
+func TestLabelReachesExactlyAsFarAsThePermission(t *testing.T) {
+	for kind, want := range map[Kind]uint32{
+		RW:      acl.InheritObjects | acl.InheritContainers,
+		File:    acl.InheritNone,
+		HomeTop: acl.InheritObjects | acl.InheritNoPropagate,
+	} {
+		if got := kind.LabelInheritance(); got != want {
+			t.Errorf("%q labels with %#x, want %#x", kind, got, want)
+		}
+	}
+	// A read-only kind hands nothing over, so it labels nothing.
+	if got := RO.LabelInheritance(); got != acl.InheritNone {
+		t.Errorf("%q labels with %#x, and it should label nothing", RO, got)
+	}
+	// Every writable kind has to name its reach; a new one that forgets would
+	// be handed over and then be unwritable.
+	for _, kind := range []Kind{RW, File, HomeTop} {
+		if !kind.Writable() {
+			t.Errorf("%q is no longer writable; this table needs revisiting", kind)
+		}
+	}
+}
+
+// TestAppliedSeparatesAMissingLabelFromARealFailure covers the distinction the
+// whole repair path rests on: the permission going on without its label is a
+// shortfall to record and come back to, while anything else is a failure.
+func TestAppliedSeparatesAMissingLabelFromARealFailure(t *testing.T) {
+	if !Applied(nil) {
+		t.Error("no error should count as applied")
+	}
+	if !Applied(fmt.Errorf("labeling: %w", acl.ErrNotLabeled)) {
+		t.Error("a missing label leaves the permission in force")
+	}
+	if Applied(errors.New("access denied")) {
+		t.Error("an ordinary failure must not be read as applied")
+	}
+}
+
 func TestGrantIsRepeatable(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i < 3; i++ {
-		if err := Apply(unusedAccount, dir, RW); err != nil {
+		if err := Apply(unusedAccount, dir, RW); !Applied(err) {
 			t.Fatalf("grant %d: %v", i, err)
 		}
 	}
@@ -98,7 +144,7 @@ func TestGrantOnFileKeepsItAFile(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Apply(unusedAccount, file, File); err != nil {
+	if err := Apply(unusedAccount, file, File); !Applied(err) {
 		t.Fatalf("grant: %v", err)
 	}
 }
@@ -129,7 +175,7 @@ func TestApplyHoldsTheDirectoryItChanges(t *testing.T) {
 	release()
 	select {
 	case err := <-finished:
-		if err != nil {
+		if !Applied(err) {
 			t.Fatal(err)
 		}
 	case <-time.After(10 * time.Second):
@@ -162,7 +208,7 @@ func TestTwoAccountsKeepTheirPermissionsOnOneDirectory(t *testing.T) {
 	wg.Wait()
 	close(failures)
 	for err := range failures {
-		if err != nil {
+		if !Applied(err) {
 			t.Fatal(err)
 		}
 	}

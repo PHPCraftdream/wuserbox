@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
 // OfferMany hands over several directories at once, and is how a sandbox is
@@ -57,7 +58,12 @@ func (s *State) OfferMany(specs []grant.Spec) error {
 		s.Grants = before
 		return err
 	}
-	if err := ApplyTogether(s.SID, wanted); err != nil {
+	if err := ApplyTogether(s.SID, wanted); errors.Is(err, acl.ErrNotLabeled) {
+		// The permissions are in force and only the labels are missing, which
+		// is recorded rather than treated as a failure: it is what a later run
+		// repairs with the rights writing them needs.
+		s.Labeled = false
+	} else if err != nil {
 		// The record keeps the marks: it claims more than is in force, which
 		// the next run finishes and explain reports meanwhile. That is the
 		// harmless way round, so the error is worth reporting as it is.
@@ -113,9 +119,24 @@ func ApplyTogether(account string, specs []grant.Spec) error {
 	wg.Wait()
 	close(failures)
 
+	// A missing label is kept apart from a real failure. Joined together the
+	// two cannot be told from one another afterwards, and reading a genuine
+	// refusal as "only the label" would report a permission as in force when
+	// it never went on.
 	var all []error
+	unlabeled := false
 	for err := range failures {
+		if errors.Is(err, acl.ErrNotLabeled) {
+			unlabeled = true
+			continue
+		}
 		all = append(all, err)
 	}
-	return errors.Join(all...)
+	if len(all) > 0 {
+		return errors.Join(all...)
+	}
+	if unlabeled {
+		return acl.ErrNotLabeled
+	}
+	return nil
 }

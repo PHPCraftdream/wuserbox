@@ -389,7 +389,7 @@ func TestEnsurePutsBackAPermissionThatWasRemoved(t *testing.T) {
 	if err := s.Add(target, grant.RW); err != nil {
 		t.Fatal(err)
 	}
-	allowed, err := access.Check(s.SID, target, access.Create)
+	allowed, err := access.Check(s.SID, target, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -401,7 +401,7 @@ func TestEnsurePutsBackAPermissionThatWasRemoved(t *testing.T) {
 	if err := grant.Revoke(s.SID, target); err != nil {
 		t.Fatal(err)
 	}
-	if gone, err := access.Check(s.SID, target, access.Create); err != nil {
+	if gone, err := access.Check(s.SID, target, access.Create, false); err != nil {
 		t.Fatal(err)
 	} else if gone.Allowed {
 		t.Fatal("the permission survived being revoked")
@@ -414,7 +414,7 @@ func TestEnsurePutsBackAPermissionThatWasRemoved(t *testing.T) {
 	if err := s.Add(target, grant.RW); err != nil {
 		t.Fatal(err)
 	}
-	if still, err := access.Check(s.SID, target, access.Create); err != nil {
+	if still, err := access.Check(s.SID, target, access.Create, false); err != nil {
 		t.Fatal(err)
 	} else if still.Allowed {
 		t.Fatal("the fast path applied the permission; the test no longer covers the repair")
@@ -424,7 +424,7 @@ func TestEnsurePutsBackAPermissionThatWasRemoved(t *testing.T) {
 	if err := s.Ensure(target, grant.RW); err != nil {
 		t.Fatal(err)
 	}
-	back, err := access.Check(s.SID, target, access.Create)
+	back, err := access.Check(s.SID, target, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,16 +446,16 @@ func TestReapplyReachesADirectoryGivenByHand(t *testing.T) {
 	if err := grant.Revoke(s.SID, byHand); err != nil {
 		t.Fatal(err)
 	}
-	if gone, err := access.Check(s.SID, byHand, access.Create); err != nil {
+	if gone, err := access.Check(s.SID, byHand, access.Create, false); err != nil {
 		t.Fatal(err)
 	} else if gone.Allowed {
 		t.Fatal("the permission survived being revoked")
 	}
 
-	if err := Reapply(s); err != nil {
+	if err := Reapply(s); !grant.Applied(err) {
 		t.Fatal(err)
 	}
-	back, err := access.Check(s.SID, byHand, access.Create)
+	back, err := access.Check(s.SID, byHand, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -578,7 +578,7 @@ func TestApplyPresetLeavesANarrowedDirectoryNarrow(t *testing.T) {
 	if err := s.Add(agent, grant.RO); err != nil {
 		t.Fatal(err)
 	}
-	refused, err := access.Check(testAccount, agent, access.Create)
+	refused, err := access.Check(testAccount, agent, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -595,7 +595,7 @@ func TestApplyPresetLeavesANarrowedDirectoryNarrow(t *testing.T) {
 	if kind, _ := s.Kind(agent); kind != grant.RO {
 		t.Errorf("the preset widened the directory back to %q", kind)
 	}
-	answer, err := access.Check(testAccount, agent, access.Create)
+	answer, err := access.Check(testAccount, agent, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}

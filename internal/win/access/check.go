@@ -36,7 +36,7 @@ type Result struct {
 // Check asks Windows whether a sandbox could perform an operation, using the
 // same restricted token a run would get. Nothing is opened for writing and
 // nothing is created, so asking is free of consequences.
-func Check(group string, path string, operation Operation) (Result, error) {
+func Check(group string, path string, operation Operation, low bool) (Result, error) {
 	result := Result{Path: path, Operation: operation, Checked: path}
 
 	target := path
@@ -58,7 +58,7 @@ func Check(group string, path string, operation Operation) (Result, error) {
 	}
 	defer w32.Free(descriptor)
 
-	restricted, err := token.Restricted(group)
+	restricted, err := token.Restricted(group, low)
 	if err != nil {
 		return result, err
 	}
@@ -81,7 +81,7 @@ func Check(group string, path string, operation Operation) (Result, error) {
 	// removed from it, and an answer that knew only the first would promise a
 	// refusal that does not happen.
 	if !allowed && operation == Delete {
-		if throughParent, err := deleteThroughParent(group, target); err == nil && throughParent {
+		if throughParent, err := deleteThroughParent(group, target, low); err == nil && throughParent {
 			result.Allowed = true
 			through = "the directory holding it lets the sandbox remove what is inside"
 		}
@@ -202,7 +202,7 @@ func readOnlyAttribute(path string) bool {
 
 // deleteThroughParent reports whether the directory holding a path lets the
 // sandbox remove what is inside it.
-func deleteThroughParent(group, path string) (bool, error) {
+func deleteThroughParent(group, path string, low bool) (bool, error) {
 	parent := filepath.Dir(path)
 	if parent == path {
 		return false, nil
@@ -213,7 +213,7 @@ func deleteThroughParent(group, path string) (bool, error) {
 	}
 	defer w32.Free(descriptor)
 
-	restricted, err := token.Restricted(group)
+	restricted, err := token.Restricted(group, low)
 	if err != nil {
 		return false, err
 	}

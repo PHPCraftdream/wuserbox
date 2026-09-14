@@ -1,6 +1,7 @@
 package acl
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -182,9 +183,9 @@ func TestSetReachesTheFileSystemOnce(t *testing.T) {
 	dir := t.TempDir()
 	original := publish
 	updates := 0
-	publish = func(path string, list []explicitAccess) error {
+	publish = func(path string, list []explicitAccess, sacl uintptr) error {
 		updates++
-		return original(path, list)
+		return original(path, list, sacl)
 	}
 	defer func() { publish = original }()
 
@@ -197,6 +198,65 @@ func TestSetReachesTheFileSystemOnce(t *testing.T) {
 	if updates != 1 {
 		t.Errorf("the permissions were published %d times, and any number above one "+
 			"leaves a moment where the account holds neither the old entries nor the new", updates)
+	}
+}
+
+// TestSetWritableStillGrantsWhenItCannotLabel covers the case an ordinary
+// user's token is always in: the permission has to go on, so the caller is
+// left with something to work with, and the caller has to be told the
+// boundary did not, so it can come back with the rights that write it.
+// Silently doing half of this either cripples the sandbox or leaves it
+// looking protected when it is not.
+func TestSetWritableStillGrantsWhenItCannotLabel(t *testing.T) {
+	original := canLabel
+	canLabel = func() bool { return false }
+	defer func() { canLabel = original }()
+
+	dir := t.TempDir()
+	err := SetWritable(dir, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers)
+	if !errors.Is(err, ErrNotLabeled) {
+		t.Fatalf("got %v, want %v", err, ErrNotLabeled)
+	}
+	if !holds(t, dir, unusedAccount, "(M)") {
+		t.Error("the permission did not go on, so the caller was left with nothing")
+	}
+}
+
+// TestSetWritableLabelsWhereItCan is the other half, and only runs where the
+// rights to write a label are actually held.
+func TestSetWritableLabelsWhereItCan(t *testing.T) {
+	if !canLabel() {
+		t.Skip("writing an integrity label needs administrator rights; run this elevated to cover it")
+	}
+	dir := t.TempDir()
+	if err := SetWritable(dir, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("icacls", dir).CombinedOutput()
+	if err != nil {
+		t.Fatalf("icacls %s: %v", dir, err)
+	}
+	if !strings.Contains(string(out), "Mandatory Label\\Low Mandatory Level") {
+		t.Errorf("the directory carries no Low label:\n%s", out)
+	}
+}
+
+// TestSDDLFlagsFollowTheInheritanceAsked keeps the label from reaching further
+// than the permission it accompanies.
+func TestSDDLFlagsFollowTheInheritanceAsked(t *testing.T) {
+	for inheritance, want := range map[uint32]string{
+		InheritNone:                         "",
+		InheritObjects | InheritContainers:  "OICI",
+		InheritObjects | InheritNoPropagate: "OINP",
+		InheritContainers | InheritOnly:     "CIIO",
+	} {
+		if got := sddlFlags(inheritance); got != want {
+			t.Errorf("%#x spells %q, want %q", inheritance, got, want)
+		}
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/win/access"
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
 const testSID = "S-1-5-21-1111111111-2222222222-3333333333-765432"
@@ -74,6 +75,36 @@ func TestAddRecordsGrantOnceAndPersists(t *testing.T) {
 	}
 	if len(stored.Grants) != 1 {
 		t.Errorf("persisted grants: %+v", stored.Grants)
+	}
+}
+
+// TestARecordRemembersThatTheLabelDidNotGoOn is what makes the boundary
+// repairable rather than quietly absent. Handing a directory over without
+// administrator rights leaves the permission in force and the integrity label
+// off, and a sandbox in that state must not be run Low — it would be refused
+// its own writes. The record is the only thing that carries that fact to the
+// next run.
+func TestARecordRemembersThatTheLabelDidNotGoOn(t *testing.T) {
+	s := newState(t)
+	s.Labeled = true // as an elevated build would have left it
+	if err := s.Add(t.TempDir(), grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if acl.CanLabelHere() {
+		if !s.Labeled {
+			t.Error("a labeled grant cleared the mark anyway")
+		}
+		return
+	}
+	if s.Labeled {
+		t.Error("a grant that could not be labeled left the sandbox claiming it was")
+	}
+	stored, err := Load(s.Group)
+	if err != nil || stored == nil {
+		t.Fatalf("state was not persisted: %v", err)
+	}
+	if stored.Labeled {
+		t.Error("the shortfall did not survive being written down")
 	}
 }
 
@@ -445,7 +476,7 @@ func TestAPermissionIsNotHandedOverWhenItCannotBeRecorded(t *testing.T) {
 	if s.Has(target) {
 		t.Error("the permission stayed in the record although it was never written")
 	}
-	answer, err := access.Check(s.SID, target, access.Write)
+	answer, err := access.Check(s.SID, target, access.Write, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +502,7 @@ func TestNarrowingADirectoryTakesBackWhatIsInsideIt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	allowed, err := access.Check(s.SID, child, access.Create)
+	allowed, err := access.Check(s.SID, child, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +514,7 @@ func TestNarrowingADirectoryTakesBackWhatIsInsideIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, dir := range []string{parent, child} {
-		answer, err := access.Check(s.SID, dir, access.Create)
+		answer, err := access.Check(s.SID, dir, access.Create, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -517,7 +548,7 @@ func TestNarrowingKeepsTheProjectItself(t *testing.T) {
 	if !s.Has(project) {
 		t.Fatal("the project lost its own permission")
 	}
-	answer, err := access.Check(s.SID, project, access.Create)
+	answer, err := access.Check(s.SID, project, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +579,7 @@ func TestAnInterruptedNarrowingIsFinished(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writable, err := access.Check(interrupted.SID, dir, access.Create)
+	writable, err := access.Check(interrupted.SID, dir, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -560,7 +591,7 @@ func TestAnInterruptedNarrowingIsFinished(t *testing.T) {
 	if err := interrupted.Add(dir, grant.RO); err != nil {
 		t.Fatal(err)
 	}
-	answer, err := access.Check(interrupted.SID, dir, access.Create)
+	answer, err := access.Check(interrupted.SID, dir, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -594,7 +625,7 @@ func TestFinishPendingRepairsWithoutBeingAsked(t *testing.T) {
 	if err := reread.FinishPending(); err != nil {
 		t.Fatal(err)
 	}
-	answer, err := access.Check(reread.SID, dir, access.Create)
+	answer, err := access.Check(reread.SID, dir, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -630,7 +661,7 @@ func TestFinishingTwoMarkedChangesDoesNotUndoOneOfThem(t *testing.T) {
 	if err := s.FinishPending(); err != nil {
 		t.Fatal(err)
 	}
-	answer, err := access.Check(s.SID, child, access.Create)
+	answer, err := access.Check(s.SID, child, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -677,7 +708,7 @@ func TestAnInterruptedNarrowingKeepsItsMark(t *testing.T) {
 	if err := reread.FinishPending(); err != nil {
 		t.Fatal(err)
 	}
-	answer, err := access.Check(reread.SID, child, access.Create)
+	answer, err := access.Check(reread.SID, child, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -708,7 +739,7 @@ func TestNarrowingLeavesAChildsOwnRefusalAlone(t *testing.T) {
 	if kind, held := s.Kind(child); !held || kind != grant.RO {
 		t.Fatalf("the child's own restriction is recorded as %q (held: %v)", kind, held)
 	}
-	answer, err := access.Check(s.SID, child, access.Create)
+	answer, err := access.Check(s.SID, child, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -741,7 +772,7 @@ func TestNarrowingFinishesAChildsUnappliedRefusal(t *testing.T) {
 	if err := s.Save(); err != nil {
 		t.Fatal(err)
 	}
-	writable, err := access.Check(s.SID, child, access.Create)
+	writable, err := access.Check(s.SID, child, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -752,7 +783,7 @@ func TestNarrowingFinishesAChildsUnappliedRefusal(t *testing.T) {
 	if err := s.Add(parent, grant.RO); err != nil {
 		t.Fatal(err)
 	}
-	answer, err := access.Check(s.SID, child, access.Create)
+	answer, err := access.Check(s.SID, child, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -807,7 +838,7 @@ func TestNarrowingHandlesANestedPendingChildRemovingAGrandchild(t *testing.T) {
 	if index, found := s.find(parent); !found || s.Grants[index].Pending {
 		t.Error("the parent's own change is still marked as unfinished")
 	}
-	answer, err := access.Check(s.SID, leaf, access.Create)
+	answer, err := access.Check(s.SID, leaf, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -833,7 +864,7 @@ func TestOfferManyRecordsAndAppliesEveryDirectory(t *testing.T) {
 		if !held || kind != grant.RW {
 			t.Errorf("%s came back as %q (held: %v)", spec.Path, kind, held)
 		}
-		answer, err := access.Check(s.SID, spec.Path, access.Create)
+		answer, err := access.Check(s.SID, spec.Path, access.Create, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -878,7 +909,7 @@ func TestOfferManyYieldsToWhatSomebodyAskedFor(t *testing.T) {
 	if kind, _ := s.Kind(ordinary); kind != grant.RW {
 		t.Errorf("the other directory was not handed over: %q", kind)
 	}
-	answer, err := access.Check(s.SID, narrowed, access.Create)
+	answer, err := access.Check(s.SID, narrowed, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -906,7 +937,7 @@ func TestOfferManyNarrowsOneAtATime(t *testing.T) {
 	if s.Has(child) {
 		t.Error("narrowing the parent left the entry inside it")
 	}
-	answer, err := access.Check(s.SID, child, access.Create)
+	answer, err := access.Check(s.SID, child, access.Create, false)
 	if err != nil {
 		t.Fatal(err)
 	}

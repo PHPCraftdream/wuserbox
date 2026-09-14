@@ -53,6 +53,29 @@ func (k Kind) Writable() bool {
 	return k == RW || k == File || k == HomeTop
 }
 
+// LabelInheritance says how far the mandatory integrity label that
+// accompanies a writable permission reaches. It follows the permission
+// itself: a directory handed over whole is labeled through and through, a
+// single file is labeled alone, and the profile root — which may only take
+// new files — labels those files without reaching the subdirectories that
+// were already there.
+//
+// Getting this wrong is not cosmetic. A label that reaches further than the
+// permission marks somebody's whole profile as Low, and one that reaches less
+// far leaves the sandbox unable to write where it was just allowed to.
+func (k Kind) LabelInheritance() uint32 {
+	switch k {
+	case RW:
+		return acl.InheritObjects | acl.InheritContainers
+	case File:
+		return acl.InheritNone
+	case HomeTop:
+		return acl.InheritObjects | acl.InheritNoPropagate
+	default:
+		return acl.InheritNone
+	}
+}
+
 // Proves is the operation that shows a permission of this kind is in force.
 // Asking the wrong question gives the wrong answer: a grant that lets an agent
 // create files in a directory without creating subdirectories is in perfect

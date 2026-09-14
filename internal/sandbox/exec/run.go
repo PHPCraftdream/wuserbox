@@ -13,7 +13,7 @@ import (
 // code. Temporary files are redirected into the sandbox's own directory, so
 // scratch work never needs access to the user's profile.
 func Run(s *state.State, commandLine string) (int, error) {
-	restricted, err := token.Restricted(s.SID)
+	restricted, err := token.Restricted(s.SID, s.Labeled)
 	if err != nil {
 		return -1, err
 	}

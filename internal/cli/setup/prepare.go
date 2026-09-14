@@ -85,6 +85,15 @@ func adjust(options sandbox.Options, name string) (adjustment, error) {
 		report(options, "creating sandbox %s", name)
 		return adjustment{rebuild: true}, nil
 	}
+	// A sandbox built before the directories it may write to were labeled
+	// cannot be run Low, and running it any other way leaves deleting outside
+	// its boundary possible. Labeling them needs administrator rights, so this
+	// is repaired the way anything else that needs them is: once, by an
+	// elevated run, rather than quietly left as it is.
+	if !s.Labeled {
+		report(options, "%s predates the delete boundary and is being rebuilt with it", name)
+		return adjustment{rebuild: true, dropPreset: s.NoAI}, nil
+	}
 	// A command that was stopped between writing a change down and applying it
 	// left the record ahead of the file system. Nothing else here would notice,
 	// because everything else trusts the record.

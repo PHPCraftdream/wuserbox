@@ -82,7 +82,7 @@ var machineIsOpen = askTheMachine
 
 func askTheMachine(t *testing.T, b *box) (bool, string) {
 	t.Helper()
-	answer, err := access.Check(b.state.SID, b.control, access.Delete)
+	answer, err := access.Check(b.state.SID, b.control, access.Delete, false)
 	if err != nil {
 		t.Fatalf("asking about %s: %v", b.control, err)
 	}

@@ -20,8 +20,11 @@ var (
 const (
 	classLogonSid       = 28
 	classDefaultDacl    = 6
+	classIntegrityLevel = 25
 	disableMaxPrivilege = 0x1
 	writeRestricted     = 0x8
+	integrityGroupAttrs = 0x00000020 // SE_GROUP_INTEGRITY
+	lowIntegrity        = "S-1-16-4096"
 )
 
 type sidAndAttributes struct {
@@ -33,7 +36,16 @@ type sidAndAttributes struct {
 // Reads keep the caller's rights. Every write is checked a second time against
 // the restricting identifiers, so it succeeds only where the sandbox group has
 // a permission of its own.
-func Restricted(group string) (syscall.Token, error) {
+//
+// low additionally runs the token at Low mandatory integrity, which is what
+// refuses deleting outside the sandbox: DELETE and FILE_DELETE_CHILD fall
+// outside the generic-write mapping the second check uses, so without this
+// the sandbox keeps the user's own right to delete wherever their account
+// already holds it. It is asked for rather than assumed because it only works
+// where every directory handed over carries a matching Low label, and a
+// sandbox built before labeling existed carries none: running such a sandbox
+// Low would refuse it its own writes instead of protecting anything.
+func Restricted(group string, low bool) (syscall.Token, error) {
 	var self syscall.Token
 	if err := syscall.OpenProcessToken(syscall.Handle(^uintptr(0)), syscall.TOKEN_ALL_ACCESS, &self); err != nil {
 		return 0, fmt.Errorf("opening the process token: %w", err)
@@ -72,7 +84,26 @@ func Restricted(group string) (syscall.Token, error) {
 	if err := shareWithGroup(restricted, formatSID(user), group); err != nil {
 		return 0, err
 	}
+	if low {
+		if err := lowerIntegrity(restricted); err != nil {
+			return 0, err
+		}
+	}
 	return restricted, nil
+}
+
+// lowerIntegrity sets the token's mandatory integrity level to Low.
+func lowerIntegrity(token syscall.Token) error {
+	low, err := sid.Parse(lowIntegrity)
+	if err != nil {
+		return err
+	}
+	label := sidAndAttributes{sid: low, attributes: integrityGroupAttrs}
+	if r, _, callErr := procSetTokenInformation.Call(uintptr(token), classIntegrityLevel,
+		uintptr(unsafe.Pointer(&label)), unsafe.Sizeof(label)); r == 0 {
+		return fmt.Errorf("lowering the token's integrity level: %w", callErr)
+	}
+	return nil
 }
 
 func information(token syscall.Token, class uint32) ([]byte, error) {
