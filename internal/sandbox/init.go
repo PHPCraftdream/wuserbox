@@ -122,6 +122,9 @@ func applyPreset(s *state.State, o Options) error {
 		return err
 	}
 	for _, path := range unguarded {
+		if o.JSON {
+			continue // the answer is one JSON document; prose would break it
+		}
 		fmt.Fprintf(os.Stderr, "wuserbox: %s does not exist and cannot be reserved; "+
 			"the sandbox may create it\n", path)
 	}

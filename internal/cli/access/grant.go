@@ -36,7 +36,9 @@ func Grant(args []string) error {
 		return nil
 	} else if token.IsAdmin() {
 		return err
-	} else {
+	} else if !t.asJSON {
+		// Said out loud only where prose is what the caller asked for. Under
+		// --json the answer is one document, and this would come before it.
 		fmt.Fprintf(os.Stderr, "wuserbox: %v\n", err)
 	}
 	return setup.Elevate(t.args("grant"))

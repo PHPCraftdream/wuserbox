@@ -32,7 +32,8 @@ func Revoke(args []string) error {
 		return nil
 	} else if token.IsAdmin() {
 		return err
-	} else {
+	} else if !t.asJSON {
+		// As in grant: prose only where prose was asked for.
 		fmt.Fprintf(os.Stderr, "wuserbox: %v\n", err)
 	}
 	return setup.Elevate([]string{"revoke", t.path, "--dir", t.project})

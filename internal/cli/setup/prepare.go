@@ -139,7 +139,10 @@ func rebuild(options sandbox.Options, name string) (*state.State, error) {
 // report prints a progress message, unless the caller asked for quiet. These
 // go to the error stream: the output stream belongs to the command being run.
 func report(options sandbox.Options, format string, args ...any) {
-	if options.Quiet {
+	// Silent under --json as well as under --quiet. A command asked for JSON
+	// answers with one document, and a line of prose before it leaves the
+	// stream unparseable for exactly the reader that asked.
+	if options.Quiet || options.JSON {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "wuserbox: "+format+"\n", args...)

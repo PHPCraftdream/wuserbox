@@ -1,8 +1,10 @@
 package e2e
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -294,5 +296,33 @@ func TestCLIKeepsJSONWhenAFlagIsWrong(t *testing.T) {
 		if reported.Code != 2 || !strings.Contains(reported.Error, "nonsense") {
 			t.Errorf("%v: came back as %d %q", args, reported.Code, reported.Error)
 		}
+	}
+}
+
+// TestCLIKeepsJSONWhileWorking is the regression guard for the notes a command
+// writes as it goes. Those went to the error stream as prose even under
+// --json, so a run that had to build a sandbox first wrote "creating
+// sandbox..." before the JSON failure and the stream did not parse.
+func TestCLIKeepsJSONWhileWorking(t *testing.T) {
+	command := binary(t)
+	project := t.TempDir()
+	run := exec.Command(command, "run", "--dir", project, "--json", "--non-interactive",
+		"--", "cmd.exe", "/c", "echo hello")
+	var out bytes.Buffer
+	run.Stderr = &out
+	run.Stdout = io.Discard
+	if err := run.Run(); err == nil {
+		t.Skip("this shell can create a sandbox without asking, so nothing is reported here")
+	}
+	var reported struct {
+		Error  string `json:"error"`
+		Code   int    `json:"code"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &reported); err != nil {
+		t.Fatalf("the error stream is not JSON: %v (%q)", err, out.String())
+	}
+	if reported.Status != "needs-elevation" {
+		t.Errorf("the failure came back as %d/%q", reported.Code, reported.Status)
 	}
 }

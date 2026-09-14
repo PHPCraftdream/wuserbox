@@ -172,7 +172,7 @@ func TestRemoveSandboxKeepsTheRecordWhenSomethingIsLeftBehind(t *testing.T) {
 	release := holdOpen(t, filepath.Join(temp, "busy.log"))
 	defer release()
 
-	err := removeSandbox(s.Group)
+	err := removeSandbox(s.Group, false)
 	if got := exit.Of(err); got != exit.Failed {
 		t.Fatalf("exit code is %v, want %v (error: %v)", got, exit.Failed, err)
 	}
@@ -182,7 +182,7 @@ func TestRemoveSandboxKeepsTheRecordWhenSomethingIsLeftBehind(t *testing.T) {
 
 	// Once the obstacle is gone, running it again has to finish the job.
 	release()
-	if err := removeSandbox(s.Group); err != nil {
+	if err := removeSandbox(s.Group, false); err != nil {
 		t.Fatalf("the second attempt did not finish: %v", err)
 	}
 	if _, statErr := os.Stat(state.Path(s.Group)); !os.IsNotExist(statErr) {
@@ -197,7 +197,7 @@ func TestRemoveSandboxKeepsTheRecordWhenSomethingIsLeftBehind(t *testing.T) {
 // harmless where there is nothing to remove.
 func TestRemoveSandboxSaysNothingAboutASandboxThatWasNeverThere(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", t.TempDir())
-	if err := removeSandbox("wub-never-created"); err != nil {
+	if err := removeSandbox("wub-never-created", false); err != nil {
 		t.Errorf("removing a sandbox that does not exist failed: %v", err)
 	}
 }
@@ -250,7 +250,7 @@ func TestRemoveSandboxFinishesWhenAGrantedDirectoryIsGone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := removeSandbox(s.Group); err != nil {
+	if err := removeSandbox(s.Group, false); err != nil {
 		t.Fatalf("removal did not finish over a directory that no longer exists: %v", err)
 	}
 	if _, err := os.Stat(state.Path(s.Group)); !os.IsNotExist(err) {

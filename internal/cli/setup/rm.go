@@ -60,21 +60,21 @@ func Rm(args []string) error {
 	if !token.IsAdmin() {
 		return Elevate([]string{"rm", "--dir", project})
 	}
-	return removeSandbox(name)
+	return removeSandbox(name, *asJSON)
 }
 
 // removeSandbox does the deleting, once the right to do it is established.
 // The record is held throughout, so a command handing the sandbox another
 // directory cannot write that permission back into a record being deleted.
-func removeSandbox(name string) error {
-	return lock.Hold(name, func() error { return remove(name) })
+func removeSandbox(name string, asJSON bool) error {
+	return lock.Hold(name, func() error { return remove(name, asJSON) })
 }
 
-func remove(name string) error {
+func remove(name string, asJSON bool) error {
 	if s, err := state.Load(name); err != nil {
 		return err
 	} else if s != nil {
-		if left := clearGrants(s); len(left) > 0 {
+		if left := clearGrants(s, asJSON); len(left) > 0 {
 			// The record is the only list of what is still in force, and the
 			// group is what those entries name. Keeping both is what makes a
 			// second attempt able to finish; deleting them would leave
@@ -102,8 +102,16 @@ func remove(name string) error {
 //
 // Every step is attempted even after one fails, so a single stubborn
 // directory does not leave the rest of the permissions in force.
-func clearGrants(s *state.State) []string {
+func clearGrants(s *state.State, asJSON bool) []string {
 	var left []string
+	// Each failure is named in the error at the end as well. Saying it here
+	// too helps where the answer is prose, and would break it where the answer
+	// is one JSON document.
+	complain := func(err error) {
+		if !asJSON {
+			fmt.Fprintln(os.Stderr, "wuserbox:", err)
+		}
+	}
 	for _, g := range s.Grants {
 		// A directory that is no longer there holds no entries, so there is
 		// nothing left to take back. Counting it as a failure would leave
@@ -113,12 +121,12 @@ func clearGrants(s *state.State) []string {
 			continue
 		}
 		if err := grant.Revoke(s.SID, g.Path); err != nil {
-			fmt.Fprintln(os.Stderr, "wuserbox:", err)
+			complain(err)
 			left = append(left, g.Path)
 		}
 	}
 	if err := os.RemoveAll(s.Temp); err != nil {
-		fmt.Fprintln(os.Stderr, "wuserbox:", err)
+		complain(err)
 		left = append(left, s.Temp)
 	}
 	return left

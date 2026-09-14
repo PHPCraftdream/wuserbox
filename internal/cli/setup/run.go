@@ -25,7 +25,9 @@ func Run(args []string) error {
 		if err := Preview(options); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "would run: %s\n", commandLine)
+		if !options.JSON {
+			fmt.Fprintf(os.Stderr, "would run: %s\n", commandLine)
+		}
 		return nil
 	}
 	s, err := prepare(options)
