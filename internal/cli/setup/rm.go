@@ -136,6 +136,17 @@ func clearGrants(s *state.State, asJSON bool) []string {
 		if err := grant.Revoke(s.SID, g.Path); err != nil {
 			complain(err)
 			left = append(left, g.Path)
+			continue
+		}
+		// Rewriting the directory is not the whole of taking it back, here any
+		// more than it is for a single revoke. A directory inside it that was
+		// handed to another sandbox pinned its permission list with this
+		// sandbox's entry copied into it, and no longer hears from above, so
+		// the entry has to be taken away by name. Nothing is kept: the whole
+		// sandbox is going, so every path it held loses it.
+		if err := grant.Prune(s.SID, g.Path, nil); err != nil {
+			complain(err)
+			left = append(left, g.Path)
 		}
 	}
 	if err := os.RemoveAll(s.Temp); err != nil {

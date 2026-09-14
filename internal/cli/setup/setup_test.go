@@ -13,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/win/access"
 )
 
 func TestParseOptionsDefaultsToTheCurrentDirectory(t *testing.T) {
@@ -572,5 +573,69 @@ func TestARefusedFlagIsRefusedBySomethingTheHelpAgreesWith(t *testing.T) {
 			t.Errorf("--%s is refused without saying to use %q: %v",
 				configuring.flag, configuring.instead, err)
 		}
+	}
+}
+
+// TestClearGrantsReachesWhatANestedGrantPinned is the regression guard for the
+// half of --rm that was never there.
+//
+// Deleting a sandbox revoked each path it held and stopped. Handing a
+// directory over pins its permission list, copying what it was handed from
+// above into its own entries, so a directory inside a granted one that another
+// sandbox was given carries a copy of this sandbox's entry — and that copy no
+// longer hears from the directory above it. Revoking the outer path left it
+// standing, and --rm went on to delete the group and report success over
+// permissions that were still in force with nothing left pointing at them.
+func TestClearGrantsReachesWhatANestedGrantPinned(t *testing.T) {
+	const (
+		removed = "S-1-5-21-1111111111-2222222222-3333333333-515151"
+		other   = "S-1-5-21-1111111111-2222222222-3333333333-525252"
+	)
+	outer := t.TempDir()
+	inner := filepath.Join(outer, "inner")
+	if err := os.Mkdir(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := grant.Apply(removed, outer, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	// Granting the inner one to somebody else is what pins it, with the entry
+	// of the sandbox about to be deleted among the copies.
+	if err := grant.Apply(other, inner, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	writable, err := access.Check(removed, filepath.Join(inner, "f.txt"), access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !writable.Allowed {
+		t.Fatal("the sandbox could not write inside the pinned directory, so this proves nothing")
+	}
+
+	s := &state.State{
+		Group:  "wub-rm-test",
+		SID:    removed,
+		Dir:    outer,
+		Temp:   t.TempDir(),
+		Grants: []grant.Spec{{Path: outer, Kind: grant.RW}},
+	}
+	if left := clearGrants(s, true); len(left) > 0 {
+		t.Fatalf("clearing the grants did not finish: %v", left)
+	}
+
+	after, err := access.Check(removed, filepath.Join(inner, "f.txt"), access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Allowed {
+		t.Error("a deleted sandbox still reaches inside what a nested grant pinned")
+	}
+	// The sandbox the inner directory belongs to is untouched by any of it.
+	kept, err := access.Check(other, filepath.Join(inner, "f.txt"), access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !kept.Allowed {
+		t.Errorf("removing one sandbox cost another its own grant: %s", kept.Reason)
 	}
 }

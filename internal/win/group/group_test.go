@@ -98,3 +98,33 @@ func TestLifecycle(t *testing.T) {
 		t.Error("the group survived deletion")
 	}
 }
+
+// TestTheSharedReadGroupIsNotASandbox is the regression guard for a list that
+// offered something nothing else could act on. wub-read carries the prefix
+// every sandbox group carries, so listing by prefix alone showed it as a
+// sandbox on every machine that had ever run init — one with no directory,
+// which --explain could not explain and --rm would not remove.
+func TestTheSharedReadGroupIsNotASandbox(t *testing.T) {
+	if !strings.HasPrefix(group.ReadGroup, group.Prefix) {
+		t.Fatal("wub-read no longer carries the prefix, so this guard is testing nothing")
+	}
+	if group.IsSandbox(group.ReadGroup) {
+		t.Error("the shared read group is reported as a sandbox")
+	}
+	if !group.IsSandbox(group.Prefix + "project-d6e9a21f") {
+		t.Error("an ordinary sandbox group is not reported as one")
+	}
+	if group.IsSandbox("Administrators") {
+		t.Error("a group wuserbox never made is reported as a sandbox")
+	}
+	// And a real listing never carries it, whether or not it exists here.
+	entries, err := group.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name == group.ReadGroup {
+			t.Errorf("%s was listed as a sandbox", entry.Name)
+		}
+	}
+}

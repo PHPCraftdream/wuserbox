@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
+	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
 const unusedAccount = "S-1-5-21-1111111111-2222222222-3333333333-543210"
@@ -347,5 +349,67 @@ func TestListForClearsFirstAndRefusesBeforeItPermits(t *testing.T) {
 	}
 	if list[0].permissions != 0 {
 		t.Errorf("the clearing entry asks for %#x, and it should ask for nothing", list[0].permissions)
+	}
+}
+
+// setSDDL writes a permission list given in Windows' own text form, which is
+// the only way to build entry kinds this package deliberately cannot write.
+func setSDDL(t *testing.T, path, text string) {
+	t.Helper()
+	var descriptor uintptr
+	if r, _, err := procStringToSecurityDescriptor.Call(uintptr(unsafe.Pointer(w32.UTF16(text))), 1,
+		uintptr(unsafe.Pointer(&descriptor)), 0); r == 0 {
+		t.Fatalf("building %q: %v", text, err)
+	}
+	defer w32.Free(descriptor)
+	var present, defaulted int32
+	var dacl uintptr
+	if r, _, err := procGetSecurityDescriptorDacl.Call(descriptor, uintptr(unsafe.Pointer(&present)),
+		uintptr(unsafe.Pointer(&dacl)), uintptr(unsafe.Pointer(&defaulted))); r == 0 {
+		t.Fatalf("reading %q: %v", text, err)
+	}
+	const protectedDacl = 0x80000000
+	if r, _, _ := procSetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
+		seFileObject, daclInfo|protectedDacl, 0, 0, dacl, 0); r != 0 {
+		t.Fatalf("setting %s: error %d", path, r)
+	}
+}
+
+// TestAGrantThatCannotFinishGrantsNothing is the regression guard for an order
+// that could leave a permission in force with nothing pointing at it.
+//
+// Isolate has two halves: rewriting the directory itself, and sweeping what is
+// inside it. The sweep walks a whole tree and can fail anywhere in it — here on
+// an entry of a kind that cannot be carried over, which it refuses rather than
+// drop, because dropping one could drop a refusal. Rewriting the directory
+// first meant such a failure left the sandbox holding it while the caller undid
+// the record, and a permission the record does not mention can never be found
+// again: explain does not list it and revoke does not know about it.
+func TestAGrantThatCannotFinishGrantsNothing(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A conditional entry. Windows stores it as a callback entry, which is one
+	// of the kinds this package will not carry over.
+	setSDDL(t, child, `D:P(XA;;FA;;;WD;(@USER.Title=="nobody"))`)
+	// That list leaves nobody able to remove the directory, this test included.
+	// Cleanups run in reverse, so this one puts the owner back before the
+	// temporary directory is taken away.
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { setSDDL(t, child, `D:P(A;OICI;FA;;;`+owner+`)`) })
+
+	isolateErr := Isolate(root, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers)
+	if isolateErr == nil {
+		t.Fatal("a grant that could not finish reported success")
+	}
+	if heldBy(root, unusedAccount, AccessModify) {
+		t.Error("the grant failed, and the directory was handed over anyway")
 	}
 }

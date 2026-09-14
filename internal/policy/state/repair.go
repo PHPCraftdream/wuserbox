@@ -54,6 +54,16 @@ func (s *State) finish(held grant.Spec) error {
 		if err := s.narrow(held.Path); err != nil {
 			return err
 		}
+		// The same second half a narrowing has when it is made rather than
+		// finished. Narrowing rewrites this directory, which does not reach a
+		// directory inside it that another grant pinned while this sandbox
+		// still had the run of the place: that copy answers to nobody and has
+		// to be taken away by name. Leaving it out here meant a narrowing
+		// interrupted and then repaired came back weaker than one that ran
+		// through, which is the opposite of what repair is for.
+		if err := grant.Prune(s.SID, held.Path, s.paths()); err != nil {
+			return err
+		}
 	}
 	return s.settle(held.Path)
 }

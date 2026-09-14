@@ -39,11 +39,11 @@ WHAT THIS MEANS FOR A PROGRAM RUNNING INSIDE
     * any directory the user has granted for this project
     * your own temporary directory, which TEMP and TMP point at
 
-  Deleting is bounded the same way, and separately: the sandbox runs at Low
-  mandatory integrity, and every directory handed to it is labeled to match,
-  so a delete anywhere else is refused however the permissions there read.
-  A sweep like "rmdir /s" or "rm -rf" started in the wrong place empties what
-  the sandbox was given and stops at its edge.
+  Deleting is bounded the same way, by the same thing: the token is fully
+  restricted, so every access is checked a second time against the sandbox's
+  own identifier, and DELETE is checked with the rest of them. A sweep like
+  "rmdir /s" or "rm -rf" started in the wrong place empties what the sandbox
+  was given and stops at its edge.
 
   Anywhere else a write fails with "Access is denied". That is Windows
   enforcing a permission boundary, not a broken tool and not a bug to work

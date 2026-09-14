@@ -141,10 +141,24 @@ func Isolate(path, account string, entries []ACE, reach uint32) error {
 		list = append(list, entry(holder, taken, reach, grantAccess))
 	}
 	list = append(list, listFor(value, entries)...)
-	if err := publish(path, list, true); err != nil {
+	// What is inside is put right before the grant itself is written, and the
+	// order is the whole of the care here.
+	//
+	// The sweep walks a tree and can fail anywhere in it: a directory that
+	// cannot be read, an entry of a kind that cannot be carried over. Writing
+	// the grant first meant such a failure left the sandbox holding this
+	// directory while the caller undid the record, and a permission in force
+	// that the record does not mention cannot be found again -- explain does
+	// not list it and revoke does not know about it. Failing before anything
+	// is granted leaves nothing behind instead.
+	//
+	// Both halves narrow rather than widen, so stopping between them can only
+	// take Everyone's and Users' write access off what is inside, which is
+	// what the grant was going to do anyway.
+	if err := sweep(path, everyone, users); err != nil {
 		return err
 	}
-	return sweep(path, everyone, users)
+	return publish(path, list, true)
 }
 
 // sweep takes the changing rights of Everyone and BUILTIN\Users away from

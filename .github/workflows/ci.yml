@@ -51,10 +51,15 @@ jobs:
       - name: Delete boundary
         shell: bash
         run: |
+          # Named one by one on purpose. Running the whole package and failing
+          # on any skip would be shorter and wrong: two tests in it skip for
+          # honest reasons about the machine they find, and a check that turns
+          # red for those teaches people to ignore it. Every name here is a
+          # claim that this one can always be answered, anywhere.
           output=$(go test ./internal/e2e/... ./internal/win/acl/... -count=1 -v \
-            -run 'TestDeletingOutsideTheBoundaryIsRefused|TestASweepStopsAtTheBoundary|TestTheSandboxKeepsItsOwnWrites|TestReadingIsStillUnrestricted|TestOneSandboxCannotDeleteAnothersFiles|TestAProtectedFileInsideAGrantedDirectorySurvives' 2>&1)
+            -run 'TestDeletingOutsideTheBoundaryIsRefused|TestASweepStopsAtTheBoundary|TestTheSandboxKeepsItsOwnWrites|TestReadingIsStillUnrestricted|TestOneSandboxCannotDeleteAnothersFiles|TestAProtectedFileInsideAGrantedDirectorySurvives|TestOneSandboxCannotReachWhatADirectoryAboveHandedDown|TestPeerCannotReachAnEntryASubdirectoryHoldsItself|TestRevokingReachesWhatANestedGrantPinned|TestRepairingAnInterruptedNarrowingReachesWhatANestedGrantPinned|TestASandboxCannotRewriteThePermissionsItWasLeft|TestNarrowingNeverHandsOutReading|TestHomeTopHoldsWhereTheMachineHandsOutNothing|TestAGrantThatCannotFinishGrantsNothing' 2>&1)
           echo "$output"
           if echo "$output" | grep -q -- "--- SKIP"; then
-            echo "::error::the delete boundary was not covered: a test that should never skip did"
+            echo "::error::the boundary was not covered: a test that should never skip did"
             exit 1
           fi

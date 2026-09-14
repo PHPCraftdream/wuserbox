@@ -54,12 +54,18 @@ Two Windows mechanisms, nothing else:
    the full path, so the mapping works in both directions with no database. The
    group has no members and cannot log on.
 
-2. **A write-restricted token.** The command runs under *your* account, with
+2. **A fully restricted token.** The command runs under *your* account, with
    your environment, your `HKEY_CURRENT_USER` and your credentials, but the
-   token carries a list of restricting identifiers. Reads are checked once,
-   against you. Writes are checked twice: against you *and* against that list.
-   A write therefore succeeds only where the project's group has a permission
-   of its own, which wuserbox grants as ordinary NTFS entries.
+   token carries a list of restricting identifiers. Every access is checked
+   twice: against you *and* against that list. Not only writes — `DELETE` and
+   `FILE_DELETE_CHILD` go through the same check, which is what a
+   write-restricted token could not do and why this one replaced it.
+
+   So an access succeeds only where one of those identifiers has a permission
+   of its own, which wuserbox grants as ordinary NTFS entries. Reading stays
+   open because the list also carries `Everyone` and `BUILTIN\Users`, which
+   between them cover the system, and `wub-read`, a group with no members, for
+   your own profile.
 
 Nothing is emulated or intercepted. The kernel enforces it, child processes
 inherit it, and a sweeping `rm -rf` stops at the same boundary as everything

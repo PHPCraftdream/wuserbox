@@ -13,6 +13,17 @@ type Entry struct {
 	Dir  string
 }
 
+// IsSandbox reports whether a local group is one sandbox's own.
+//
+// Carrying the prefix is not enough. ReadGroup carries it too and is not a
+// sandbox: it is one machine-wide group that lets every sandbox read the
+// profile, and it belongs to no directory. Listing it offered a sandbox that
+// --explain could not explain, --path could not place and --rm would not
+// remove, on every machine that had ever run init.
+func IsSandbox(name string) bool {
+	return strings.HasPrefix(name, Prefix) && name != ReadGroup
+}
+
 // List returns every local group created by wuserbox.
 func List() ([]Entry, error) {
 	var buf *info1
@@ -26,7 +37,7 @@ func List() ([]Entry, error) {
 	defer procFreeBuf.Call(uintptr(unsafe.Pointer(buf)))
 	var out []Entry
 	for _, item := range unsafe.Slice(buf, read) {
-		if name := w32.GoString(item.name); strings.HasPrefix(name, Prefix) {
+		if name := w32.GoString(item.name); IsSandbox(name) {
 			out = append(out, Entry{Name: name, Dir: w32.GoString(item.comment)})
 		}
 	}

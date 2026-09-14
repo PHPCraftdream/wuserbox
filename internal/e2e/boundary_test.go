@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
@@ -465,4 +466,63 @@ func TestNarrowingNeverHandsOutReading(t *testing.T) {
 	if runSandboxed(t, a.state, []string{"cmd.exe", "/c", "type " + secret}) == 0 {
 		t.Error("granting the directory handed every sandbox the reading it did not have")
 	}
+}
+
+// TestRepairingAnInterruptedNarrowingReachesWhatANestedGrantPinned is the
+// regression guard for a repair that came back weaker than the change it was
+// repairing.
+//
+// Narrowing a directory to read-only has two halves: rewriting it, and taking
+// this sandbox's entry off what another grant pinned inside it, which no
+// longer hears from above. A narrowing made in one go did both. One that was
+// interrupted and then finished by FinishPending did only the first, so a
+// sandbox stopped at the wrong moment kept writing inside a directory it had
+// been narrowed out of — and the record said the change was complete.
+func TestRepairingAnInterruptedNarrowingReachesWhatANestedGrantPinned(t *testing.T) {
+	a, b := newBox(t), newBox(t)
+	outer := filepath.Join(b.root, "outer")
+	inner := filepath.Join(outer, "inner")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.state.Add(outer, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	// Granting the inner one to somebody else is what pins it, with b's entry
+	// among the copies.
+	if err := a.state.Add(inner, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	// b can write there, which is what the narrowing has to end.
+	before := filepath.Join(inner, "before.txt")
+	mustSucceed(t, b.state, writeFileCommand(before))
+
+	// The record now says read-only and says it was never finished, which is
+	// exactly what an interrupted "wuserbox --grant outer --ro" leaves behind.
+	index, found := 0, false
+	for i, g := range b.state.Grants {
+		if strings.EqualFold(g.Path, outer) {
+			index, found = i, true
+		}
+	}
+	if !found {
+		t.Fatal("the grant on the outer directory is not in the record")
+	}
+	b.state.Grants[index].Kind = grant.RO
+	b.state.Grants[index].Pending = true
+	if err := b.state.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := b.state.FinishPending(); err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(inner, "after-repair.txt")
+	mustFail(t, b.state, writeFileCommand(target))
+	if exists(target) {
+		t.Error("a repaired narrowing left the sandbox writing inside what it pinned")
+	}
+	// The sandbox the inner directory belongs to still has it.
+	mustSucceed(t, a.state, writeFileCommand(filepath.Join(inner, "still-mine.txt")))
 }
