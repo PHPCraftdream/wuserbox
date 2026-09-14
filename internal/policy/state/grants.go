@@ -76,12 +76,12 @@ func (s *State) record(path string, kind grant.Kind, always, explicit bool) erro
 	if unchanged && !always {
 		return nil
 	}
-	if err := grant.Apply(s.SID, path, kind); err != nil {
-		return err
-	}
 	if unchanged {
-		return nil
+		// The record already says this; only the file system needs putting
+		// back, which is what repair is for.
+		return grant.Apply(s.SID, path, kind)
 	}
+	before := append([]grant.Spec(nil), s.Grants...)
 	if found {
 		s.Grants[index].Kind = kind
 		// A path the preset offers is not made anonymous by being offered
@@ -91,7 +91,23 @@ func (s *State) record(path string, kind grant.Kind, always, explicit bool) erro
 	} else {
 		s.Grants = append(s.Grants, grant.Spec{Path: path, Kind: kind, Explicit: explicit})
 	}
-	return s.Save()
+	// Written down first, handed over second. The two can only fail one way
+	// round without harm: a permission in force that the record does not
+	// mention cannot be found again, because explain does not list it and
+	// revoke does not know about it, while a record claiming more than is in
+	// force is reported by explain and put right by init.
+	if err := s.Save(); err != nil {
+		s.Grants = before
+		return err
+	}
+	if err := grant.Apply(s.SID, path, kind); err != nil {
+		s.Grants = before
+		if saveErr := s.Save(); saveErr != nil {
+			return fmt.Errorf("%w (and the record still claims it, because %w)", err, saveErr)
+		}
+		return err
+	}
+	return nil
 }
 
 // Remove revokes a recorded grant and persists the state.

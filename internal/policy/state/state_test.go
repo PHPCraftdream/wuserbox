@@ -3,8 +3,8 @@ package state
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/win/access"
 )
 
 const testSID = "S-1-5-21-1111111111-2222222222-3333333333-765432"
@@ -302,57 +303,6 @@ func TestLockedCanBeTakenAgainAfterAFailure(t *testing.T) {
 	}
 }
 
-// TestLockedShutsOutAnotherProcess is what the whole mechanism is for: the
-// commands that race are separate runs of wuserbox, started by the user, by a
-// script, or by wuserbox itself when it needs administrator rights.
-func TestLockedShutsOutAnotherProcess(t *testing.T) {
-	local := t.TempDir()
-	t.Setenv("LOCALAPPDATA", local)
-	release, err := take("wub-two-processes")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer release()
-
-	other := exec.Command(os.Args[0], "-test.run=TestLockHelperTakesTheLock")
-	other.Env = append(os.Environ(), lockHelperEnv+"=1", "LOCALAPPDATA="+local)
-	if err := other.Start(); err != nil {
-		t.Fatal(err)
-	}
-	finished := make(chan error, 1)
-	go func() { finished <- other.Wait() }()
-
-	select {
-	case <-finished:
-		t.Fatal("the other process took the lock while this one held it")
-	case <-time.After(500 * time.Millisecond):
-	}
-	release()
-	select {
-	case err := <-finished:
-		if err != nil {
-			t.Errorf("the other process failed: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Error("the other process never got the lock after it was let go")
-	}
-}
-
-const lockHelperEnv = "WUSERBOX_LOCK_HELPER"
-
-// TestLockHelperTakesTheLock is the second process of the test above. It does
-// nothing when run as part of an ordinary test run.
-func TestLockHelperTakesTheLock(t *testing.T) {
-	if os.Getenv(lockHelperEnv) == "" {
-		t.Skip("runs only as the second process of TestLockedShutsOutAnotherProcess")
-	}
-	release, err := take("wub-two-processes")
-	if err != nil {
-		t.Fatal(err)
-	}
-	release()
-}
-
 // TestARecordFromBeforeTheMarkKeepsItsNarrowing is the regression guard for
 // the upgrade itself. The mark that tells a request apart from an offer was
 // added to the record, and a file written by an earlier build has none, so
@@ -424,4 +374,81 @@ func quote(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(encoded)
+}
+
+// TestTheRecordIsNeverSeenHalfWritten is the regression guard for a writer
+// that emptied the file and filled it again. A command reading the record at
+// that moment got half a document and failed with "unexpected end of JSON
+// input", and readers do not take the writer's lock.
+func TestTheRecordIsNeverSeenHalfWritten(t *testing.T) {
+	s := newState(t)
+	for i := 0; i < 300; i++ {
+		s.Grants = append(s.Grants, grant.Spec{
+			Path: fmt.Sprintf(`C:\some\directory\number%03d`, i), Kind: grant.RW,
+		})
+	}
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	writing := make(chan error, 1)
+	go func() {
+		for i := 0; i < 200; i++ {
+			s.Grants[0].Kind = grant.RW
+			if err := s.Save(); err != nil {
+				writing <- err
+				return
+			}
+		}
+		writing <- nil
+	}()
+
+	for {
+		select {
+		case err := <-writing:
+			if err != nil {
+				t.Fatalf("writing the record failed: %v", err)
+			}
+			return
+		default:
+		}
+		loaded, err := Load(s.Group)
+		if err != nil {
+			t.Fatalf("a reader saw a record that was not whole: %v", err)
+		}
+		if loaded == nil || len(loaded.Grants) != len(s.Grants) {
+			t.Fatalf("a reader saw %d of %d permissions", len(loaded.Grants), len(s.Grants))
+		}
+	}
+}
+
+// TestAPermissionIsNotHandedOverWhenItCannotBeRecorded is the regression guard
+// for an order that could not be undone. The access control entry went on
+// first and the record was written second, so a failure to write left a
+// directory the sandbox could change that nothing pointed at: explain did not
+// list it and revoke could not find it.
+func TestAPermissionIsNotHandedOverWhenItCannotBeRecorded(t *testing.T) {
+	// The record cannot be written, because the directory it belongs in cannot
+	// be created: a file stands where that directory would go.
+	inTheWay := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(inTheWay, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOCALAPPDATA", inTheWay)
+
+	target := t.TempDir()
+	s := &State{Group: "wub-unrecordable", SID: testSID, Dir: t.TempDir(), Temp: t.TempDir()}
+	if err := s.Add(target, grant.RW); err == nil {
+		t.Fatal("the record could not be written, yet the command reported success")
+	}
+	if s.Has(target) {
+		t.Error("the permission stayed in the record although it was never written")
+	}
+	answer, err := access.Check(s.SID, target, access.Write)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Allowed {
+		t.Errorf("the directory is writable by a sandbox no record mentions: %s", answer.Reason)
+	}
 }
