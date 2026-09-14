@@ -118,3 +118,17 @@ func TestJSONAskedReadsTheCommandLine(t *testing.T) {
 		}
 	}
 }
+
+// TestJSONAskedFollowsTheLastFlagLikeTheParserDoes is the regression guard
+// for a --json given more than once. The flag package resolves a repeated
+// flag by taking the last one; JSONAsked used to take the first, so a
+// command line that overrode --json=false with a later bare --json was read
+// as not asking, and its own parse error printed as prose instead of JSON.
+func TestJSONAskedFollowsTheLastFlagLikeTheParserDoes(t *testing.T) {
+	if !JSONAsked([]string{"--json=false", "--json"}) {
+		t.Error("a later bare --json should override an earlier --json=false")
+	}
+	if JSONAsked([]string{"--json", "--json=false"}) {
+		t.Error("a later --json=false should override an earlier --json")
+	}
+}
