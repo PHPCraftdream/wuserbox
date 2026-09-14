@@ -164,14 +164,16 @@ func TestTwoSandboxesCannotReachEachOther(t *testing.T) {
 // could delete the very file under test. A token or an access control entry
 // that stopped working would then answer yes, and a security failure would
 // have been reported as a skipped test.
+//
+// Here the machine is said to be closed, so nothing but the file under test
+// can account for the answer.
 func TestABrokenBoundaryIsAFailureAndNotASkip(t *testing.T) {
 	box := newBox(t)
+	pretendTheMachineIs(t, false)
 	target := filepath.Join(box.denied, "precious.txt")
 	place(t, target, "x")
-	closeOff(t, box, box.root, box.denied, box.control)
 	// What a broken sandbox looks like: the file it must not touch is
-	// reachable after all. The refusal above is replaced by this permission,
-	// because both name the same account.
+	// reachable after all.
 	if err := box.state.Add(target, grant.File); err != nil {
 		t.Fatal(err)
 	}
@@ -182,19 +184,12 @@ func TestABrokenBoundaryIsAFailureAndNotASkip(t *testing.T) {
 
 // TestAnOpenMachineIsWhatMakesAQuestionUnanswerable keeps the other half of
 // that decision working: where the machine gives the right away by itself, the
-// control file says so and the question is not answered wrongly.
+// question is not answered wrongly, and the file under test is left alone.
 func TestAnOpenMachineIsWhatMakesAQuestionUnanswerable(t *testing.T) {
 	box := newBox(t)
+	pretendTheMachineIs(t, true)
 	target := filepath.Join(box.denied, "precious.txt")
 	place(t, target, "x")
-	closeOff(t, box, box.root, box.denied, box.control, target)
-	if outcome, _ := attemptDelete(t, box, target); outcome != refused {
-		t.Fatalf("the boundary did not hold before the machine was made open: %v", outcome)
-	}
-	// The control file stands for what the machine hands out on its own.
-	if err := box.state.Add(box.control, grant.File); err != nil {
-		t.Fatal(err)
-	}
 	if outcome, _ := attemptDelete(t, box, target); outcome != unanswerable {
 		t.Errorf("an open machine gave %v, want %v", outcome, unanswerable)
 	}

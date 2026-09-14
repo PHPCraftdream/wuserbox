@@ -15,7 +15,6 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/win/access"
-	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
 // testSID returns a SID that belongs to no account on this machine. Access
@@ -69,38 +68,33 @@ func newBox(t *testing.T) *box {
 	return &box{state: s, root: root, granted: granted, denied: denied, control: control}
 }
 
-// closeOff refuses the sandbox everything that changes the given paths.
-//
-// How much a temporary directory hands down is not the same on every machine:
-// a build machine lets anyone in the Users group delete what is inside, where a
-// desktop does not, and a restricted token does not take that right away
-// because it restricts writing rather than deleting. A test about the rule for
-// deciding whether a question can be asked at all must not rest on that
-// difference, so the refusal is stated outright.
-//
-// This belongs to those tests only. The tests about the boundary itself must
-// keep asking what wuserbox alone arranges, and would be worth nothing if the
-// answer were nailed down here.
-func closeOff(t *testing.T, b *box, paths ...string) {
-	t.Helper()
-	for _, path := range paths {
-		if err := acl.Deny(path, b.state.SID, acl.AccessChange); err != nil {
-			t.Fatalf("closing off %s: %v", path, err)
-		}
-	}
-}
-
 // machineIsOpen reports whether this machine hands out the right to delete
 // things in the directory these tests run in, whatever wuserbox did. It asks
 // about the control file, which no permission names, so an answer of yes can
 // have come from nowhere else.
-func machineIsOpen(t *testing.T, b *box) (bool, string) {
+//
+// It is a variable because the two tests about this rule itself need both
+// answers, and neither can be arranged reliably: how much a temporary
+// directory hands down differs from one machine to the next, and a restricted
+// token does not take deleting away the way it takes writing away. Every other
+// test asks the machine.
+var machineIsOpen = askTheMachine
+
+func askTheMachine(t *testing.T, b *box) (bool, string) {
 	t.Helper()
 	answer, err := access.Check(b.state.SID, b.control, access.Delete)
 	if err != nil {
 		t.Fatalf("asking about %s: %v", b.control, err)
 	}
 	return answer.Allowed, answer.Reason
+}
+
+// pretendTheMachineIs fixes that answer for one test.
+func pretendTheMachineIs(t *testing.T, open bool) {
+	t.Helper()
+	original := machineIsOpen
+	machineIsOpen = func(*testing.T, *box) (bool, string) { return open, "the test says so" }
+	t.Cleanup(func() { machineIsOpen = original })
 }
 
 // skipIfTheMachineIsOpen leaves a test unrun where the machine itself makes
