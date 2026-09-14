@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
 	"github.com/PHPCraftdream/wuserbox/internal/exit"
@@ -51,19 +52,33 @@ func Rm(args []string) error {
 	if !token.IsAdmin() {
 		return Elevate([]string{"rm", "--dir", project})
 	}
+	return removeSandbox(name)
+}
+
+// removeSandbox does the deleting, once the right to do it is established.
+// The record is held throughout, so a command handing the sandbox another
+// directory cannot write that permission back into a record being deleted.
+func removeSandbox(name string) error {
+	return state.Locked(name, func() error { return remove(name) })
+}
+
+func remove(name string) error {
 	if s, err := state.Load(name); err != nil {
 		return err
 	} else if s != nil {
-		for _, g := range s.Grants {
-			if err := grant.Revoke(s.SID, g.Path); err != nil {
-				fmt.Fprintln(os.Stderr, "wuserbox:", err)
-			}
-		}
-		if err := os.RemoveAll(s.Temp); err != nil {
-			fmt.Fprintln(os.Stderr, "wuserbox:", err)
+		if left := clearGrants(s); len(left) > 0 {
+			// The record is the only list of what is still in force, and the
+			// group is what those entries name. Keeping both is what makes a
+			// second attempt able to finish; deleting them would leave
+			// permissions behind that nothing can find again.
+			return exit.Errorf(exit.Failed,
+				"%s was not fully removed and is left in place so `wuserbox rm` can finish it: %s",
+				name, strings.Join(left, ", "))
 		}
 		if err := os.Remove(state.Path(name)); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintln(os.Stderr, "wuserbox:", err)
+			return exit.Errorf(exit.Failed,
+				"the permissions of %s are revoked, but its record at %s remains: %v",
+				name, state.Path(name), err)
 		}
 	}
 	if _, exists, err := group.Comment(name); err != nil {
@@ -72,6 +87,26 @@ func Rm(args []string) error {
 		return group.Delete(name)
 	}
 	return nil
+}
+
+// clearGrants revokes everything the sandbox holds and deletes its temp
+// directory, and names whatever would not go.
+//
+// Every step is attempted even after one fails, so a single stubborn
+// directory does not leave the rest of the permissions in force.
+func clearGrants(s *state.State) []string {
+	var left []string
+	for _, g := range s.Grants {
+		if err := grant.Revoke(s.SID, g.Path); err != nil {
+			fmt.Fprintln(os.Stderr, "wuserbox:", err)
+			left = append(left, g.Path)
+		}
+	}
+	if err := os.RemoveAll(s.Temp); err != nil {
+		fmt.Fprintln(os.Stderr, "wuserbox:", err)
+		left = append(left, s.Temp)
+	}
+	return left
 }
 
 // previewRemoval lists what deleting this sandbox would touch.

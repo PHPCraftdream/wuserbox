@@ -4,9 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/exit"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 )
 
 func TestParseOptionsDefaultsToTheCurrentDirectory(t *testing.T) {
@@ -146,5 +148,79 @@ func TestElevateRefusesWhenPromptsAreOff(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "administrator rights") {
 		t.Errorf("unhelpful message: %v", err)
+	}
+}
+
+// TestRemoveSandboxKeepsTheRecordWhenSomethingIsLeftBehind is the regression
+// guard for a removal that printed its failures and reported success. A temp
+// directory held open by another program stayed on disk while the record and
+// the group that named it were deleted, so nothing was left to finish the job
+// with and the command still exited 0.
+func TestRemoveSandboxKeepsTheRecordWhenSomethingIsLeftBehind(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	temp := t.TempDir()
+	s := &state.State{
+		Group: "wub-rm-test",
+		SID:   "S-1-5-21-1111111111-2222222222-3333333333-202020",
+		Dir:   t.TempDir(),
+		Temp:  temp,
+	}
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	release := holdOpen(t, filepath.Join(temp, "busy.log"))
+	defer release()
+
+	err := removeSandbox(s.Group)
+	if got := exit.Of(err); got != exit.Failed {
+		t.Fatalf("exit code is %v, want %v (error: %v)", got, exit.Failed, err)
+	}
+	if _, statErr := os.Stat(state.Path(s.Group)); statErr != nil {
+		t.Errorf("the record was deleted although the removal did not finish: %v", statErr)
+	}
+
+	// Once the obstacle is gone, running it again has to finish the job.
+	release()
+	if err := removeSandbox(s.Group); err != nil {
+		t.Fatalf("the second attempt did not finish: %v", err)
+	}
+	if _, statErr := os.Stat(state.Path(s.Group)); !os.IsNotExist(statErr) {
+		t.Errorf("the record survived a successful removal: %v", statErr)
+	}
+	if _, statErr := os.Stat(temp); !os.IsNotExist(statErr) {
+		t.Error("the temp directory survived a successful removal")
+	}
+}
+
+// TestRemoveSandboxSaysNothingAboutASandboxThatWasNeverThere keeps removal
+// harmless where there is nothing to remove.
+func TestRemoveSandboxSaysNothingAboutASandboxThatWasNeverThere(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	if err := removeSandbox("wub-never-created"); err != nil {
+		t.Errorf("removing a sandbox that does not exist failed: %v", err)
+	}
+}
+
+// holdOpen keeps a file open without letting anyone delete it, the way an
+// editor or a running program does, and returns the release. Releasing twice
+// is harmless.
+func holdOpen(t *testing.T, path string) func() {
+	t.Helper()
+	name, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := syscall.CreateFile(name, syscall.GENERIC_WRITE, syscall.FILE_SHARE_READ,
+		nil, syscall.CREATE_ALWAYS, syscall.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	return func() {
+		if released {
+			return
+		}
+		released = true
+		_ = syscall.CloseHandle(handle)
 	}
 }
