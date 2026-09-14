@@ -3,7 +3,9 @@ package lock
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -78,5 +80,48 @@ func TestForPathIsTheSameNameForTheSameDirectory(t *testing.T) {
 		if strings.Contains(first, bad) {
 			t.Errorf("the name %q holds %q, which no file name may", first, bad)
 		}
+	}
+}
+
+// TestLettingGoTwiceClosesNothingTwice is the regression guard for a crash
+// that never pointed at this package.
+//
+// Letting a lock go closed its handle, and letting it go again closed the same
+// number a second time. A handle is a number Windows hands out again as soon
+// as it is free, so the second close reaches whatever was given that number in
+// between. The Go runtime holds such numbers — one event per thread it parks —
+// and closing one of those leaves a thread woken with no processor attached,
+// which the runtime meets as a broken invariant rather than as an error and
+// turns into a crash somewhere else entirely. It happened on a build machine,
+// in this package, as a scheduler fault with no test failing.
+//
+// The sentinel is the point: it takes the number the lock has just given up,
+// so a second close would land on it and nothing else would say so.
+func TestLettingGoTwiceClosesNothingTwice(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	release, err := take("wub-release-twice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+
+	sentinel, err := syscall.UTF16PtrFromString(filepath.Join(t.TempDir(), "sentinel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := syscall.CreateFile(sentinel, syscall.GENERIC_WRITE,
+		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE, nil,
+		syscall.OPEN_ALWAYS, syscall.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.CloseHandle(handle)
+
+	release()
+
+	// Still ours, or the second letting go took something that was not its own.
+	var info syscall.ByHandleFileInformation
+	if err := syscall.GetFileInformationByHandle(handle, &info); err != nil {
+		t.Errorf("letting the lock go twice closed a handle belonging to somebody else: %v", err)
 	}
 }

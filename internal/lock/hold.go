@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"unsafe"
 
@@ -78,11 +79,24 @@ func take(name string) (func(), error) {
 		_ = syscall.CloseHandle(handle)
 		return nil, fmt.Errorf("waiting for the lock %s: %w", path, callErr)
 	}
+	// Letting go twice must do nothing the second time, and this is not
+	// tidiness. A handle is a number Windows hands out again as soon as it is
+	// free, so closing one twice closes whatever was given that number in
+	// between — and the Go runtime is holding such numbers, one per thread it
+	// parks. Closing one of those leaves a thread woken with nothing to run on,
+	// which the runtime meets as a broken invariant and not as an error: it
+	// crashes the process somewhere else entirely, in whatever happened to be
+	// running. Seen once on a build machine, as a scheduler crash in this very
+	// package, where a caller lets the lock go early and a deferred call lets
+	// it go again.
+	var once sync.Once
 	return func() {
-		var overlapped syscall.Overlapped
-		_, _, _ = procUnlockFileEx.Call(uintptr(handle), 0, 1, 0,
-			uintptr(unsafe.Pointer(&overlapped)))
-		// Closing would release the lock anyway; unlocking first says so.
-		_ = syscall.CloseHandle(handle)
+		once.Do(func() {
+			var overlapped syscall.Overlapped
+			_, _, _ = procUnlockFileEx.Call(uintptr(handle), 0, 1, 0,
+				uintptr(unsafe.Pointer(&overlapped)))
+			// Closing would release the lock anyway; unlocking first says so.
+			_ = syscall.CloseHandle(handle)
+		})
 	}, nil
 }
