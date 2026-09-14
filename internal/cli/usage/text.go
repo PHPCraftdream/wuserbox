@@ -13,6 +13,19 @@ var Text = intro + commandList() + options + paths
 const intro = `wuserbox - run a command that reads everything you can read, but writes
 only where you allow.
 
+USAGE
+
+  wuserbox [options] <program> [arguments...]   run a program sandboxed
+  wuserbox <command> [options]                  everything else
+
+  Running is the default: the first word is a program unless it is one of
+  the commands below. "wuserbox notepad.exe" is a whole command line. Options
+  belong to wuserbox and come before the program; everything from the program
+  onwards belongs to the program.
+
+  A program whose name is also a command needs the longer form:
+  "wuserbox run -- list".
+
 WHAT THIS MEANS FOR A PROGRAM RUNNING INSIDE
 
   You can read everything the user can read: the whole disk, the toolchain,
@@ -52,16 +65,22 @@ COMMANDS
 const options = `
   Run "wuserbox help <command>" for the full entry on any of them.
 
-OPTIONS SHARED BY run AND init
+RUNNING AND CONFIGURING ARE SEPARATE
 
-  --dir <d>       project directory (default: the current directory)
-  --rw <d>        allow writing to another directory, repeatable
-  --ro <d>        allow reading another directory, repeatable
-  --no-ai         do not hand over the AI agent directories
-  --home-writes   let the sandbox create files in the profile root
+  Starting a program takes the sandbox as it stands and changes nothing, so
+  a run has no options that decide what may be written. Those belong to:
 
-  --rw and --ro stay in force for later runs as well, until "wuserbox revoke"
-  takes them back or "wuserbox rm" removes the sandbox.
+    wuserbox add-dir <dir> [--ro]   allow a directory, now and from now on
+    wuserbox grant <dir> [--ro]     allow it for this project, unrecorded
+    wuserbox init --no-ai           build the sandbox without agent directories
+    wuserbox init --home-writes     let it create files in the profile root
+
+  A directory allowed this way stays in force for later runs, until
+  "wuserbox revoke" takes it back or "wuserbox rm" removes the sandbox.
+
+  What a sandbox may write is therefore decided in one place and readable
+  afterwards with "wuserbox explain", instead of depending on which command
+  line happened to start the program.
 
 OPTIONS SHARED MORE WIDELY
 

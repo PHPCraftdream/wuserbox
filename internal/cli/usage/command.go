@@ -19,6 +19,10 @@ type Command struct {
 	Options []Option
 	// Examples are complete command lines, most useful first.
 	Examples []string
+	// Default marks the command wuserbox carries out when the first word is
+	// not a command at all. Its call and its examples are therefore written
+	// without a name in front, which is the shape people will type.
+	Default bool
 	// Elevates marks a command that asks for administrator rights.
 	Elevates bool
 	// Privileged marks a command barred inside a sandbox, because it widens

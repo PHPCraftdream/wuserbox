@@ -57,7 +57,11 @@ func Execute(args []string) error {
 	}
 	cmd, known := commands[name]
 	if !known {
-		return exit.Errorf(exit.Usage, "unknown command %q (try `wuserbox help`)", args[0])
+		// Anything that is not a command is a program to run in the sandbox
+		// of the current directory, so `wuserbox notepad.exe` is all it takes.
+		// Options are told apart by their leading dash and come first;
+		// everything from the program onwards belongs to the program.
+		return setup.Run(args)
 	}
 	rest := args[1:]
 	if asksForHelp(rest) {

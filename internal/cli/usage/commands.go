@@ -6,36 +6,45 @@ package usage
 var Commands = []Command{
 	{
 		Name:    "run",
-		Summary: "run a command sandboxed for the current directory",
-		Call:    "run [options] -- <command> [arguments...]",
-		Detail: `Starts a command under a token that reads everything you can read and
+		Default: true,
+		Summary: "run a program sandboxed for the current directory",
+		Call:    "[options] <program> [arguments...]",
+		Detail: `Starts a program under a token that reads everything you can read and
 writes only where this project's sandbox is allowed to: the project
 directory, the directories you have handed over, and a temporary
 directory of its own that TEMP and TMP point at.
 
+This is what wuserbox does when the first word is not one of its
+commands, so "wuserbox notepad.exe" is a whole command line. Options
+belong to wuserbox and come before the program; everything from the
+program onwards belongs to the program, its own flags included, so
+"wuserbox git --version" reaches git untouched.
+
+A program whose name is also a wuserbox command needs the longer form:
+"wuserbox run -- list". The word "run" and the -- separator both still
+work, and mean exactly what the short form means.
+
 The sandbox is created on first use, which needs administrator rights
-once. Later runs need none. The command keeps your console, your
+once. Later runs need none. The program keeps your console, your
 environment and your exit code, so it behaves like any other program
 you start from the shell.
 
-Everything after -- belongs to the command being run, including its own
-flags, so "wuserbox run -- git --version" reaches git untouched.`,
+A run changes nothing about the sandbox. What may be written is decided
+by "init", "grant" and "add-dir", and is the same whichever command line
+starts the program.`,
 		Options: []Option{
 			{"--dir <d>", "project directory (default: the current one)"},
-			{"--rw <d>", "hand over another directory for writing, repeatable"},
-			{"--ro <d>", "hand over another directory for reading, repeatable"},
-			{"--no-ai", "withhold the AI agent directories, and take back any already given"},
-			{"--home-writes", "let the sandbox create files in the profile root"},
-			{"--dry-run", "show what would be handed over, hand over nothing"},
+			{"--dry-run", "show what the sandbox holds and start nothing"},
 			{"--json", "print the plan as JSON instead of lines"},
 			{"--quiet", "no progress messages, errors only"},
 			{"--non-interactive", "fail instead of asking for administrator rights"},
 		},
 		Examples: []string{
-			`wuserbox run -- claude`,
-			`wuserbox run -- npm test`,
-			`wuserbox run --rw C:\build\out -- cargo build`,
-			`wuserbox run --dir C:\projects\app -- git status`,
+			`wuserbox claude`,
+			`wuserbox npm test`,
+			`wuserbox notepad.exe`,
+			`wuserbox --dir /c/projects/app git status`,
+			`wuserbox run -- list`,
 		},
 	},
 	{
@@ -48,10 +57,10 @@ flags, so "wuserbox run -- git --version" reaches git untouched.`,
 the permissions the sandbox needs, and locks wuserbox's own settings so
 the code it runs cannot change them.
 
-You rarely need this: "run" does it the first time it is used in a
+You rarely need this: a run does it the first time one happens in a
 directory. Reach for it when you want the consent prompt out of the way
 before starting an agent, or when you want to hand over directories
-ahead of time.
+ahead of time — a run has no options for that, deliberately.
 
 Running it again is safe, and is the way to repair a sandbox: every
 permission is applied afresh rather than taken on trust from the

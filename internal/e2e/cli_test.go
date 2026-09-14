@@ -326,3 +326,42 @@ func TestCLIKeepsJSONWhileWorking(t *testing.T) {
 		t.Errorf("the failure came back as %d/%q", reported.Code, reported.Status)
 	}
 }
+
+// TestCLIRunsAProgramWithoutBeingTold is the shape the command now has:
+// anything that is not a wuserbox command is a program to run in the sandbox
+// of the current directory, with no `run` and no separator.
+func TestCLIRunsAProgramWithoutBeingTold(t *testing.T) {
+	command := binary(t)
+	project := t.TempDir()
+	out, err := exec.Command(command, "--dir", project, "--dry-run", "--quiet",
+		"cmd.exe", "/c", "echo", "hello").CombinedOutput()
+	if err != nil {
+		t.Fatalf("a plain run failed: %v (%s)", err, out)
+	}
+	if !strings.Contains(string(out), "cmd.exe") {
+		t.Errorf("the program was not the one asked for: %q", out)
+	}
+
+	// And a word that is neither says which it is not.
+	mistyped, err := exec.Command(command, "--dir", project, "frobnicate").CombinedOutput()
+	if err == nil {
+		t.Fatal("a word that is neither a command nor a program should fail")
+	}
+	if !strings.Contains(string(mistyped), "unknown command") {
+		t.Errorf("unhelpful message: %q", mistyped)
+	}
+}
+
+// TestCLIRefusesToConfigureOnARun covers the same line from outside: the flags
+// that say what a sandbox is are not accepted while starting a program.
+func TestCLIRefusesToConfigureOnARun(t *testing.T) {
+	command := binary(t)
+	out, err := exec.Command(command, "--dir", t.TempDir(), "--rw", t.TempDir(),
+		"cmd.exe", "/c", "echo", "hello").CombinedOutput()
+	if err == nil {
+		t.Fatal("configuring on a run should fail")
+	}
+	if !strings.Contains(string(out), "add-dir") {
+		t.Errorf("the message does not name the command to use instead: %q", out)
+	}
+}

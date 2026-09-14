@@ -270,3 +270,80 @@ func TestRmRefusesADirectoryGivenAsAnArgument(t *testing.T) {
 		t.Errorf("the message does not say how to name a project: %v", err)
 	}
 }
+
+// TestRunRefusesToConfigureWhileItRuns covers the line drawn between starting
+// a program and deciding what it may write. A directory handed over by a flag
+// on one run and forgotten on the next is a sandbox nobody can reason about,
+// so those flags belong to init and to the rules file instead.
+func TestRunRefusesToConfigureWhileItRuns(t *testing.T) {
+	for _, args := range [][]string{
+		{"--rw", `C:\tools`, "cmd.exe"},
+		{"--ro", `C:\tools`, "cmd.exe"},
+		{"--no-ai", "cmd.exe"},
+		{"--home-writes", "cmd.exe"},
+	} {
+		err := Run(args)
+		if got := exit.Of(err); got != exit.Usage {
+			t.Errorf("%v: exit code is %v, want %v (error: %v)", args, got, exit.Usage, err)
+			continue
+		}
+		if !strings.Contains(err.Error(), "wuserbox ") {
+			t.Errorf("%v: the message does not name a command to use instead: %v", args, err)
+		}
+	}
+}
+
+// TestRunStillTakesTheOptionsAboutRunning keeps the flags that describe this
+// one run rather than the sandbox.
+func TestRunStillTakesTheOptionsAboutRunning(t *testing.T) {
+	options, command, err := ParseOptions("run", []string{
+		"--dir", t.TempDir(), "--quiet", "--json", "--dry-run", "cmd.exe", "/c", "echo",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.Quiet || !options.JSON || !options.DryRun {
+		t.Errorf("the options came back as %+v", options)
+	}
+	if len(command) != 3 || command[0] != "cmd.exe" {
+		t.Errorf("the command came back as %v", command)
+	}
+	if err := onlyRunning(options); err != nil {
+		t.Errorf("a plain run was refused: %v", err)
+	}
+}
+
+// TestAProgramNeedsNoSeparator is the shape the command now has: options
+// first, program next, and everything after it belongs to the program.
+func TestAProgramNeedsNoSeparator(t *testing.T) {
+	_, command, err := ParseOptions("run", []string{"cmd.exe", "/c", "echo", "--dir", "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"cmd.exe", "/c", "echo", "--dir", "x"}
+	if len(command) != len(want) {
+		t.Fatalf("the command came back as %v", command)
+	}
+	for i := range want {
+		if command[i] != want[i] {
+			t.Errorf("argument %d is %q, want %q", i, command[i], want[i])
+		}
+	}
+}
+
+// TestAMistypedCommandSaysSo keeps a typo from being reported as a missing
+// program, now that anything which is not a command is taken for one.
+func TestAMistypedCommandSaysSo(t *testing.T) {
+	err := Run([]string{"frobnicate"})
+	if got := exit.Of(err); got != exit.Usage {
+		t.Fatalf("exit code is %v, want %v (error: %v)", got, exit.Usage, err)
+	}
+	if !strings.Contains(err.Error(), "unknown command") {
+		t.Errorf("unhelpful message: %v", err)
+	}
+	// Something that looks like a path is reported as what it is.
+	pathLike := Run([]string{`C:\no\such\program.exe`})
+	if pathLike == nil || strings.Contains(pathLike.Error(), "unknown command") {
+		t.Errorf("a path was reported as a command: %v", pathLike)
+	}
+}

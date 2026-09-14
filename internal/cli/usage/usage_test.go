@@ -34,9 +34,28 @@ func TestOverviewTellsAnAgentWhatToAskFor(t *testing.T) {
 	}
 }
 
-func TestOverviewExplainsHowLongExtraDirectoriesLast(t *testing.T) {
-	if !strings.Contains(Text, "stay in force for later runs") {
-		t.Error("the overview does not say how long --rw and --ro last")
+func TestOverviewExplainsHowLongAnAllowanceLasts(t *testing.T) {
+	if !strings.Contains(Text, "stays in force for later runs") {
+		t.Error("the overview does not say how long an allowed directory lasts")
+	}
+}
+
+// TestOverviewShowsThePlainRunFirst covers what changed about the command
+// itself: running is what wuserbox does unless told otherwise, and the
+// overview is read by agents that will copy the first form they see.
+func TestOverviewShowsThePlainRunFirst(t *testing.T) {
+	for _, phrase := range []string{
+		"wuserbox [options] <program> [arguments...]",
+		"Running is the default",
+		"RUNNING AND CONFIGURING ARE SEPARATE",
+	} {
+		if !strings.Contains(Text, phrase) {
+			t.Errorf("the overview does not mention %q", phrase)
+		}
+	}
+	// And it must not go on offering the flags a run no longer takes.
+	if strings.Contains(Text, "OPTIONS SHARED BY run AND init") {
+		t.Error("the overview still offers configuration flags on a run")
 	}
 }
 
@@ -60,10 +79,19 @@ func TestEveryEntryIsComplete(t *testing.T) {
 		if len(command.Examples) == 0 {
 			t.Errorf("%q has no example", command.Name)
 		}
-		if !strings.HasPrefix(command.Call, command.Name) {
+		// The default command is the exception, and says so: it is reached by
+		// typing no command at all, so its call and examples carry no name.
+		if !command.Default && !strings.HasPrefix(command.Call, command.Name) {
 			t.Errorf("the call of %q starts with %q", command.Name, command.Call)
 		}
 		for _, example := range command.Examples {
+			if command.Default {
+				if !strings.HasPrefix(example, "wuserbox ") {
+					t.Errorf("%q has an example that is not a wuserbox line: %q",
+						command.Name, example)
+				}
+				continue
+			}
 			if !strings.HasPrefix(example, "wuserbox "+command.Name) {
 				t.Errorf("%q has an example for another command: %q", command.Name, example)
 			}
@@ -99,8 +127,13 @@ func TestDetailRendersTheWholeEntry(t *testing.T) {
 			t.Errorf("the entry for run has no %s section", heading)
 		}
 	}
-	if !strings.Contains(rendered, "wuserbox run [options] -- <command>") {
+	if !strings.Contains(rendered, "wuserbox [options] <program> [arguments...]") {
 		t.Errorf("the entry for run does not show how to call it:\n%s", rendered)
+	}
+	// The longer form still has to be findable, for a program named like a
+	// command and for anyone who learned it that way.
+	if !strings.Contains(rendered, "wuserbox run -- list") {
+		t.Errorf("the entry for run does not show the longer form:\n%s", rendered)
 	}
 }
 

@@ -12,8 +12,12 @@ whole toolchain and configuration, and they must not be able to damage anything
 outside the project.
 
 ```
-wuserbox run -- claude
+wuserbox claude
 ```
+
+Running is what wuserbox does unless the first word is one of its commands, so
+that line is complete. Options belong to wuserbox and come before the program;
+everything from the program onwards belongs to the program.
 
 ## Installing
 
@@ -65,7 +69,7 @@ else.
 
 | Command | Effect |
 | --- | --- |
-| `wuserbox run -- <cmd>` | run a command sandboxed for the current directory |
+| `wuserbox [options] <program> [args...]` | run a program sandboxed for the current directory |
 | `wuserbox init` | create the group and apply permissions |
 | `wuserbox grant <dir> [--ro]` | allow one more directory |
 | `wuserbox revoke <dir>` | take an allowance back |
@@ -88,9 +92,14 @@ few examples. `wuserbox grant --help` prints the same thing. The overview is
 written for a coding agent that has just been refused a write: it says where
 the boundary is and which command to ask the user for.
 
-Options: `--dir <d>` picks the project, `--rw <d>` and `--ro <d>` hand over
-another directory, `--no-ai` withholds the agent directories, `--home-writes`
-opts into writing in the profile root.
+Running and configuring are separate. Starting a program takes the sandbox as
+it stands and changes nothing, so a run has no options that decide what may be
+written: `--dir <d>` picks the project and that is all. What a sandbox may
+write is decided by `init`, `grant` and `add-dir` — `--rw <d>`, `--ro <d>`,
+`--no-ai` and `--home-writes` belong to `init`, and to the rules file the other
+two write. The answer is therefore in one place, readable afterwards with
+`wuserbox explain`, rather than depending on which command line happened to
+start the program.
 
 `--dry-run` shows what a command would change without changing it, taking both
 the rules file and the permissions the sandbox holds into account, `--json`
@@ -100,8 +109,8 @@ gives the diagnostic commands machine-readable output — a failure under
 of raising a consent prompt, so a script never stops at a dialog nobody can
 click.
 
-A directory handed over with `--rw` or `--ro` stays available on later runs
-too, until `wuserbox revoke` takes it back. Nothing is given up when the
+A directory handed over with `grant`, `add-dir` or `init --rw` stays available
+on later runs too, until `wuserbox revoke` takes it back. Nothing is given up when the
 process ends: a permission that vanished whenever a run was interrupted would
 be a promise the tool could not keep.
 
@@ -121,7 +130,7 @@ C:\tools    c:/tools    /c/tools    /mnt/c/tools    /cygdrive/c/tools
 ```
 
 Creating or deleting a group needs administrator rights, so `init` and `rm`
-raise a consent prompt once. `run` does not, unless the sandbox does not exist
+raise a consent prompt once. A run does not, unless the sandbox does not exist
 yet.
 
 ## What is writable by default
@@ -137,8 +146,9 @@ yet.
 The profile root itself is **read-only**. Handing it over would make every
 dotfile already in it writable, because Windows pushes an inherited permission
 down to the files that are already there. Agents that rewrite a dotfile in the
-profile root through a temporary file and a rename need `--home-writes`; with
-that flag every sensitive file there is refused one by one.
+profile root through a temporary file and a rename need `wuserbox init
+--home-writes`; with that flag every sensitive file there is refused one by
+one.
 
 ## Protecting your settings
 
@@ -197,7 +207,7 @@ an escape, but every spelling above is accepted when the file is read, in the
 | 5 | the rules file does not parse or contradicts itself |
 | 6 | what was named does not exist |
 
-`wuserbox run` is the exception: it returns whatever the command inside
+A run is the exception: it returns whatever the program inside
 returned, so the code you read after it is the sandboxed program's own.
 
 ## Limits worth knowing
