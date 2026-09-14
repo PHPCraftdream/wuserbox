@@ -187,10 +187,10 @@ Code running in the sandbox must not be able to widen its own permissions:
 ```
 projects: [
     {
-        dir: C:/Users/Computer/Desktop/pc/wuserbox
+        dir: C:/Users/name/projects/app
         rw: [
-            C:/Users/Computer/Desktop/pc/tools
-            C:/Users/Computer/Desktop/pc/logs
+            C:/Users/name/projects/tools
+            C:/Users/name/projects/logs
         ]
     }
 ]
