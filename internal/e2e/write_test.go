@@ -7,6 +7,9 @@ import (
 
 	"github.com/PHPCraftdream/wuserbox/internal/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/win/access"
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
 func TestWritesInsideTheProjectDirectory(t *testing.T) {
@@ -136,6 +139,43 @@ func TestReadOnlyGrantDoesNotAllowWrites(t *testing.T) {
 	}
 	mustSucceed(t, box.state, []string{"cmd.exe", "/c", "type " + existing})
 	mustFail(t, box.state, writeFileCommand(filepath.Join(box.denied, "written.txt")))
+}
+
+// TestHomeTopHoldsWhereTheMachineHandsOutNothing is the regression guard for a
+// question that asked for more than the deed needs. Creating a file was checked
+// for the right to traverse and to list the directory as well as to add to it,
+// and the two extra rights were supplied by whatever the machine handed out on
+// its own, so the mistake was invisible anywhere %TEMP% is generous and plain
+// on a real Windows profile, which grants Everyone and BUILTIN\Users nothing.
+// There --home-writes worked and --explain called it broken.
+//
+// The directory is stripped of what this machine hands out, so the test asks
+// the same question on every machine, and the answer and the deed are checked
+// together: a check that disagrees with what actually happens is the defect.
+func TestHomeTopHoldsWhereTheMachineHandsOutNothing(t *testing.T) {
+	box := newBox(t)
+	top := filepath.Join(box.root, "profile")
+	if err := os.Mkdir(top, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := box.state.Add(top, grant.HomeTop); err != nil {
+		t.Fatal(err)
+	}
+	for _, who := range []string{sid.Everyone, sid.Users} {
+		if err := acl.StripOwn(top, who); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	target := filepath.Join(top, "new.txt")
+	answer, err := access.Check(box.state.SID, target, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSucceed(t, box.state, writeFileCommand(target))
+	if !answer.Allowed {
+		t.Errorf("the sandbox created the file, yet the check refused it: %s", answer.Reason)
+	}
 }
 
 func TestHomeTopAllowsNewFilesButNotSubdirectories(t *testing.T) {
