@@ -166,11 +166,12 @@ func TestTwoSandboxesCannotReachEachOther(t *testing.T) {
 // have been reported as a skipped test.
 func TestABrokenBoundaryIsAFailureAndNotASkip(t *testing.T) {
 	box := newBox(t)
-	closeOff(t, box)
 	target := filepath.Join(box.denied, "precious.txt")
 	place(t, target, "x")
+	closeOff(t, box, box.root, box.denied, box.control)
 	// What a broken sandbox looks like: the file it must not touch is
-	// reachable after all.
+	// reachable after all. The refusal above is replaced by this permission,
+	// because both name the same account.
 	if err := box.state.Add(target, grant.File); err != nil {
 		t.Fatal(err)
 	}
@@ -184,9 +185,9 @@ func TestABrokenBoundaryIsAFailureAndNotASkip(t *testing.T) {
 // control file says so and the question is not answered wrongly.
 func TestAnOpenMachineIsWhatMakesAQuestionUnanswerable(t *testing.T) {
 	box := newBox(t)
-	closeOff(t, box)
 	target := filepath.Join(box.denied, "precious.txt")
 	place(t, target, "x")
+	closeOff(t, box, box.root, box.denied, box.control, target)
 	if outcome, _ := attemptDelete(t, box, target); outcome != refused {
 		t.Fatalf("the boundary did not hold before the machine was made open: %v", outcome)
 	}

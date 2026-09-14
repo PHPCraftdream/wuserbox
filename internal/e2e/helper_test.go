@@ -69,18 +69,21 @@ func newBox(t *testing.T) *box {
 	return &box{state: s, root: root, granted: granted, denied: denied, control: control}
 }
 
-// closeOff refuses the sandbox everything that changes the two directories a
-// boundary test reasons about, without touching what is inside them.
+// closeOff refuses the sandbox everything that changes the given paths.
 //
-// Windows lets something be deleted when the directory holding it allows
-// removing what is inside, and how generously a temporary directory hands that
-// right down is not the same on every machine: a build machine gives it away
-// where a desktop does not. A test about what wuserbox refuses must not rest on
-// that difference, so the refusal is stated outright. It is put on the
-// directories only, so files inside them keep whatever the test gives them.
-func closeOff(t *testing.T, b *box) {
+// How much a temporary directory hands down is not the same on every machine:
+// a build machine lets anyone in the Users group delete what is inside, where a
+// desktop does not, and a restricted token does not take that right away
+// because it restricts writing rather than deleting. A test about the rule for
+// deciding whether a question can be asked at all must not rest on that
+// difference, so the refusal is stated outright.
+//
+// This belongs to those tests only. The tests about the boundary itself must
+// keep asking what wuserbox alone arranges, and would be worth nothing if the
+// answer were nailed down here.
+func closeOff(t *testing.T, b *box, paths ...string) {
 	t.Helper()
-	for _, path := range []string{b.root, b.denied} {
+	for _, path := range paths {
 		if err := acl.Deny(path, b.state.SID, acl.AccessChange); err != nil {
 			t.Fatalf("closing off %s: %v", path, err)
 		}
