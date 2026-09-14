@@ -142,7 +142,15 @@ func inForce(account string, held grant.Spec) (bool, string) {
 	// creating subdirectories is refused a plain write and allowed a create,
 	// so asking only about writing would call that directory read-only while
 	// the sandbox fills it with files.
-	for _, changing := range []access.Operation{access.Write, access.Create, access.Delete} {
+	//
+	// Deleting the path itself is left out, and deliberately. Windows lets
+	// something go when the directory holding it may have things removed
+	// from it, whatever the thing's own entries say, so a read-only entry
+	// inside a directory the sandbox was given can never refuse that. Asking
+	// would report every such entry as broken on the machines that pass the
+	// right down, and a read-only entry does not promise what it cannot
+	// deliver.
+	for _, changing := range []access.Operation{access.Write, access.Create} {
 		answer, err := access.Check(account, held.Path, changing)
 		if err != nil {
 			return false, err.Error()

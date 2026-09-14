@@ -166,6 +166,7 @@ func TestTwoSandboxesCannotReachEachOther(t *testing.T) {
 // have been reported as a skipped test.
 func TestABrokenBoundaryIsAFailureAndNotASkip(t *testing.T) {
 	box := newBox(t)
+	closeOff(t, box)
 	target := filepath.Join(box.denied, "precious.txt")
 	place(t, target, "x")
 	// What a broken sandbox looks like: the file it must not touch is
@@ -183,6 +184,7 @@ func TestABrokenBoundaryIsAFailureAndNotASkip(t *testing.T) {
 // control file says so and the question is not answered wrongly.
 func TestAnOpenMachineIsWhatMakesAQuestionUnanswerable(t *testing.T) {
 	box := newBox(t)
+	closeOff(t, box)
 	target := filepath.Join(box.denied, "precious.txt")
 	place(t, target, "x")
 	if outcome, _ := attemptDelete(t, box, target); outcome != refused {

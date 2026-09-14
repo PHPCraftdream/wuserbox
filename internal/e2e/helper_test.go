@@ -15,6 +15,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/win/access"
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
 // testSID returns a SID that belongs to no account on this machine. Access
@@ -66,6 +67,24 @@ func newBox(t *testing.T) *box {
 		t.Fatalf("grant temp directory: %v", err)
 	}
 	return &box{state: s, root: root, granted: granted, denied: denied, control: control}
+}
+
+// closeOff refuses the sandbox everything that changes the two directories a
+// boundary test reasons about, without touching what is inside them.
+//
+// Windows lets something be deleted when the directory holding it allows
+// removing what is inside, and how generously a temporary directory hands that
+// right down is not the same on every machine: a build machine gives it away
+// where a desktop does not. A test about what wuserbox refuses must not rest on
+// that difference, so the refusal is stated outright. It is put on the
+// directories only, so files inside them keep whatever the test gives them.
+func closeOff(t *testing.T, b *box) {
+	t.Helper()
+	for _, path := range []string{b.root, b.denied} {
+		if err := acl.Deny(path, b.state.SID, acl.AccessChange); err != nil {
+			t.Fatalf("closing off %s: %v", path, err)
+		}
+	}
 }
 
 // machineIsOpen reports whether this machine hands out the right to delete
