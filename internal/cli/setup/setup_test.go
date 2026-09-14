@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/exit"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 )
 
@@ -222,5 +223,37 @@ func holdOpen(t *testing.T, path string) func() {
 		}
 		released = true
 		_ = syscall.CloseHandle(handle)
+	}
+}
+
+// TestRemoveSandboxFinishesWhenAGrantedDirectoryIsGone is the regression guard
+// for a removal that could never complete. A directory in the record that had
+// since been deleted was counted as a permission that would not go, so every
+// attempt failed on the same missing path and the sandbox stayed on the
+// machine for good.
+func TestRemoveSandboxFinishesWhenAGrantedDirectoryIsGone(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	gone := filepath.Join(t.TempDir(), "was-here")
+	if err := os.Mkdir(gone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := &state.State{
+		Group: "wub-rm-missing",
+		SID:   "S-1-5-21-1111111111-2222222222-3333333333-212121",
+		Dir:   t.TempDir(),
+		Temp:  t.TempDir(),
+	}
+	if err := s.Add(gone, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := removeSandbox(s.Group); err != nil {
+		t.Fatalf("removal did not finish over a directory that no longer exists: %v", err)
+	}
+	if _, err := os.Stat(state.Path(s.Group)); !os.IsNotExist(err) {
+		t.Errorf("the record survived a successful removal: %v", err)
 	}
 }

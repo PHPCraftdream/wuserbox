@@ -97,6 +97,13 @@ func remove(name string) error {
 func clearGrants(s *state.State) []string {
 	var left []string
 	for _, g := range s.Grants {
+		// A directory that is no longer there holds no entries, so there is
+		// nothing left to take back. Counting it as a failure would leave
+		// every later attempt failing on the same missing path, and the
+		// sandbox could never be removed at all.
+		if _, err := os.Stat(g.Path); os.IsNotExist(err) {
+			continue
+		}
 		if err := grant.Revoke(s.SID, g.Path); err != nil {
 			fmt.Fprintln(os.Stderr, "wuserbox:", err)
 			left = append(left, g.Path)
