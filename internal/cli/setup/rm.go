@@ -36,7 +36,7 @@ func Rm(args []string) error {
 	// command line says another, and this command deletes things.
 	if flags.NArg() > 0 {
 		return exit.Errorf(exit.Usage,
-			"wuserbox rm takes no directory as an argument; "+
+			"wuserbox --rm takes no directory as an argument; "+
 				"name the project with --dir %s", flags.Arg(0))
 	}
 	if *nonInteractive {
@@ -80,7 +80,7 @@ func remove(name string, asJSON bool) error {
 			// second attempt able to finish; deleting them would leave
 			// permissions behind that nothing can find again.
 			return exit.Errorf(exit.Failed,
-				"%s was not fully removed and is left in place so `wuserbox rm` can finish it: %s",
+				"%s was not fully removed and is left in place so `wuserbox --rm` can finish it: %s",
 				name, strings.Join(left, ", "))
 		}
 		if err := os.Remove(state.Path(name)); err != nil && !os.IsNotExist(err) {

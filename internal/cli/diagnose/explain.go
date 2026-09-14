@@ -198,7 +198,7 @@ func printReport(report Report, asJSON bool) error {
 		}
 	}
 	if len(report.Drifted) > 0 {
-		fmt.Printf("\n%d recorded permission(s) are not in force; `wuserbox init` reapplies them\n",
+		fmt.Printf("\n%d recorded permission(s) are not in force; `wuserbox --init` reapplies them\n",
 			len(report.Drifted))
 	}
 	return nil

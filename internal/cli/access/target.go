@@ -46,7 +46,7 @@ func parseTarget(name string, args []string) (target, error) {
 	}
 	if len(operands) != 1 {
 		return target{}, exit.Errorf(exit.Usage,
-			"usage: wuserbox %s <dir> [--ro] [--dir project] [--dry-run] [--json]", name)
+			"usage: wuserbox --%s <dir> [--ro] [--dir project] [--dry-run] [--json]", name)
 	}
 	path, err := paths.Resolve(operands[0])
 	if err != nil {
@@ -105,7 +105,7 @@ func load(project string) (*state.State, error) {
 	}
 	if s == nil {
 		return nil, exit.Errorf(exit.NotFound,
-			"no sandbox for %s yet; run `wuserbox init` there", project)
+			"no sandbox for %s yet; run `wuserbox --init` there", project)
 	}
 	return s, nil
 }

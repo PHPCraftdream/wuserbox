@@ -96,7 +96,7 @@ func TestTargetArgumentsRoundTrip(t *testing.T) {
 func TestLoadReportsAnUninitializedSandbox(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", tempDir(t))
 	_, err := load(tempDir(t))
-	if err == nil || !strings.Contains(err.Error(), "wuserbox init") {
+	if err == nil || !strings.Contains(err.Error(), "wuserbox --init") {
 		t.Errorf("unhelpful error: %v", err)
 	}
 }

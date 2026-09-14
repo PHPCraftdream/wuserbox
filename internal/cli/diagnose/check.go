@@ -36,7 +36,7 @@ func Check(args []string) error {
 	}
 	if len(operands) != 1 {
 		return exit.Errorf(exit.Usage,
-			"usage: wuserbox check <path> [--operation read|write|create|delete] [--dir project] [--json]")
+			"usage: wuserbox --check <path> [--operation read|write|create|delete] [--dir project] [--json]")
 	}
 	wanted, err := access.Parse(*operation)
 	if err != nil {
@@ -103,7 +103,7 @@ func sandboxOf(project string) (*state.State, error) {
 	}
 	if s == nil {
 		return nil, exit.Errorf(exit.NotFound,
-			"no sandbox for %s yet; run `wuserbox init` there", dir)
+			"no sandbox for %s yet; run `wuserbox --init` there", dir)
 	}
 	return s, nil
 }

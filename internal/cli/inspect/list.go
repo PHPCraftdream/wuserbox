@@ -26,7 +26,7 @@ func List(args []string) error {
 		return exit.Errorf(exit.Usage, "%v", err)
 	}
 	if flags.NArg() > 0 {
-		return exit.Errorf(exit.Usage, "usage: wuserbox list [--json]")
+		return exit.Errorf(exit.Usage, "usage: wuserbox --list [--json]")
 	}
 	entries, err := group.List()
 	if err != nil {

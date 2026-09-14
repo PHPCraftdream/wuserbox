@@ -11,7 +11,7 @@ import (
 // pathCmd prints the directory a group belongs to.
 func Path(args []string) error {
 	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
-		return exit.Errorf(exit.Usage, "usage: wuserbox path <group>")
+		return exit.Errorf(exit.Usage, "usage: wuserbox --path <group>")
 	}
 	dir, exists, err := group.Comment(args[0])
 	if err != nil {

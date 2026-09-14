@@ -10,7 +10,7 @@ import (
 )
 
 const header = "## wuserbox: extra directories each project may write to.\n" +
-	"## Edit with `wuserbox add-dir <dir>` / `wuserbox remove-dir <dir>`.\n" +
+	"## Edit with `wuserbox --add-dir <dir>` / `wuserbox --remove-dir <dir>`.\n" +
 	"## Paths use forward slashes: ktav reads a backslash as an escape.\n"
 
 // Save writes the config as ktav, storing paths with forward slashes so the

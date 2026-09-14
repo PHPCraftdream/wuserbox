@@ -27,7 +27,7 @@ type Complaint struct {
 // Config reads the rules file: show it, say where it is, or check it.
 func Config(args []string) error {
 	if len(args) == 0 {
-		return exit.Errorf(exit.Usage, "usage: wuserbox config show|path|validate [--dir project] [--json]")
+		return exit.Errorf(exit.Usage, "usage: wuserbox --config show|path|validate [--dir project] [--json]")
 	}
 	action, rest := args[0], args[1:]
 	flags := flag.NewFlagSet("config "+action, flag.ContinueOnError)

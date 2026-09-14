@@ -65,10 +65,10 @@ func onlyRunning(options sandbox.Options) error {
 		flag    string
 		instead string
 	}{
-		{len(options.RW) > 0, "--rw", "wuserbox add-dir <dir>"},
-		{len(options.RO) > 0, "--ro", "wuserbox add-dir <dir> --ro"},
-		{options.NoAI, "--no-ai", "wuserbox init --no-ai"},
-		{options.HomeWrites, "--home-writes", "wuserbox init --home-writes"},
+		{len(options.RW) > 0, "--rw", "wuserbox --add-dir <dir>"},
+		{len(options.RO) > 0, "--ro", "wuserbox --add-dir <dir> --ro"},
+		{options.NoAI, "--no-ai", "wuserbox --init --no-ai"},
+		{options.HomeWrites, "--home-writes", "wuserbox --init --home-writes"},
 	} {
 		if configuring.used {
 			return exit.Errorf(exit.Usage,
@@ -91,5 +91,5 @@ func notAProgram(word string, cause error) error {
 	}
 	return exit.Errorf(exit.Usage,
 		"unknown command %q, and no program by that name is on your PATH "+
-			"(try `wuserbox help` for the commands)", word)
+			"(try `wuserbox --help` for the commands)", word)
 }

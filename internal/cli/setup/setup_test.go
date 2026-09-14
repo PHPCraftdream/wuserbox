@@ -290,8 +290,8 @@ func TestRunRefusesToConfigureWhileItRuns(t *testing.T) {
 			t.Errorf("%v: exit code is %v, want %v (error: %v)", args, got, exit.Usage, err)
 			continue
 		}
-		if !strings.Contains(err.Error(), "wuserbox ") {
-			t.Errorf("%v: the message does not name a command to use instead: %v", args, err)
+		if !strings.Contains(err.Error(), "wuserbox --") {
+			t.Errorf("%v: the message does not name a runnable command to use instead: %v", args, err)
 		}
 	}
 }

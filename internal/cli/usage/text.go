@@ -53,9 +53,9 @@ NEEDING ANOTHER DIRECTORY
   Ask the user to run one of these in a terminal that is NOT inside the
   sandbox, then start you again:
 
-    wuserbox add-dir C:\path\to\dir        allow writing there, now and from now on
-    wuserbox add-dir C:\path\to\dir --ro   allow reading it, nothing more
-    wuserbox grant C:\path\to\dir          allow writing there for this project
+    wuserbox --add-dir C:\path\to\dir        allow writing there, now and from now on
+    wuserbox --add-dir C:\path\to\dir --ro   allow reading it, nothing more
+    wuserbox --grant C:\path\to\dir          allow writing there for this project
 
   add-dir also records the directory in %USERPROFILE%\.wuserbox.ktav, so it
   survives; grant does the same without writing it down. Say which directory
@@ -82,7 +82,7 @@ RUNNING AND CONFIGURING ARE SEPARATE
   "wuserbox --revoke" takes it back or "wuserbox --rm" removes the sandbox.
 
   What a sandbox may write is therefore decided in one place and readable
-  afterwards with "wuserbox explain", instead of depending on which command
+  afterwards with "wuserbox --explain", instead of depending on which command
   line happened to start the program.
 
 OPTIONS SHARED MORE WIDELY

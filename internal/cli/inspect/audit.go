@@ -17,10 +17,10 @@ func Audit(args []string) error {
 	depth := 2
 	if len(args) == 1 {
 		if _, err := fmt.Sscanf(args[0], "%d", &depth); err != nil {
-			return exit.Errorf(exit.Usage, "usage: wuserbox audit [depth]")
+			return exit.Errorf(exit.Usage, "usage: wuserbox --audit [depth]")
 		}
 	} else if len(args) > 1 {
-		return exit.Errorf(exit.Usage, "usage: wuserbox audit [depth]")
+		return exit.Errorf(exit.Usage, "usage: wuserbox --audit [depth]")
 	}
 	found := 0
 	var walk func(dir string, left int)

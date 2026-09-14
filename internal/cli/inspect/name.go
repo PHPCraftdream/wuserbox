@@ -12,11 +12,11 @@ import (
 func Name(args []string) error {
 	dir := "."
 	if len(args) > 1 {
-		return exit.Errorf(exit.Usage, "usage: wuserbox name [dir]")
+		return exit.Errorf(exit.Usage, "usage: wuserbox --name [dir]")
 	}
 	if len(args) == 1 {
 		if strings.HasPrefix(args[0], "-") {
-			return exit.Errorf(exit.Usage, "usage: wuserbox name [dir]")
+			return exit.Errorf(exit.Usage, "usage: wuserbox --name [dir]")
 		}
 		dir = args[0]
 	}
