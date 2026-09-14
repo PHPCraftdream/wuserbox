@@ -15,4 +15,9 @@ type State struct {
 	Dir    string       `json:"dir"`
 	Temp   string       `json:"temp"`
 	Grants []grant.Spec `json:"grants"`
+	// Marked says the grants below carry the mark that tells a permission
+	// somebody asked for apart from one the preset offered. A record written
+	// before that mark existed carries no such thing, and reading its entries
+	// as offers would let an upgrade undo a narrowing made by hand.
+	Marked bool `json:"marked"`
 }

@@ -19,5 +19,23 @@ func Load(group string) (*State, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, err
 	}
+	adopt(&s)
 	return &s, nil
+}
+
+// adopt brings a record written by an earlier build up to date.
+//
+// Its entries predate the mark that tells a request apart from an offer, and
+// nothing in the file says which they were. They are taken as requests: a
+// directory somebody narrowed by hand keeps its narrowing across the upgrade,
+// and a directory the preset would have handed over anyway is unaffected,
+// because the preset asks for the same access it already holds.
+func adopt(s *State) {
+	if s.Marked {
+		return
+	}
+	for i := range s.Grants {
+		s.Grants[i].Explicit = true
+	}
+	s.Marked = true
 }

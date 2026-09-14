@@ -12,6 +12,8 @@ import (
 // where that directory is does not create it, so the making happens here,
 // where something is actually written.
 func (s *State) Save() error {
+	// Anything written now carries the mark, so it is never adopted again.
+	s.Marked = true
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err

@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -350,4 +351,77 @@ func TestLockHelperTakesTheLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	release()
+}
+
+// TestARecordFromBeforeTheMarkKeepsItsNarrowing is the regression guard for
+// the upgrade itself. The mark that tells a request apart from an offer was
+// added to the record, and a file written by an earlier build has none, so
+// every permission in it read back as an offer: a directory narrowed by hand
+// would have been widened again by the next run of the preset.
+func TestARecordFromBeforeTheMarkKeepsItsNarrowing(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	group := "wub-old-record"
+	narrowed := t.TempDir()
+	old := `{
+  "group": "` + group + `",
+  "sid": "` + testSID + `",
+  "dir": ` + quote(t, t.TempDir()) + `,
+  "temp": ` + quote(t, t.TempDir()) + `,
+  "grants": [
+    {"path": ` + quote(t, narrowed) + `, "kind": "ro"}
+  ]
+}`
+	if err := os.MkdirAll(filepath.Dir(Path(group)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(Path(group), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Grants[0].Explicit {
+		t.Error("a permission from an older record was read as something nobody asked for")
+	}
+	// What the preset does on the next run must leave it alone.
+	if err := loaded.Offer(narrowed, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if kind, _ := loaded.Kind(narrowed); kind != grant.RO {
+		t.Errorf("the upgrade widened a narrowed directory to %q", kind)
+	}
+}
+
+// TestANewRecordSaysItCarriesTheMark keeps the upgrade from running twice: a
+// record written now must never be adopted again, or an offer recorded today
+// would turn into a request tomorrow.
+func TestANewRecordSaysItCarriesTheMark(t *testing.T) {
+	s := newState(t)
+	offered := t.TempDir()
+	if err := s.Offer(offered, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	reread, err := Load(s.Group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reread.Marked {
+		t.Fatal("a record written now does not say it carries the mark")
+	}
+	if reread.Grants[0].Explicit {
+		t.Error("an offer came back as something somebody asked for")
+	}
+}
+
+// quote renders a path as a JSON string, so a Windows path lands in the test
+// data with its backslashes intact.
+func quote(t *testing.T, path string) string {
+	t.Helper()
+	encoded, err := json.Marshal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
 }
