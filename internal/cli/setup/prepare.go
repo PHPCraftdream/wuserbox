@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/PHPCraftdream/wuserbox/internal/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
@@ -36,7 +37,7 @@ func prepare(options sandbox.Options) (*state.State, error) {
 	var made adjustment
 	// Reading the record and changing permissions is one operation, so it is
 	// done with the record held. Elevation is deliberately left outside.
-	if err := state.Locked(name, func() error {
+	if err := lock.Hold(name, func() error {
 		var err error
 		made, err = adjust(options, name)
 		return err
@@ -53,7 +54,7 @@ func prepare(options sandbox.Options) (*state.State, error) {
 	if !made.dropPreset {
 		return repaired, nil
 	}
-	return repaired, state.Locked(name, func() error {
+	return repaired, lock.Hold(name, func() error {
 		if err := grants.DropPreset(repaired); err != nil {
 			return fmt.Errorf("--no-ai could not take back the agent directories: %w", err)
 		}
@@ -82,6 +83,13 @@ func adjust(options sandbox.Options, name string) (adjustment, error) {
 	}
 	if missing(name, s) {
 		report(options, "creating sandbox %s", name)
+		return adjustment{rebuild: true}, nil
+	}
+	// A command that was stopped between writing a change down and applying it
+	// left the record ahead of the file system. Nothing else here would notice,
+	// because everything else trusts the record.
+	if err := s.FinishPending(); err != nil {
+		report(options, "%v", err)
 		return adjustment{rebuild: true}, nil
 	}
 	if options.NoAI {

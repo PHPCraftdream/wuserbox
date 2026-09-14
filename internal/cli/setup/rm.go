@@ -9,6 +9,7 @@ import (
 
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
 	"github.com/PHPCraftdream/wuserbox/internal/exit"
+	"github.com/PHPCraftdream/wuserbox/internal/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
@@ -21,8 +22,7 @@ import (
 // bookkeeping and the group itself.
 func Rm(args []string) error {
 	flags := flag.NewFlagSet("rm", flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
-	flags.Usage = func() { _, _ = io.WriteString(os.Stderr, usage.Text) }
+	usage.Quiet(flags)
 	dir := flags.String("dir", "", "project directory")
 	dryRun := flags.Bool("dry-run", false, "show what would change, change nothing")
 	asJSON := flags.Bool("json", false, "print the result as JSON")
@@ -67,7 +67,7 @@ func Rm(args []string) error {
 // The record is held throughout, so a command handing the sandbox another
 // directory cannot write that permission back into a record being deleted.
 func removeSandbox(name string) error {
-	return state.Locked(name, func() error { return remove(name) })
+	return lock.Hold(name, func() error { return remove(name) })
 }
 
 func remove(name string) error {

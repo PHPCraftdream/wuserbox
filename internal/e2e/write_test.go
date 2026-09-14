@@ -170,3 +170,31 @@ func TestNarrowingADirectoryInsideAHandedOverOneTakesEffect(t *testing.T) {
 	// And the directory around it is untouched.
 	mustSucceed(t, box.state, writeFileCommand(filepath.Join(box.granted, "sibling.txt")))
 }
+
+// TestNarrowingADirectoryStopsWritesInsideIt is the same fault seen from
+// inside a sandbox: a directory handed over separately kept its own permission,
+// which Windows reads before the refusal handed down from the directory above
+// it, so the write went through after the parent had been made read-only.
+func TestNarrowingADirectoryStopsWritesInsideIt(t *testing.T) {
+	box := newBox(t)
+	parent := filepath.Join(box.denied, "settings")
+	child := filepath.Join(parent, "tool")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{parent, child} {
+		if err := box.state.Add(dir, grant.RW); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustSucceed(t, box.state, writeFileCommand(filepath.Join(child, "before.txt")))
+
+	if err := box.state.Add(parent, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+	mustFail(t, box.state, writeFileCommand(filepath.Join(parent, "after.txt")))
+	mustFail(t, box.state, writeFileCommand(filepath.Join(child, "after.txt")))
+	if exists(filepath.Join(child, "after.txt")) {
+		t.Error("the sandbox wrote inside a directory that was made read-only")
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/PHPCraftdream/wuserbox/internal/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/preset"
@@ -28,7 +29,7 @@ func Init(o Options) (*state.State, error) {
 	// Everything from reading the record to writing it back is one operation.
 	// Another wuserbox working on the same sandbox waits here rather than
 	// starting from a record this one is about to replace.
-	if err := state.Locked(name, func() error {
+	if err := lock.Hold(name, func() error {
 		built, err = build(name, dir, o)
 		return err
 	}); err != nil {
@@ -62,6 +63,11 @@ func build(name, dir string, o Options) (*state.State, error) {
 		s = &state.State{Group: name, Dir: dir, Temp: filepath.Join(paths.StateDir(), "tmp", name)}
 	}
 	s.SID = account.String()
+	// Anything a stopped command left half done is finished before this one
+	// builds on top of it.
+	if err := s.FinishPending(); err != nil {
+		return nil, err
+	}
 
 	if err := os.MkdirAll(s.Temp, 0o755); err != nil {
 		return nil, err

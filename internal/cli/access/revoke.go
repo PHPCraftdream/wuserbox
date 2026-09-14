@@ -5,7 +5,7 @@ import (
 	"os"
 
 	"github.com/PHPCraftdream/wuserbox/internal/cli/setup"
-	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/plan"
 	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
@@ -40,7 +40,7 @@ func Revoke(args []string) error {
 
 // withdraw takes the directory back with the sandbox's record held.
 func withdraw(group string, t target) error {
-	return state.Locked(group, func() error {
+	return lock.Hold(group, func() error {
 		s, err := load(t.project)
 		if err != nil {
 			return err

@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/PHPCraftdream/wuserbox/internal/exit"
+	"github.com/PHPCraftdream/wuserbox/internal/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
@@ -39,7 +40,7 @@ func AddDir(args []string) error {
 	// The rules file is taken first and the sandbox second, always in that
 	// order, so two commands can never hold one lock each and wait for the
 	// other's.
-	if err := state.Locked(state.RulesLock, func() error {
+	if err := lock.Hold(lock.Rules, func() error {
 		if err := record(t); err != nil {
 			return err
 		}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/PHPCraftdream/wuserbox/internal/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/preset"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
@@ -45,7 +46,7 @@ func ensureRules() error {
 	if _, err := os.Stat(config.Path()); err == nil {
 		return nil
 	}
-	return state.Locked(state.RulesLock, func() error {
+	return lock.Hold(lock.Rules, func() error {
 		// Asked again inside the lock: whoever held it may have been creating
 		// the very file this was about to create.
 		if _, err := os.Stat(config.Path()); err == nil {

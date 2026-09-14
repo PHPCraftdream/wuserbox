@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/wuserbox/internal/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
@@ -227,7 +228,7 @@ func TestTheRulesFileKeepsBothRulesWrittenAtOnce(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			failures <- state.Locked(state.RulesLock, func() error {
+			failures <- lock.Hold(lock.Rules, func() error {
 				rules, err := config.Load()
 				if err != nil {
 					return err
@@ -271,7 +272,7 @@ func TestAddDirHoldsTheRulesFile(t *testing.T) {
 	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
 	project, target := tempDir(t), tempDir(t)
 
-	release, err := hold(state.RulesLock)
+	release, err := hold(lock.Rules)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +314,7 @@ func hold(name string) (func(), error) {
 	done := make(chan struct{})
 	released := make(chan struct{})
 	go func() {
-		_ = state.Locked(name, func() error {
+		_ = lock.Hold(name, func() error {
 			taken <- nil
 			<-done
 			return nil

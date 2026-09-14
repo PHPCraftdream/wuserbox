@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/wuserbox/internal/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/win/access"
 )
@@ -253,7 +254,7 @@ func TestLockedKeepsBothChangesToOneSandbox(t *testing.T) {
 		wg.Add(1)
 		go func(dir string) {
 			defer wg.Done()
-			failures <- Locked(s.Group, func() error {
+			failures <- lock.Hold(s.Group, func() error {
 				loaded, err := Load(s.Group)
 				if err != nil {
 					return err
@@ -288,11 +289,11 @@ func TestLockedKeepsBothChangesToOneSandbox(t *testing.T) {
 func TestLockedCanBeTakenAgainAfterAFailure(t *testing.T) {
 	s := newState(t)
 	wanted := errors.New("no")
-	if err := Locked(s.Group, func() error { return wanted }); !errors.Is(err, wanted) {
+	if err := lock.Hold(s.Group, func() error { return wanted }); !errors.Is(err, wanted) {
 		t.Fatalf("the error did not come back: %v", err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- Locked(s.Group, func() error { return nil }) }()
+	go func() { done <- lock.Hold(s.Group, func() error { return nil }) }()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -450,5 +451,157 @@ func TestAPermissionIsNotHandedOverWhenItCannotBeRecorded(t *testing.T) {
 	}
 	if answer.Allowed {
 		t.Errorf("the directory is writable by a sandbox no record mentions: %s", answer.Reason)
+	}
+}
+
+// TestNarrowingADirectoryTakesBackWhatIsInsideIt is the regression guard for a
+// refusal that did not reach as far as it promised. A permission set directly
+// on a subdirectory is read before a refusal handed down from above it, so
+// `grant ~/.config --ro` refused writing in ~/.config while ~/.config/rush,
+// handed over separately by the preset, stayed writable.
+func TestNarrowingADirectoryTakesBackWhatIsInsideIt(t *testing.T) {
+	s := newState(t)
+	parent := t.TempDir()
+	child := filepath.Join(parent, "tool")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{parent, child} {
+		if err := s.Add(dir, grant.RW); err != nil {
+			t.Fatal(err)
+		}
+	}
+	allowed, err := access.Check(s.SID, child, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !allowed.Allowed {
+		t.Fatal("the child was not writable to begin with")
+	}
+
+	if err := s.Add(parent, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{parent, child} {
+		answer, err := access.Check(s.SID, dir, access.Create)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if answer.Allowed {
+			t.Errorf("%s is still writable after the directory above it was narrowed: %s",
+				dir, answer.Reason)
+		}
+	}
+	if s.Has(child) {
+		t.Error("the record still claims a permission that was taken back")
+	}
+}
+
+// TestNarrowingKeepsTheProjectItself covers a project that happens to sit
+// inside a directory being narrowed. It is why the sandbox exists, so it is
+// never what a refusal elsewhere takes away.
+func TestNarrowingKeepsTheProjectItself(t *testing.T) {
+	s := newState(t)
+	parent := t.TempDir()
+	project := filepath.Join(parent, "project")
+	if err := os.Mkdir(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s.Dir = project
+	if err := s.Add(project, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(parent, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+	if !s.Has(project) {
+		t.Fatal("the project lost its own permission")
+	}
+	answer, err := access.Check(s.SID, project, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !answer.Allowed {
+		t.Errorf("the project directory is no longer writable: %s", answer.Reason)
+	}
+}
+
+// TestAnInterruptedNarrowingIsFinished is the regression guard for the gap the
+// record-first order leaves. A process stopped between writing a change down
+// and applying it left a record saying read-only while the entries still said
+// writable, and asking for read-only again trusted the record and did nothing,
+// so the sandbox went on writing.
+func TestAnInterruptedNarrowingIsFinished(t *testing.T) {
+	s := newState(t)
+	dir := t.TempDir()
+	if err := s.Add(dir, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	// What being stopped in the middle leaves behind: the record says
+	// read-only and carries the mark, the file system still says writable.
+	s.Grants[0].Kind = grant.RO
+	s.Grants[0].Pending = true
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	interrupted, err := Load(s.Group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writable, err := access.Check(interrupted.SID, dir, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !writable.Allowed {
+		t.Fatal("the entries were not left writable, so this test proves nothing")
+	}
+
+	// Asking for the same thing again has to act rather than trust the record.
+	if err := interrupted.Add(dir, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+	answer, err := access.Check(interrupted.SID, dir, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Allowed {
+		t.Errorf("the sandbox can still write where the record says read-only: %s", answer.Reason)
+	}
+	if interrupted.Grants[0].Pending {
+		t.Error("the change is still marked as unfinished after being applied")
+	}
+}
+
+// TestFinishPendingRepairsWithoutBeingAsked covers the other way the gap is
+// closed: starting a sandbox finishes what an interrupted command began,
+// without anyone naming the directory again.
+func TestFinishPendingRepairsWithoutBeingAsked(t *testing.T) {
+	s := newState(t)
+	dir := t.TempDir()
+	if err := s.Add(dir, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	s.Grants[0].Kind = grant.RO
+	s.Grants[0].Pending = true
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	reread, err := Load(s.Group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reread.FinishPending(); err != nil {
+		t.Fatal(err)
+	}
+	answer, err := access.Check(reread.SID, dir, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Allowed {
+		t.Errorf("an unfinished change was not put right: %s", answer.Reason)
+	}
+	if reread.Grants[0].Pending {
+		t.Error("the mark survived the change being finished")
 	}
 }

@@ -2,6 +2,7 @@ package access
 
 import (
 	"github.com/PHPCraftdream/wuserbox/internal/exit"
+	"github.com/PHPCraftdream/wuserbox/internal/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
@@ -37,7 +38,7 @@ func RemoveDir(args []string) error {
 	// Under two locks a gap opens between forgetting the rule and taking the
 	// directory back, and an add-dir arriving in it leaves a permission behind
 	// that no rule accounts for.
-	return state.Locked(state.RulesLock, func() error {
+	return lock.Hold(lock.Rules, func() error {
 		if err := forget(t); err != nil {
 			return err
 		}

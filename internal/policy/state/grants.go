@@ -71,7 +71,10 @@ func (s *State) Ensure(path string, kind grant.Kind) error {
 
 func (s *State) record(path string, kind grant.Kind, always, explicit bool) error {
 	index, found := s.find(path)
-	unchanged := found && s.Grants[index].Kind == kind &&
+	// A change that was begun and never finished is not unchanged, whatever
+	// the kind says: the record ran ahead of the file system, and the two have
+	// to be brought together again.
+	unchanged := found && s.Grants[index].Kind == kind && !s.Grants[index].Pending &&
 		(s.Grants[index].Explicit || !explicit)
 	if unchanged && !always {
 		return nil
@@ -88,8 +91,10 @@ func (s *State) record(path string, kind grant.Kind, always, explicit bool) erro
 		// again: only asking for it by hand sets the mark, and nothing here
 		// takes it away.
 		s.Grants[index].Explicit = s.Grants[index].Explicit || explicit
+		s.Grants[index].Pending = true
 	} else {
-		s.Grants = append(s.Grants, grant.Spec{Path: path, Kind: kind, Explicit: explicit})
+		s.Grants = append(s.Grants,
+			grant.Spec{Path: path, Kind: kind, Explicit: explicit, Pending: true})
 	}
 	// Written down first, handed over second. The two can only fail one way
 	// round without harm: a permission in force that the record does not
@@ -107,7 +112,17 @@ func (s *State) record(path string, kind grant.Kind, always, explicit bool) erro
 		}
 		return err
 	}
-	return nil
+	// The record and the file system agree again.
+	if err := s.settle(path); err != nil {
+		return err
+	}
+	if kind.Writable() {
+		return nil
+	}
+	// Making a directory read-only has to reach what is inside it: a
+	// permission set directly on a subdirectory is read before the refusal
+	// handed down from here, and would go on allowing what this just refused.
+	return s.narrow(path)
 }
 
 // Remove revokes a recorded grant and persists the state.
