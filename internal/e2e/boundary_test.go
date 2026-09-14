@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -318,5 +319,150 @@ func TestAProtectedFileInsideAGrantedDirectorySurvives(t *testing.T) {
 	runSandboxed(t, box.state, []string{"cmd.exe", "/c", "del /q " + target})
 	if !exists(target) {
 		t.Error("a protected file inside a granted directory was deleted")
+	}
+}
+
+// TestPeerCannotReachAnEntryASubdirectoryHoldsItself is the regression guard
+// for a grant that only rewrote the directory it was given.
+//
+// Windows hands an inheritable entry down to what is below, but handing it
+// down replaces only the handed-down part of a child's list; the child's own
+// entries stay as they were. So a directory inside a granted one, carrying an
+// entry of its own that let Users write, stayed writable by every other
+// sandbox — all of them carry Users — while the directory above it looked
+// perfectly isolated.
+func TestPeerCannotReachAnEntryASubdirectoryHoldsItself(t *testing.T) {
+	a, b := newBox(t), newBox(t)
+	tree := filepath.Join(b.root, "tree")
+	nested := filepath.Join(tree, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Set on the child itself, with inheritance left on, the way an installer
+	// leaves a shared directory behind.
+	if err := acl.Set(nested, sid.Users, []acl.ACE{
+		{Access: acl.AccessModify, Inheritance: acl.InheritObjects | acl.InheritContainers},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.state.Add(tree, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+
+	intruder := filepath.Join(nested, "a-wrote-this.txt")
+	mustFail(t, a.state, writeFileCommand(intruder))
+	if exists(intruder) {
+		t.Error("a peer wrote inside a granted tree, through an entry the subdirectory held itself")
+	}
+	// And the sandbox it was granted to still works there.
+	own := filepath.Join(nested, "b-wrote-this.txt")
+	mustSucceed(t, b.state, writeFileCommand(own))
+}
+
+// TestRevokingReachesWhatANestedGrantPinned is the regression guard for a
+// revoke that stopped halfway, and the fault was of this tool's own making.
+//
+// Handing a directory over pins its permission list, copying what it was
+// handed from above into its own entries. Where the directory handed over sits
+// inside one another sandbox holds, that sandbox's entry is among the copies —
+// and a copy answers to nobody, because the directory no longer hears from the
+// one above it. Taking the outer grant away left the inner one untouched, so
+// the sandbox went on writing in a corner of what it had just lost.
+func TestRevokingReachesWhatANestedGrantPinned(t *testing.T) {
+	a, b := newBox(t), newBox(t)
+	outer := filepath.Join(b.root, "outer")
+	inner := filepath.Join(outer, "inner")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.state.Add(outer, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	// Granting the inner one to somebody else is what pins it.
+	if err := a.state.Add(inner, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.state.Remove(outer); err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(inner, "after-revoke.txt")
+	mustFail(t, b.state, writeFileCommand(target))
+	if exists(target) {
+		t.Error("a sandbox wrote inside a directory it had been revoked from")
+	}
+	// The sandbox the inner directory belongs to is untouched by any of it.
+	own := filepath.Join(inner, "still-mine.txt")
+	mustSucceed(t, a.state, writeFileCommand(own))
+}
+
+// TestASandboxCannotRewriteThePermissionsItWasLeft is the regression guard for
+// a right that was not counted as one that changes anything.
+//
+// Rewriting a permission list is the only right a sandbox needs: with it, it
+// hands itself the rest. It was not in the mask that decides what normalising
+// takes away, nor in the one --audit reports, so a directory whose entry for
+// Everyone was exactly that went through a grant untouched, and a peer used it
+// to give Everyone full control and delete the owner's file.
+func TestASandboxCannotRewriteThePermissionsItWasLeft(t *testing.T) {
+	a, b := newBox(t), newBox(t)
+	dir := filepath.Join(b.root, "rewritable")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("icacls", dir,
+		"/grant", "*"+sid.Everyone+":(OI)(CI)(WDAC)").CombinedOutput(); err != nil {
+		t.Fatalf("arranging the directory: %v\n%s", err, out)
+	}
+	if !acl.EveryoneWritable(dir) {
+		t.Error("--audit does not count rewriting the permission list as changing something")
+	}
+	if err := b.state.Add(dir, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(dir, "b-owns-this.txt")
+	place(t, victim, "data")
+
+	runSandboxed(t, a.state, []string{"cmd.exe", "/c",
+		"icacls " + dir + " /grant *" + sid.Everyone + ":(OI)(CI)F"})
+	runSandboxed(t, a.state, []string{"cmd.exe", "/c", "del /q " + victim})
+	if !exists(victim) {
+		t.Error("a peer rewrote the permissions it was left and deleted another sandbox's file")
+	}
+}
+
+// TestNarrowingNeverHandsOutReading is the regression guard for a narrowing
+// that widened. Replacing what Everyone holds with read-and-execute is only a
+// narrowing where reading was already part of it: on an entry that covered
+// writing alone, it handed reading to every sandbox and to every account on
+// the machine, which is what a grant is least entitled to do.
+func TestNarrowingNeverHandsOutReading(t *testing.T) {
+	a, b := newBox(t), newBox(t)
+	// Outside any box, so nothing hands it an ambient reading permission.
+	dir := filepath.Join(t.TempDir(), "write-only")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("icacls", dir, "/inheritance:r",
+		"/grant", "*"+owner+":(OI)(CI)F",
+		"/grant", "*"+sid.System+":(OI)(CI)F",
+		"/grant", "*"+sid.Everyone+":(OI)(CI)(WD)").CombinedOutput(); err != nil {
+		t.Fatalf("arranging the directory: %v\n%s", err, out)
+	}
+	secret := filepath.Join(dir, "secret.txt")
+	place(t, secret, "classified")
+	if runSandboxed(t, a.state, []string{"cmd.exe", "/c", "type " + secret}) == 0 {
+		t.Skip("this machine lets a sandbox read there already, so a widening could not be seen")
+	}
+
+	if err := b.state.Add(dir, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if runSandboxed(t, a.state, []string{"cmd.exe", "/c", "type " + secret}) == 0 {
+		t.Error("granting the directory handed every sandbox the reading it did not have")
 	}
 }

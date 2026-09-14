@@ -124,6 +124,13 @@ func (s *State) record(path string, kind grant.Kind, always, explicit bool) erro
 		if err := s.narrow(path); err != nil {
 			return err
 		}
+		// Narrowing has the same corner as revoking: a directory inside this
+		// one that was handed to another sandbox pinned its list while this
+		// sandbox still had the run of the place, and keeps that copy until
+		// it is taken away by name.
+		if err := grant.Prune(s.SID, path, s.paths()); err != nil {
+			return err
+		}
 	}
 	// The record and the file system agree again.
 	return s.settle(path)
@@ -138,8 +145,25 @@ func (s *State) Remove(path string) error {
 	if err := grant.Revoke(s.SID, path); err != nil {
 		return err
 	}
+	// Rewriting this directory is not the whole of taking it back. A
+	// directory inside it that was handed to another sandbox had its
+	// permission list pinned, this sandbox's entry copied into it, and it no
+	// longer hears from here — so the entry has to be taken away by name, or
+	// the sandbox keeps writing in a corner of what it just lost.
 	s.Grants = append(s.Grants[:index], s.Grants[index+1:]...)
+	if err := grant.Prune(s.SID, path, s.paths()); err != nil {
+		return err
+	}
 	return s.Save()
+}
+
+// paths lists every path this sandbox holds.
+func (s *State) paths() []string {
+	out := make([]string, 0, len(s.Grants))
+	for _, g := range s.Grants {
+		out = append(out, g.Path)
+	}
+	return out
 }
 
 // WritablePaths lists the paths this sandbox may change.

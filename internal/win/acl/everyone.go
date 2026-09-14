@@ -36,7 +36,7 @@ func Reads(path, account string) bool {
 }
 
 func writableBy(path, account string) bool {
-	return heldBy(path, account, writeMask)
+	return heldBy(path, account, changing)
 }
 
 func heldBy(path, account string, wanted uint32) bool {
