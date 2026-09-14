@@ -18,8 +18,14 @@ import (
 // closes it, and finishing is safe to repeat, because applying a permission
 // twice is the same as applying it once.
 func (s *State) FinishPending() error {
-	for _, held := range append([]grant.Spec(nil), s.Grants...) {
-		if !held.Pending {
+	for _, listed := range append([]grant.Spec(nil), s.Grants...) {
+		// The list is walked over a copy, and finishing one entry can change
+		// the record: narrowing a directory takes back what the sandbox holds
+		// inside it. So each entry is looked up again before it is acted on,
+		// or an entry already taken back would be handed out afresh from a
+		// list made before that happened.
+		held, still := s.current(listed.Path)
+		if !still || !held.Pending {
 			continue
 		}
 		if _, err := os.Stat(held.Path); os.IsNotExist(err) {
@@ -33,16 +39,27 @@ func (s *State) FinishPending() error {
 		if err := grant.Apply(s.SID, held.Path, held.Kind); err != nil {
 			return err
 		}
-		if err := s.settle(held.Path); err != nil {
-			return err
-		}
 		if !held.Kind.Writable() {
 			if err := s.narrow(held.Path); err != nil {
 				return err
 			}
 		}
+		// Settled last, and after the narrowing: the mark stands for the whole
+		// change, and a stop between the two halves has to leave it standing.
+		if err := s.settle(held.Path); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// current reads back what the record says about a path now.
+func (s *State) current(path string) (grant.Spec, bool) {
+	index, found := s.find(path)
+	if !found {
+		return grant.Spec{}, false
+	}
+	return s.Grants[index], true
 }
 
 // settle records that a change has reached the file system.
@@ -71,6 +88,13 @@ func (s *State) settle(path string) error {
 func (s *State) narrow(path string) error {
 	for _, held := range append([]grant.Spec(nil), s.Grants...) {
 		if !inside(held.Path, path) || s.isOwn(held.Path) {
+			continue
+		}
+		if !held.Kind.Writable() {
+			// A refusal of its own is not what beats the refusal from above:
+			// it says the same thing. Taking it away would quietly cost the
+			// directory its own restriction, and widening the parent later
+			// would then make it writable.
 			continue
 		}
 		if _, err := os.Stat(held.Path); os.IsNotExist(err) {

@@ -605,3 +605,114 @@ func TestFinishPendingRepairsWithoutBeingAsked(t *testing.T) {
 		t.Error("the mark survived the change being finished")
 	}
 }
+
+// TestFinishingTwoMarkedChangesDoesNotUndoOneOfThem is the regression guard
+// for a repair that walked a copy of the list. Finishing a read-only parent
+// takes back what the sandbox holds inside it, and the child was then handed
+// out again from a copy made before that happened: gone from the record and
+// writable on disk, which is the one state nothing can put right.
+func TestFinishingTwoMarkedChangesDoesNotUndoOneOfThem(t *testing.T) {
+	s := newState(t)
+	parent := t.TempDir()
+	child := filepath.Join(parent, "tool")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Both marked, the way two interrupted commands would leave them.
+	s.Grants = []grant.Spec{
+		{Path: parent, Kind: grant.RO, Explicit: true, Pending: true},
+		{Path: child, Kind: grant.RW, Pending: true},
+	}
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.FinishPending(); err != nil {
+		t.Fatal(err)
+	}
+	answer, err := access.Check(s.SID, child, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Allowed {
+		t.Errorf("the child is writable after the parent was made read-only: %s", answer.Reason)
+	}
+	if s.Has(child) != answer.Allowed {
+		t.Errorf("the record says %v about the child and Windows says %v",
+			s.Has(child), answer.Allowed)
+	}
+}
+
+// TestAnInterruptedNarrowingKeepsItsMark covers the gap between refusing a
+// directory and taking back what is inside it. Settling the change before that
+// second half left writable subdirectories under a read-only parent with
+// nothing marked, so no later run would notice.
+func TestAnInterruptedNarrowingKeepsItsMark(t *testing.T) {
+	s := newState(t)
+	parent := t.TempDir()
+	child := filepath.Join(parent, "tool")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(child, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stop the narrowing halfway: the parent is refused, the child is not yet
+	// taken back, and the change is still marked.
+	if err := grant.Apply(s.SID, parent, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+	s.Grants = append(s.Grants, grant.Spec{
+		Path: parent, Kind: grant.RO, Explicit: true, Pending: true,
+	})
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	reread, err := Load(s.Group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reread.FinishPending(); err != nil {
+		t.Fatal(err)
+	}
+	answer, err := access.Check(reread.SID, child, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Allowed {
+		t.Errorf("the child survived the interrupted narrowing: %s", answer.Reason)
+	}
+}
+
+// TestNarrowingLeavesAChildsOwnRefusalAlone covers what a narrowing must not
+// take: an entry inside that already refuses. It never stood in the way, and
+// dropping it would cost the directory its own restriction the moment the
+// parent was widened again.
+func TestNarrowingLeavesAChildsOwnRefusalAlone(t *testing.T) {
+	s := newState(t)
+	parent := t.TempDir()
+	child := filepath.Join(parent, "guarded")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []struct {
+		path string
+		kind grant.Kind
+	}{{parent, grant.RW}, {child, grant.RO}, {parent, grant.RO}, {parent, grant.RW}} {
+		if err := s.Add(step.path, step.kind); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if kind, held := s.Kind(child); !held || kind != grant.RO {
+		t.Fatalf("the child's own restriction is recorded as %q (held: %v)", kind, held)
+	}
+	answer, err := access.Check(s.SID, child, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Allowed {
+		t.Errorf("the child became writable when the parent was widened: %s", answer.Reason)
+	}
+}

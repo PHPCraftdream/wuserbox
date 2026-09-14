@@ -112,17 +112,21 @@ func (s *State) record(path string, kind grant.Kind, always, explicit bool) erro
 		}
 		return err
 	}
-	// The record and the file system agree again.
-	if err := s.settle(path); err != nil {
-		return err
-	}
-	if kind.Writable() {
-		return nil
-	}
 	// Making a directory read-only has to reach what is inside it: a
 	// permission set directly on a subdirectory is read before the refusal
 	// handed down from here, and would go on allowing what this just refused.
-	return s.narrow(path)
+	//
+	// This happens before the change is settled, so the mark stands for the
+	// whole of it. Settling first would leave a stop in between invisible:
+	// writable subdirectories under a read-only parent, and nothing marked for
+	// anyone to finish.
+	if !kind.Writable() {
+		if err := s.narrow(path); err != nil {
+			return err
+		}
+	}
+	// The record and the file system agree again.
+	return s.settle(path)
 }
 
 // Remove revokes a recorded grant and persists the state.
