@@ -39,3 +39,18 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      # The delete boundary is the one property this tool exists to provide,
+      # and the tests for it skip where an integrity label cannot be written.
+      # A skip is honest, but a skipped run reported as a green one is not:
+      # this fails instead, so the boundary is never silently untested.
+      - name: Delete boundary
+        shell: bash
+        run: |
+          output=$(go test ./internal/e2e/... ./internal/win/acl/... -count=1 -v \
+            -run 'TestDeletingOutsideTheBoundaryIsRefused|TestASweepStopsAtTheBoundary|TestTheSandboxKeepsItsOwnWrites|TestReadingIsStillUnrestricted|TestSetWritableLabelsWhereItCan' 2>&1)
+          echo "$output"
+          if echo "$output" | grep -q -- "--- SKIP"; then
+            echo "::error::the delete boundary was not covered: these tests need the rights to write an integrity label"
+            exit 1
+          fi
