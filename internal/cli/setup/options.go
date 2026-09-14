@@ -4,7 +4,6 @@ package setup
 
 import (
 	"flag"
-	"io"
 	"os"
 	"strings"
 
@@ -32,8 +31,7 @@ func ParseOptions(name string, args []string) (sandbox.Options, []string, error)
 	}
 	var rw, ro repeated
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
-	flags.Usage = func() { _, _ = io.WriteString(os.Stderr, usage.Text) }
+	usage.Quiet(flags)
 	dir := flags.String("dir", "", "project directory")
 	noAI := flags.Bool("no-ai", false, "skip the preset for AI agent directories")
 	homeWrites := flags.Bool("home-writes", false, "let the sandbox create files in the profile root")

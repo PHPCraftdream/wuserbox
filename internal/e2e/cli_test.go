@@ -260,3 +260,39 @@ func TestCLIReportsAFailureAsJSONWhenAsked(t *testing.T) {
 		t.Errorf("the plain failure changed shape: %q", plain)
 	}
 }
+
+// TestCLIKeepsJSONWhenAFlagIsWrong is the regression guard for a parser that
+// reported for itself. flag wrote its complaint and the whole usage text to
+// the error stream before the failure reached the one place that decides its
+// shape, so a command called with --json answered with prose followed by a
+// JSON document.
+func TestCLIKeepsJSONWhenAFlagIsWrong(t *testing.T) {
+	command := binary(t)
+	for _, args := range [][]string{
+		{"check", "--json", "--nonsense"},
+		{"explain", "--json", "--nonsense"},
+		{"list", "--json", "--nonsense"},
+		{"rm", "--json", "--nonsense"},
+		{"config", "show", "--json", "--nonsense"},
+		{"grant", `C:\tools`, "--json", "--nonsense"},
+		{"run", "--json", "--nonsense", "--", "cmd.exe"},
+	} {
+		output, err := exec.Command(command, args...).CombinedOutput()
+		if err == nil {
+			t.Errorf("%v: an unknown flag should fail", args)
+			continue
+		}
+		var reported struct {
+			Error  string `json:"error"`
+			Code   int    `json:"code"`
+			Status string `json:"status"`
+		}
+		if jsonErr := json.Unmarshal(output, &reported); jsonErr != nil {
+			t.Errorf("%v: the failure is not JSON: %v (%q)", args, jsonErr, output)
+			continue
+		}
+		if reported.Code != 2 || !strings.Contains(reported.Error, "nonsense") {
+			t.Errorf("%v: came back as %d %q", args, reported.Code, reported.Error)
+		}
+	}
+}

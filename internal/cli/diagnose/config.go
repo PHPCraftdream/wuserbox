@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
@@ -32,8 +31,7 @@ func Config(args []string) error {
 	}
 	action, rest := args[0], args[1:]
 	flags := flag.NewFlagSet("config "+action, flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
-	flags.Usage = func() { _, _ = io.WriteString(os.Stderr, usage.Text) }
+	usage.Quiet(flags)
 	project := flags.String("dir", "", "limit the command to one project's rule")
 	asJSON := flags.Bool("json", false, "print the result as JSON")
 	if err := flags.Parse(rest); err != nil {

@@ -31,8 +31,7 @@ type target struct {
 // form; it is resolved to a real path here.
 func parseTarget(name string, args []string) (target, error) {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
-	flags.Usage = func() { _, _ = io.WriteString(os.Stderr, usage.Text) }
+	usage.Quiet(flags)
 	readOnly := flags.Bool("ro", false, "read-only")
 	dir := flags.String("dir", "", "project directory")
 	dryRun := flags.Bool("dry-run", false, "show what would change, change nothing")

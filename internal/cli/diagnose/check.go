@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
@@ -27,8 +26,7 @@ import (
 // the question could not be asked.
 func Check(args []string) error {
 	flags := flag.NewFlagSet("check", flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
-	flags.Usage = func() { _, _ = io.WriteString(os.Stderr, usage.Text) }
+	usage.Quiet(flags)
 	operation := flags.String("operation", "write", "read, write, create or delete")
 	project := flags.String("dir", "", "project whose sandbox is meant")
 	asJSON := flags.Bool("json", false, "print the result as JSON")
