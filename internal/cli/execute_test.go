@@ -132,3 +132,46 @@ func TestHelpAfterTheSeparatorBelongsToTheCommand(t *testing.T) {
 		t.Error("a flag before the separator was missed")
 	}
 }
+
+// TestAPathNamedHelpIsNotARequestForHelp is the regression guard for a word
+// that was read as a question wherever it appeared. `wuserbox add-dir help
+// --dir <project>` printed the help text, changed nothing and reported
+// success, so a command that had done none of its work looked as though it had.
+func TestAPathNamedHelpIsNotARequestForHelp(t *testing.T) {
+	for _, args := range [][]string{
+		{"help", "--dir", `C:\project`},
+		{"--dir", `C:\project`, "help"},
+		{"--dir", "help"},
+	} {
+		if asksForHelp(args) {
+			t.Errorf("%v was read as a request for help", args)
+		}
+	}
+}
+
+// TestTheHelpFlagsStillAsk keeps the ways of asking that a person actually
+// uses, and keeps the line at "--": after it the flags belong to the program
+// being run in the sandbox.
+func TestTheHelpFlagsStillAsk(t *testing.T) {
+	for _, args := range [][]string{
+		{"-h"}, {"--help"}, {`C:\tools`, "--help"}, {"--dir", `C:\p`, "-h"},
+	} {
+		if !asksForHelp(args) {
+			t.Errorf("%v asks for help", args)
+		}
+	}
+	if asksForHelp([]string{"--", "node", "--help"}) {
+		t.Error("a flag after -- belongs to the command being run")
+	}
+}
+
+// TestHelpForACommandIsStillReachable covers the way the word still works:
+// at the front, where it is dispatched before any command sees its arguments.
+func TestHelpForACommandIsStillReachable(t *testing.T) {
+	if err := Execute([]string{"help", "add-dir"}); err != nil {
+		t.Errorf("`wuserbox help add-dir` failed: %v", err)
+	}
+	if err := Execute([]string{"add-dir", "--help"}); err != nil {
+		t.Errorf("`wuserbox add-dir --help` failed: %v", err)
+	}
+}

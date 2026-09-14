@@ -72,11 +72,19 @@ func parseTarget(name string, args []string) (target, error) {
 	return target{path: path, project: project, kind: kind, dryRun: *dryRun, asJSON: *asJSON}, nil
 }
 
-// args rebuilds the command line for a second attempt with more rights.
+// args rebuilds the command line, for a second attempt with more rights or for
+// the command this one goes on to call.
+//
+// Every flag that decides what the answer looks like travels with it. Dropping
+// --json here meant add-dir handed the work to grant, which then wrote prose
+// where the caller had asked for one JSON document.
 func (t target) args(command string) []string {
 	out := []string{command, t.path, "--dir", t.project}
 	if t.kind == grant.RO {
 		out = append(out, "--ro")
+	}
+	if t.asJSON {
+		out = append(out, "--json")
 	}
 	return out
 }

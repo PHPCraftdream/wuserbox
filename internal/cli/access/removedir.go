@@ -57,7 +57,7 @@ func revokeIfHeld(t target) error {
 	if err != nil || s == nil || !s.Has(t.path) {
 		return err
 	}
-	return Revoke([]string{t.path, "--dir", t.project})
+	return Revoke(t.args("revoke")[1:])
 }
 
 // forget deletes the rule, with the rules file already held.

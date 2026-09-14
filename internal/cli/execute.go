@@ -102,12 +102,18 @@ func resolve(name string) string {
 // asksForHelp reports whether the arguments contain a request for help. Only
 // the part before "--" counts: after it, the flags belong to the command being
 // run rather than to wuserbox.
+//
+// Only the flags count, never the bare word. A directory may be called help,
+// and `wuserbox add-dir help --dir <project>` used to print the help text,
+// change nothing and report success: a command that looked as though it had
+// done its work. The word is still a way to ask, but at the front, where
+// `wuserbox help add-dir` is answered before any command sees its arguments.
 func asksForHelp(args []string) bool {
 	for _, a := range args {
 		if a == "--" {
 			return false
 		}
-		if a == "-h" || a == "--help" || a == "help" {
+		if a == "-h" || a == "--help" {
 			return true
 		}
 	}

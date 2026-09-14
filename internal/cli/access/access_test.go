@@ -414,3 +414,39 @@ func TestARuleAndItsPermissionCannotDisagree(t *testing.T) {
 			listed, final.Has(shared), shared)
 	}
 }
+
+// TestTheShapeOfTheAnswerTravelsWithTheArguments is the regression guard for a
+// command line rebuilt without --json. add-dir hands the directory over by
+// calling grant, and grant then wrote prose where the caller had asked for one
+// JSON document; remove-dir lost it the same way when it called revoke.
+func TestTheShapeOfTheAnswerTravelsWithTheArguments(t *testing.T) {
+	asked := target{path: `C:\tools`, project: `C:\project`, kind: grant.RO, asJSON: true}
+	for _, command := range []string{"grant", "revoke"} {
+		rebuilt := asked.args(command)
+		var carriesJSON bool
+		for _, arg := range rebuilt {
+			if arg == "--json" {
+				carriesJSON = true
+			}
+		}
+		if !carriesJSON {
+			t.Errorf("%v does not carry --json", rebuilt)
+		}
+		// And what it carries has to parse back into the same request.
+		back, err := parseTarget(command, rebuilt[1:])
+		if err != nil {
+			t.Fatalf("%v does not parse back: %v", rebuilt, err)
+		}
+		if !back.asJSON || back.kind != asked.kind {
+			t.Errorf("the request came back as %+v", back)
+		}
+	}
+
+	// Without the flag it must not appear from nowhere.
+	plain := target{path: `C:\tools`, project: `C:\project`, kind: grant.RW}
+	for _, arg := range plain.args("grant") {
+		if arg == "--json" {
+			t.Error("a plain request was rebuilt as a JSON one")
+		}
+	}
+}

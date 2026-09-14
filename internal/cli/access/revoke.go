@@ -36,7 +36,7 @@ func Revoke(args []string) error {
 		// As in grant: prose only where prose was asked for.
 		fmt.Fprintf(os.Stderr, "wuserbox: %v\n", err)
 	}
-	return setup.Elevate([]string{"revoke", t.path, "--dir", t.project})
+	return setup.Elevate(t.args("revoke"))
 }
 
 // withdraw takes the directory back with the sandbox's record held.
