@@ -94,9 +94,11 @@ opts into writing in the profile root.
 
 `--dry-run` shows what a command would change without changing it, taking both
 the rules file and the permissions the sandbox holds into account, `--json`
-gives the diagnostic commands machine-readable output, `--quiet` drops the
-progress messages, and `--non-interactive` fails instead of raising a consent
-prompt, so a script never stops at a dialog nobody can click.
+gives the diagnostic commands machine-readable output — a failure under
+`--json` is reported as JSON too, so a script meets one shape either way —
+`--quiet` drops the progress messages, and `--non-interactive` fails instead
+of raising a consent prompt, so a script never stops at a dialog nobody can
+click.
 
 A directory handed over with `--rw` or `--ro` stays available on later runs
 too, until `wuserbox revoke` takes it back. Nothing is given up when the
@@ -126,6 +128,7 @@ yet.
 
 * the project directory;
 * a private temp directory, which `TEMP` and `TMP` point at;
+* the whole of `~/.config`, where many tools keep their settings;
 * the state directories of AI agents found on the machine: `~/.claude`,
   `~/.codex`, `~/.crush`, `~/.rush`, `~/.gemini`, `~/.grok`, `~/.qwen`,
   `~/.factory`, `~/.continue`, opencode, Goose and others, plus
@@ -215,9 +218,11 @@ returned, so the code you read after it is the sandboxed program's own.
   `.bat` goes through the command interpreter, which replaces `%NAME%` before
   the script runs. Punctuation is quoted, so an argument cannot start a second
   command, but there is no escape for expansion on a command line.
-* **The agent directories are shared.** Every sandbox may write `~/.claude` and
-  its neighbours, so a poisoned hook there would run with full rights the next
-  time you start an agent outside wuserbox. Use `--no-ai` if that matters.
+* **The agent directories are shared.** Every sandbox may write `~/.config`,
+  `~/.claude` and their neighbours, so a poisoned hook or setting there would
+  run with full rights the next time you start a tool outside wuserbox. Use
+  `--no-ai` if that matters, or narrow one of them: `wuserbox grant ~/.config
+  --ro` outranks the preset and stays.
 * **Renaming the project directory** changes the group, leaving the old sandbox
   behind. `wuserbox list` shows it, `wuserbox rm --dir <old>` removes it.
 

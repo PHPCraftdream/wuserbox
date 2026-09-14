@@ -121,3 +121,25 @@ func TestMissingSaysWhichNamesAreDirectories(t *testing.T) {
 		}
 	}
 }
+
+// TestAIHandsOverTheConfigDirectory covers the whole of ~/.config being part
+// of the preset, rather than only the agent directories inside it: tools keep
+// their settings there and expect to write them.
+func TestAIHandsOverTheConfigDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	config := filepath.Join(home, ".config")
+	if err := os.Mkdir(config, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	byPath := map[string]grant.Kind{}
+	for _, s := range AI() {
+		byPath[s.Path] = s.Kind
+	}
+	if byPath[config] != grant.RW {
+		t.Errorf("~/.config was not handed over: %v", AI())
+	}
+}

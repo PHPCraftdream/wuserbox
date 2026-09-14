@@ -83,6 +83,10 @@ EXIT CODES
 
   One exception: "run" returns whatever the command inside returned, so the
   code you read after it is the sandboxed program's own.
+
+  With --json a failure is reported as JSON too, on the error stream:
+  {"error": "...", "code": 3, "status": "denied"}. A script reading the
+  output therefore meets one shape whether the command worked or not.
 `
 
 const paths = `

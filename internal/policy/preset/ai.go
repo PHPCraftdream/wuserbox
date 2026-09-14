@@ -21,6 +21,12 @@ func AI() []grant.Spec {
 	join := filepath.Join
 
 	dirs := []string{
+		// The whole of ~/.config, not only the agent directories inside it:
+		// tools keep their settings there and expect to be able to write them.
+		// It is wider than the rest of this list, and everything already in it
+		// becomes writable, so narrow it with `grant ~/.config --ro` if that is
+		// not wanted.
+		join(home, ".config"),
 		join(home, ".claude"), join(home, ".claude-flow"), join(home, ".agents"), join(local, "claude-cli-nodejs"),
 		join(home, ".codex"), join(roaming, "Codex"), join(local, "Codex"),
 		join(home, ".crush"),
