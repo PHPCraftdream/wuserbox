@@ -716,3 +716,54 @@ func TestNarrowingLeavesAChildsOwnRefusalAlone(t *testing.T) {
 		t.Errorf("the child became writable when the parent was widened: %s", answer.Reason)
 	}
 }
+
+// TestNarrowingFinishesAChildsUnappliedRefusal is the regression guard for an
+// entry that was passed over on the strength of what the record said. A
+// refusal inside the directory never stood in the way of the refusal from
+// above, so narrowing skipped it — even when that refusal had been written
+// down and never applied, which leaves the sandbox writing there while the
+// narrowing reports success.
+func TestNarrowingFinishesAChildsUnappliedRefusal(t *testing.T) {
+	s := newState(t)
+	parent := t.TempDir()
+	child := filepath.Join(parent, "guarded")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(child, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	// What an interrupted narrowing of the child leaves: the record says
+	// read-only and carries the mark, the entries still allow writing.
+	index, _ := s.find(child)
+	s.Grants[index].Kind = grant.RO
+	s.Grants[index].Pending = true
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	writable, err := access.Check(s.SID, child, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !writable.Allowed {
+		t.Fatal("the child was not left writable, so this test proves nothing")
+	}
+
+	if err := s.Add(parent, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+	answer, err := access.Check(s.SID, child, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Allowed {
+		t.Errorf("the child is still writable after the directory above it was narrowed: %s",
+			answer.Reason)
+	}
+	if kind, held := s.Kind(child); !held || kind != grant.RO {
+		t.Errorf("the child's own restriction is recorded as %q (held: %v)", kind, held)
+	}
+	if index, found := s.find(child); found && s.Grants[index].Pending {
+		t.Error("the child's change is still marked as unfinished")
+	}
+}

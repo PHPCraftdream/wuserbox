@@ -28,29 +28,34 @@ func (s *State) FinishPending() error {
 		if !still || !held.Pending {
 			continue
 		}
-		if _, err := os.Stat(held.Path); os.IsNotExist(err) {
-			// There is nothing to apply it to, and a record claiming a
-			// directory that is gone helps nobody.
-			if err := s.forget(held.Path); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := grant.Apply(s.SID, held.Path, held.Kind); err != nil {
-			return err
-		}
-		if !held.Kind.Writable() {
-			if err := s.narrow(held.Path); err != nil {
-				return err
-			}
-		}
-		// Settled last, and after the narrowing: the mark stands for the whole
-		// change, and a stop between the two halves has to leave it standing.
-		if err := s.settle(held.Path); err != nil {
+		if err := s.finish(held); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// finish carries out one marked change: applies it, reaches inside it when it
+// is a refusal, and only then takes the mark off.
+//
+// The order is the same one a change follows when it is made, and for the same
+// reason: the mark stands for the whole of it, so a stop between the halves has
+// to leave the mark standing.
+func (s *State) finish(held grant.Spec) error {
+	if _, err := os.Stat(held.Path); os.IsNotExist(err) {
+		// There is nothing to apply it to, and a record claiming a directory
+		// that is gone helps nobody.
+		return s.forget(held.Path)
+	}
+	if err := grant.Apply(s.SID, held.Path, held.Kind); err != nil {
+		return err
+	}
+	if !held.Kind.Writable() {
+		if err := s.narrow(held.Path); err != nil {
+			return err
+		}
+	}
+	return s.settle(held.Path)
 }
 
 // current reads back what the record says about a path now.
@@ -95,6 +100,16 @@ func (s *State) narrow(path string) error {
 			// it says the same thing. Taking it away would quietly cost the
 			// directory its own restriction, and widening the parent later
 			// would then make it writable.
+			//
+			// Unless it was never applied. A refusal written down and
+			// interrupted before it reached the file system still allows
+			// writing, and passing over it would leave this narrowing
+			// reporting success over a directory the sandbox can still write.
+			if held.Pending {
+				if err := s.finish(held); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		if _, err := os.Stat(held.Path); os.IsNotExist(err) {
