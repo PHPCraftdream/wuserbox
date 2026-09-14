@@ -50,7 +50,10 @@ func Reapply(s *state.State) error {
 		if _, err := os.Stat(held.Path); err != nil {
 			continue // gone; the record is kept, there is nothing to apply to
 		}
-		if err := s.Ensure(held.Path, held.Kind); err != nil {
+		// Applied straight from the record: putting a permission back does
+		// not change what the record says about it, including whether it was
+		// asked for by hand.
+		if err := grant.Apply(s.SID, held.Path, held.Kind); err != nil {
 			return err
 		}
 	}
@@ -67,7 +70,7 @@ func ApplyPreset(s *state.State, homeWrites bool) error {
 		if _, err := os.Stat(spec.Path); err != nil {
 			continue
 		}
-		if err := s.Add(spec.Path, spec.Kind); err != nil {
+		if err := s.Offer(spec.Path, spec.Kind); err != nil {
 			return err
 		}
 	}

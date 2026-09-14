@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/PHPCraftdream/wuserbox/internal/cli/setup"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/plan"
 	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
@@ -25,7 +26,13 @@ func Grant(args []string) error {
 		}
 		return t.preview(plan.Action{Does: "grant", What: t.path, Detail: string(t.kind) + " for " + s.Group})
 	}
-	if err := s.Add(t.path, t.kind); err == nil {
+	// The record is re-read inside the lock: another command may have changed
+	// it between the load above and this point, and writing back what was
+	// read before would drop whatever that command recorded.
+	//
+	// Elevation happens after the lock is let go, because the second wuserbox
+	// waits for this very lock.
+	if err := apply(s.Group, t); err == nil {
 		return nil
 	} else if token.IsAdmin() {
 		return err
@@ -33,4 +40,15 @@ func Grant(args []string) error {
 		fmt.Fprintf(os.Stderr, "wuserbox: %v\n", err)
 	}
 	return setup.Elevate(t.args("grant"))
+}
+
+// apply hands the directory over with the sandbox's record held.
+func apply(group string, t target) error {
+	return state.Locked(group, func() error {
+		s, err := load(t.project)
+		if err != nil {
+			return err
+		}
+		return s.Add(t.path, t.kind)
+	})
 }

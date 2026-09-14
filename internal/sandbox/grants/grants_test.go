@@ -552,6 +552,83 @@ func TestApplyPresetBringsASandboxInLineWithTheFlags(t *testing.T) {
 	}
 }
 
+// TestApplyPresetLeavesANarrowedDirectoryNarrow is the regression guard for a
+// preset that ran on every start and applied its own idea of the access. A
+// directory narrowed by hand with `grant ~/.claude --ro` was writable again
+// after the next plain run, and nothing said so.
+func TestApplyPresetLeavesANarrowedDirectoryNarrow(t *testing.T) {
+	home := tempDir(t)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "Local"))
+	t.Setenv("APPDATA", filepath.Join(home, "Roaming"))
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
+	agent := filepath.Join(home, ".claude")
+	if err := os.Mkdir(agent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := newState(t)
+	if err := ApplyPreset(s, false); err != nil {
+		t.Fatal(err)
+	}
+	if kind, _ := s.Kind(agent); kind != grant.RW {
+		t.Fatalf("the preset handed the agent directory over as %q", kind)
+	}
+
+	// The user narrows it by hand, the way `grant <dir> --ro` does.
+	if err := s.Add(agent, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+	refused, err := access.Check(testAccount, agent, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refused.Allowed {
+		t.Fatalf("narrowing the directory did not refuse creation: %s", refused.Reason)
+	}
+
+	// Every later run applies the preset again, and must leave that alone.
+	for i := 0; i < 2; i++ {
+		if err := ApplyPreset(s, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if kind, _ := s.Kind(agent); kind != grant.RO {
+		t.Errorf("the preset widened the directory back to %q", kind)
+	}
+	answer, err := access.Check(testAccount, agent, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Allowed {
+		t.Errorf("the sandbox can create files in a directory the user narrowed: %s", answer.Reason)
+	}
+}
+
+// TestApplyPresetStillReachesADirectoryNobodyAskedAbout keeps the preset
+// working where no one has said anything: an agent directory that appears
+// after the sandbox was built is still handed over.
+func TestApplyPresetStillReachesADirectoryNobodyAskedAbout(t *testing.T) {
+	home := tempDir(t)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "Local"))
+	t.Setenv("APPDATA", filepath.Join(home, "Roaming"))
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
+	s := newState(t)
+	if err := ApplyPreset(s, false); err != nil {
+		t.Fatal(err)
+	}
+	agent := filepath.Join(home, ".codex")
+	if err := os.Mkdir(agent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyPreset(s, false); err != nil {
+		t.Fatal(err)
+	}
+	if kind, found := s.Kind(agent); !found || kind != grant.RW {
+		t.Errorf("a new agent directory was not handed over: kind %q, found %v", kind, found)
+	}
+}
+
 // tempDir is t.TempDir() with the path reduced to one spelling, the way every
 // command reduces the paths it is given. Some machines hand out a temporary
 // directory under a shortened name, and comparing one spelling against another

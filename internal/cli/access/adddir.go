@@ -30,11 +30,11 @@ func AddDir(args []string) error {
 		held, _ := load(t.project) // a sandbox that does not exist yet holds nothing
 		return t.preview(planned(rules, held, t)...)
 	}
-	rule := rules.RuleFor(t.project, true)
-	if rule.Add(t.path, t.kind) {
-		if err := rules.Save(); err != nil {
-			return err
-		}
+	// The rules file is read, changed and written back as one operation: two
+	// commands doing that at once would each save a file built before the
+	// other's change, and one of the rules would be gone.
+	if err := state.Locked(state.RulesLock, func() error { return record(t) }); err != nil {
+		return err
 	}
 	fmt.Printf("%s: %s -> %s (%s)\n", config.Path(), t.project, t.path, t.kind)
 
@@ -47,6 +47,19 @@ func AddDir(args []string) error {
 		return err // not initialized yet: the next run picks the rule up
 	}
 	return Grant(t.args("grant")[1:])
+}
+
+// record writes the rule, with the rules file already held. It reads the file
+// again rather than trusting the copy loaded before the lock was taken.
+func record(t target) error {
+	rules, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if !rules.RuleFor(t.project, true).Add(t.path, t.kind) {
+		return nil
+	}
+	return rules.Save()
 }
 
 // planned works out what add-dir would change, without changing it. Both

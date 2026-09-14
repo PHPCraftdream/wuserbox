@@ -4,13 +4,31 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/wuserbox/internal/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 )
+
+// TestMain loads the rules parser before any test moves LOCALAPPDATA. The
+// parser caches a native library under that directory and keeps it open, which
+// would otherwise leave a temporary directory undeletable.
+func TestMain(m *testing.M) {
+	warm, err := os.CreateTemp("", "wuserbox-warm-*.ktav")
+	if err == nil {
+		_, _ = warm.WriteString("projects: [\n]\n")
+		warm.Close()
+		os.Setenv(config.EnvPath, warm.Name())
+		_, _ = config.Load()
+		os.Remove(warm.Name())
+		os.Unsetenv(config.EnvPath)
+	}
+	os.Exit(m.Run())
+}
 
 func TestParseTargetResolvesAnyPathSpelling(t *testing.T) {
 	dir := tempDir(t)
@@ -190,4 +208,125 @@ func tempDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return resolved
+}
+
+// TestTheRulesFileKeepsBothRulesWrittenAtOnce is the regression guard for two
+// add-dir commands running together. Each used to load the rules file, add its
+// own directory and save the whole file back, so the one that finished second
+// wrote a file built before the first one's change and that rule was gone.
+func TestTheRulesFileKeepsBothRulesWrittenAtOnce(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", tempDir(t))
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
+	projects := []string{tempDir(t), tempDir(t)}
+	directories := []string{tempDir(t), tempDir(t)}
+
+	var wg sync.WaitGroup
+	failures := make(chan error, len(projects))
+	for i := range projects {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			failures <- state.Locked(state.RulesLock, func() error {
+				rules, err := config.Load()
+				if err != nil {
+					return err
+				}
+				rules.RuleFor(projects[i], true).Add(directories[i], grant.RW)
+				// The window the other command used to slip into.
+				time.Sleep(20 * time.Millisecond)
+				return rules.Save()
+			})
+		}(i)
+	}
+	wg.Wait()
+	close(failures)
+	for err := range failures {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rules, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, project := range projects {
+		rule := rules.RuleFor(project, false)
+		if rule == nil {
+			t.Errorf("the rule for %s is gone", project)
+			continue
+		}
+		if _, listed := rule.Kind(directories[i]); !listed {
+			t.Errorf("%s is missing from the rule for %s", directories[i], project)
+		}
+	}
+}
+
+// TestAddDirHoldsTheRulesFile checks the command itself, not only the
+// mechanism it uses: add-dir has to take the rules lock, or serializing the
+// writes protects nothing.
+func TestAddDirHoldsTheRulesFile(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", tempDir(t))
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
+	project, target := tempDir(t), tempDir(t)
+
+	release, err := hold(state.RulesLock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- AddDir([]string{target, "--dir", project}) }()
+	select {
+	case err := <-finished:
+		release()
+		t.Fatalf("add-dir wrote the rules file while it was held: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	release()
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("add-dir never finished after the rules file was let go")
+	}
+
+	rules, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := rules.RuleFor(project, false)
+	if rule == nil {
+		t.Fatal("the rule was not written")
+	}
+	if _, listed := rule.Kind(target); !listed {
+		t.Errorf("%s is missing from the rule for %s", target, project)
+	}
+}
+
+// hold takes a lock in the background and returns how to let it go, so a test
+// can watch a command wait for it.
+func hold(name string) (func(), error) {
+	taken := make(chan error, 1)
+	done := make(chan struct{})
+	released := make(chan struct{})
+	go func() {
+		_ = state.Locked(name, func() error {
+			taken <- nil
+			<-done
+			return nil
+		})
+		close(released)
+	}()
+	if err := <-taken; err != nil {
+		return nil, err
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(done)
+			<-released
+		})
+	}, nil
 }

@@ -1,10 +1,14 @@
 package state
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 )
@@ -157,4 +161,193 @@ func TestKindReportsAMissingPath(t *testing.T) {
 	if _, found := s.Kind(t.TempDir()); found {
 		t.Error("a path that was never granted was reported as recorded")
 	}
+}
+
+// TestOfferYieldsToWhatSomebodyAskedFor pins the rule the agent preset relies
+// on: a permission offered on every start must not undo one that was asked
+// for by hand.
+func TestOfferYieldsToWhatSomebodyAskedFor(t *testing.T) {
+	s := newState(t)
+	dir := t.TempDir()
+	if err := s.Add(dir, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Offer(dir, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if kind, _ := s.Kind(dir); kind != grant.RO {
+		t.Errorf("an offer overrode a request: the record says %q", kind)
+	}
+}
+
+// TestOfferStillFillsInWhatNobodyMentioned keeps an offer doing its work where
+// nothing has been said, and keeps it silent about who asked.
+func TestOfferStillFillsInWhatNobodyMentioned(t *testing.T) {
+	s := newState(t)
+	dir := t.TempDir()
+	if err := s.Offer(dir, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if kind, found := s.Kind(dir); !found || kind != grant.RW {
+		t.Fatalf("the offer was not recorded: kind %q, found %v", kind, found)
+	}
+	if s.Grants[0].Explicit {
+		t.Error("an offer was recorded as something somebody asked for")
+	}
+
+	// Asking for it afterwards makes it a request, and later offers yield.
+	if err := s.Add(dir, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+	if !s.Grants[0].Explicit {
+		t.Fatal("asking for a directory did not mark it as asked for")
+	}
+	if err := s.Offer(dir, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if kind, _ := s.Kind(dir); kind != grant.RO {
+		t.Errorf("the record says %q after an offer", kind)
+	}
+}
+
+// TestTheMarkSurvivesTheRecordBeingReread matters because the preset runs in a
+// later process than the request it must not undo.
+func TestTheMarkSurvivesTheRecordBeingReread(t *testing.T) {
+	s := newState(t)
+	dir := t.TempDir()
+	if err := s.Add(dir, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+	reread, err := Load(s.Group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reread == nil || len(reread.Grants) != 1 || !reread.Grants[0].Explicit {
+		t.Fatalf("the mark did not survive: %+v", reread)
+	}
+	if err := reread.Offer(dir, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if kind, _ := reread.Kind(dir); kind != grant.RO {
+		t.Errorf("a fresh process widened it back to %q", kind)
+	}
+}
+
+// TestLockedKeepsBothChangesToOneSandbox is the regression guard for two
+// commands that each read the record, each hand over a different directory and
+// each write back. The second write used to be made from a record read before
+// the first, so one permission stayed in force on disk while nothing pointed
+// at it: explain did not mention it and revoke could not find it.
+func TestLockedKeepsBothChangesToOneSandbox(t *testing.T) {
+	s := newState(t)
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	first, second := t.TempDir(), t.TempDir()
+
+	var wg sync.WaitGroup
+	failures := make(chan error, 2)
+	for _, dir := range []string{first, second} {
+		wg.Add(1)
+		go func(dir string) {
+			defer wg.Done()
+			failures <- Locked(s.Group, func() error {
+				loaded, err := Load(s.Group)
+				if err != nil {
+					return err
+				}
+				// The window the other command used to slip into.
+				time.Sleep(20 * time.Millisecond)
+				return loaded.Add(dir, grant.RW)
+			})
+		}(dir)
+	}
+	wg.Wait()
+	close(failures)
+	for err := range failures {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	final, err := Load(s.Group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{first, second} {
+		if !final.Has(dir) {
+			t.Errorf("%s is granted on disk but missing from the record: %+v", dir, final.Grants)
+		}
+	}
+}
+
+// TestLockedCanBeTakenAgainAfterAFailure keeps a command that gives up from
+// leaving the sandbox locked for everything that comes after it.
+func TestLockedCanBeTakenAgainAfterAFailure(t *testing.T) {
+	s := newState(t)
+	wanted := errors.New("no")
+	if err := Locked(s.Group, func() error { return wanted }); !errors.Is(err, wanted) {
+		t.Fatalf("the error did not come back: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- Locked(s.Group, func() error { return nil }) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Error(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("the lock was never let go after the work failed")
+	}
+}
+
+// TestLockedShutsOutAnotherProcess is what the whole mechanism is for: the
+// commands that race are separate runs of wuserbox, started by the user, by a
+// script, or by wuserbox itself when it needs administrator rights.
+func TestLockedShutsOutAnotherProcess(t *testing.T) {
+	local := t.TempDir()
+	t.Setenv("LOCALAPPDATA", local)
+	release, err := take("wub-two-processes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	other := exec.Command(os.Args[0], "-test.run=TestLockHelperTakesTheLock")
+	other.Env = append(os.Environ(), lockHelperEnv+"=1", "LOCALAPPDATA="+local)
+	if err := other.Start(); err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- other.Wait() }()
+
+	select {
+	case <-finished:
+		t.Fatal("the other process took the lock while this one held it")
+	case <-time.After(500 * time.Millisecond):
+	}
+	release()
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Errorf("the other process failed: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Error("the other process never got the lock after it was let go")
+	}
+}
+
+const lockHelperEnv = "WUSERBOX_LOCK_HELPER"
+
+// TestLockHelperTakesTheLock is the second process of the test above. It does
+// nothing when run as part of an ordinary test run.
+func TestLockHelperTakesTheLock(t *testing.T) {
+	if os.Getenv(lockHelperEnv) == "" {
+		t.Skip("runs only as the second process of TestLockedShutsOutAnotherProcess")
+	}
+	release, err := take("wub-two-processes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
 }

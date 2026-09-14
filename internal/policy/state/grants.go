@@ -39,7 +39,24 @@ func (s *State) find(path string) (int, bool) {
 // directory from writable to readable takes effect instead of being silently
 // ignored.
 func (s *State) Add(path string, kind grant.Kind) error {
-	return s.record(path, kind, false)
+	return s.record(path, kind, false, true)
+}
+
+// Offer records a permission the sandbox should have unless somebody has
+// already said otherwise about that path.
+//
+// This is how the agent preset hands over its directories. The preset runs on
+// every start, and applying it the way a person's request is applied would
+// undo that request: a directory narrowed with `grant ~/.claude --ro` would be
+// writable again after the next plain run, without anything saying so.
+func (s *State) Offer(path string, kind grant.Kind) error {
+	if index, found := s.find(path); found && s.Grants[index].Explicit {
+		return nil
+	}
+	// The record is trusted here, as it is for Add: repair goes through the
+	// record afterwards, and applying the preset afresh on every start would
+	// push inheritance down whole directory trees for nothing.
+	return s.record(path, kind, false, false)
 }
 
 // Ensure applies a permission whether or not the record already claims it.
@@ -49,12 +66,13 @@ func (s *State) Add(path string, kind grant.Kind) error {
 // all is well. Repairing a sandbox has to act on the file system rather than
 // on what was written down about it.
 func (s *State) Ensure(path string, kind grant.Kind) error {
-	return s.record(path, kind, true)
+	return s.record(path, kind, true, true)
 }
 
-func (s *State) record(path string, kind grant.Kind, always bool) error {
+func (s *State) record(path string, kind grant.Kind, always, explicit bool) error {
 	index, found := s.find(path)
-	unchanged := found && s.Grants[index].Kind == kind
+	unchanged := found && s.Grants[index].Kind == kind &&
+		(s.Grants[index].Explicit || !explicit)
 	if unchanged && !always {
 		return nil
 	}
@@ -66,8 +84,12 @@ func (s *State) record(path string, kind grant.Kind, always bool) error {
 	}
 	if found {
 		s.Grants[index].Kind = kind
+		// A path the preset offers is not made anonymous by being offered
+		// again: only asking for it by hand sets the mark, and nothing here
+		// takes it away.
+		s.Grants[index].Explicit = s.Grants[index].Explicit || explicit
 	} else {
-		s.Grants = append(s.Grants, grant.Spec{Path: path, Kind: kind})
+		s.Grants = append(s.Grants, grant.Spec{Path: path, Kind: kind, Explicit: explicit})
 	}
 	return s.Save()
 }

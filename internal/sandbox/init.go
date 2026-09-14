@@ -24,6 +24,21 @@ func Init(o Options) (*state.State, error) {
 	if err != nil {
 		return nil, err
 	}
+	var built *state.State
+	// Everything from reading the record to writing it back is one operation.
+	// Another wuserbox working on the same sandbox waits here rather than
+	// starting from a record this one is about to replace.
+	if err := state.Locked(name, func() error {
+		built, err = build(name, dir, o)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return built, grants.ProtectSettings(built)
+}
+
+// build does the work of Init with the sandbox's record already held.
+func build(name, dir string, o Options) (*state.State, error) {
 	if comment, exists, err := group.Comment(name); err != nil {
 		return nil, err
 	} else if !exists {
@@ -76,7 +91,7 @@ func Init(o Options) (*state.State, error) {
 	if err := s.Save(); err != nil {
 		return nil, err
 	}
-	return s, grants.ProtectSettings(s)
+	return s, nil
 }
 
 func applyPreset(s *state.State, o Options) error {
@@ -87,7 +102,7 @@ func applyPreset(s *state.State, o Options) error {
 		return grants.DropPreset(s)
 	}
 	for _, spec := range preset.AI() {
-		if err := s.Ensure(spec.Path, spec.Kind); err != nil {
+		if err := s.Offer(spec.Path, spec.Kind); err != nil {
 			return err
 		}
 	}

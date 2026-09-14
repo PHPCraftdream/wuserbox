@@ -32,10 +32,9 @@ func RemoveDir(args []string) error {
 			plan.Action{Does: "revoke", What: t.path},
 		)
 	}
-	if !rule.Remove(t.path) {
-		return exit.Errorf(exit.NotFound, "%s is not listed for %s in %s", t.path, t.project, config.Path())
-	}
-	if err := rules.Save(); err != nil {
+	// Held while the file is read again, changed and written back, so a rule
+	// another command adds at the same moment is not lost.
+	if err := state.Locked(state.RulesLock, func() error { return forget(t) }); err != nil {
 		return err
 	}
 	name, _, err := sandbox.Name(t.project)
@@ -47,4 +46,18 @@ func RemoveDir(args []string) error {
 		return err
 	}
 	return Revoke([]string{t.path, "--dir", t.project})
+}
+
+// forget deletes the rule, with the rules file already held.
+func forget(t target) error {
+	rules, err := config.Load()
+	if err != nil {
+		return err
+	}
+	rule := rules.RuleFor(t.project, false)
+	if rule == nil || !rule.Remove(t.path) {
+		return exit.Errorf(exit.NotFound, "%s is not listed for %s in %s",
+			t.path, t.project, config.Path())
+	}
+	return rules.Save()
 }
