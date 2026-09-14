@@ -6,6 +6,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
@@ -20,11 +21,7 @@ var (
 const (
 	classLogonSid       = 28
 	classDefaultDacl    = 6
-	classIntegrityLevel = 25
 	disableMaxPrivilege = 0x1
-	writeRestricted     = 0x8
-	integrityGroupAttrs = 0x00000020 // SE_GROUP_INTEGRITY
-	lowIntegrity        = "S-1-16-4096"
 )
 
 type sidAndAttributes struct {
@@ -32,20 +29,24 @@ type sidAndAttributes struct {
 	attributes uint32
 }
 
-// Restricted derives a write-restricted token from the caller's own token.
-// Reads keep the caller's rights. Every write is checked a second time against
-// the restricting identifiers, so it succeeds only where the sandbox group has
-// a permission of its own.
+// Restricted derives a fully restricted token from the caller's own token.
+// Every access, not only writes, is checked a second time against the
+// restricting identifiers, so it succeeds only where the sandbox group — or
+// one of the shared identifiers alongside it — has a permission of its own.
+// That is what closes deleting outside the sandbox and deleting a peer
+// sandbox's files: DELETE and FILE_DELETE_CHILD go through the same check as
+// everything else here, unlike the generic-write mapping a write-restricted
+// token uses.
 //
-// low additionally runs the token at Low mandatory integrity, which is what
-// refuses deleting outside the sandbox: DELETE and FILE_DELETE_CHILD fall
-// outside the generic-write mapping the second check uses, so without this
-// the sandbox keeps the user's own right to delete wherever their account
-// already holds it. It is asked for rather than assumed because it only works
-// where every directory handed over carries a matching Low label, and a
-// sandbox built before labeling existed carries none: running such a sandbox
-// Low would refuse it its own writes instead of protecting anything.
-func Restricted(group string, low bool) (syscall.Token, error) {
+// Everyone and BUILTIN\Users are restricting identifiers too, not only the
+// sandbox's own group: starting any program that loads the window subsystem
+// needs Everyone, and reading System32 or Program Files needs Users, since
+// those grant Users read and execute rather than Everyone. Granting a
+// directory to one sandbox therefore has to take Everyone's and Users' write
+// access away on that same directory wherever it is granted — grant.Apply
+// does that — or every other sandbox holding either identifier could reach
+// it too.
+func Restricted(sandboxGroup string) (syscall.Token, error) {
 	var self syscall.Token
 	if err := syscall.OpenProcessToken(syscall.Handle(^uintptr(0)), syscall.TOKEN_ALL_ACCESS, &self); err != nil {
 		return 0, fmt.Errorf("opening the process token: %w", err)
@@ -64,7 +65,7 @@ func Restricted(group string, low bool) (syscall.Token, error) {
 	// TOKEN_GROUPS: a count and padding, then the first entry's identifier.
 	logon := *(*uintptr)(unsafe.Pointer(&logonBuf[unsafe.Sizeof(uintptr(0))]))
 
-	groupSID, err := sid.Parse(group)
+	groupSID, err := sid.Parse(sandboxGroup)
 	if err != nil {
 		return 0, err
 	}
@@ -72,38 +73,29 @@ func Restricted(group string, low bool) (syscall.Token, error) {
 	if err != nil {
 		return 0, err
 	}
-	restricting := []sidAndAttributes{{groupSID, 0}, {everyone, 0}, {logon, 0}}
+	users, err := sid.Parse(sid.Users)
+	if err != nil {
+		return 0, err
+	}
+	restricting := []sidAndAttributes{{groupSID, 0}, {everyone, 0}, {users, 0}, {logon, 0}}
+	// A sandbox built before ReadGroup existed simply runs without it: the
+	// profile reads that depended on it fail, the same way any other missing
+	// grant would, rather than refusing to run at all.
+	if read, err := sid.Lookup(group.ReadGroup); err == nil {
+		restricting = append(restricting, sidAndAttributes{uintptr(unsafe.Pointer(&read[0])), 0})
+	}
 
 	var restricted syscall.Token
-	r, _, callErr := procCreateRestrictedToken.Call(uintptr(self), writeRestricted|disableMaxPrivilege,
+	r, _, callErr := procCreateRestrictedToken.Call(uintptr(self), disableMaxPrivilege,
 		0, 0, 0, 0, uintptr(len(restricting)), uintptr(unsafe.Pointer(&restricting[0])),
 		uintptr(unsafe.Pointer(&restricted)))
 	if r == 0 {
 		return 0, fmt.Errorf("creating the restricted token: %w", callErr)
 	}
-	if err := shareWithGroup(restricted, formatSID(user), group); err != nil {
+	if err := shareWithGroup(restricted, formatSID(user), sandboxGroup); err != nil {
 		return 0, err
 	}
-	if low {
-		if err := lowerIntegrity(restricted); err != nil {
-			return 0, err
-		}
-	}
 	return restricted, nil
-}
-
-// lowerIntegrity sets the token's mandatory integrity level to Low.
-func lowerIntegrity(token syscall.Token) error {
-	low, err := sid.Parse(lowIntegrity)
-	if err != nil {
-		return err
-	}
-	label := sidAndAttributes{sid: low, attributes: integrityGroupAttrs}
-	if r, _, callErr := procSetTokenInformation.Call(uintptr(token), classIntegrityLevel,
-		uintptr(unsafe.Pointer(&label)), unsafe.Sizeof(label)); r == 0 {
-		return fmt.Errorf("lowering the token's integrity level: %w", callErr)
-	}
-	return nil
 }
 
 func information(token syscall.Token, class uint32) ([]byte, error) {

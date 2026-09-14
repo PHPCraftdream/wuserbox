@@ -15,13 +15,18 @@ var (
 )
 
 // Protect replaces the permissions of path with a fixed list that no sandbox
-// can satisfy: the current user, the system and administrators. Inheritance is
-// switched off, so a permission granted on a parent directory can never reach
-// this object afterwards.
+// can change or delete: full control for the current user, the system and
+// administrators, and reading for everyone else. Inheritance is switched
+// off, so a permission granted on a parent directory can never reach this
+// object afterwards.
 //
-// A directory the sandbox may change still lets it delete children, whatever
-// their own permissions say, so protected files are kept outside such
-// directories.
+// Reading is not part of what this refuses. A sandbox's restricted list
+// checks every access now, not only writes, so a file whose entries named
+// only the owner, system and administrators would have gone unreadable to
+// every sandbox along with unwritable -- Everyone and BUILTIN\Users, which
+// every restricted list carries, are given read access here for the same
+// reason grant.Apply never takes reading away when it narrows either of
+// them elsewhere.
 func Protect(path string) error {
 	user, err := sid.CurrentUser()
 	if err != nil {
@@ -31,8 +36,10 @@ func Protect(path string) error {
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
 		inheritance = "OICI"
 	}
-	text := fmt.Sprintf("D:PAI(A;%s;GA;;;%s)(A;%s;GA;;;SY)(A;%s;GA;;;BA)",
-		inheritance, user, inheritance, inheritance)
+	text := fmt.Sprintf("D:PAI(A;%s;GA;;;%s)(A;%s;GA;;;SY)(A;%s;GA;;;BA)(A;%s;0x%x;;;%s)(A;%s;0x%x;;;%s)",
+		inheritance, user, inheritance, inheritance,
+		inheritance, AccessReadExecute, sid.Everyone,
+		inheritance, AccessReadExecute, sid.Users)
 
 	var descriptor uintptr
 	if r, _, err := procStringToSecurityDescriptor.Call(uintptr(unsafe.Pointer(w32.UTF16(text))), 1,

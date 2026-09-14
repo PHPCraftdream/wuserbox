@@ -38,7 +38,7 @@ func prepared(t *testing.T) (granted, denied string) {
 	}
 	// Without administrator rights the integrity label does not go on, and
 	// these tests are about the permissions rather than the label.
-	if err := grant.Apply(testGroup, granted, grant.RW); !grant.Applied(err) {
+	if err := grant.Apply(testGroup, granted, grant.RW); err != nil {
 		t.Fatal(err)
 	}
 	return granted, denied
@@ -64,7 +64,7 @@ func TestCheckFollowsThePermissions(t *testing.T) {
 		{filepath.Join(denied, "f.txt"), Read, true}, // reading is not restricted
 	}
 	for _, c := range cases {
-		result, err := Check(testGroup, c.path, c.operation, false)
+		result, err := Check(testGroup, c.path, c.operation)
 		if err != nil {
 			t.Errorf("%s %s: %v", c.operation, c.path, err)
 			continue
@@ -89,24 +89,28 @@ func TestCheckRefusesDeletionWhenNeitherDoorIsOpen(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if through, err := deleteThroughParent(testGroup, file, false); err != nil {
+	if through, err := deleteThroughParent(testGroup, file); err != nil {
 		t.Fatal(err)
 	} else if through {
 		t.Skip("the temporary directory on this machine lets the sandbox remove what is inside it")
 	}
-	answer, err := Check(testGroup, file, Delete, false)
+	// With both doors shut the answer is a plain refusal: a fully restricted
+	// token applies its second check to deleting the same as it does to
+	// everything else, so there is no asymmetry left between what this asks
+	// and what a real delete would do.
+	answer, err := Check(testGroup, file, Delete)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if answer.Allowed {
-		t.Errorf("deletion was allowed with both doors shut: %s", answer.Reason)
+		t.Errorf("deletion was allowed without either door being open: %s", answer.Reason)
 	}
 }
 
 func TestCheckAnswersAboutTheParentWhenCreating(t *testing.T) {
 	granted, _ := prepared(t)
 	missing := filepath.Join(granted, "not-there-yet.txt")
-	result, err := Check(testGroup, missing, Create, false)
+	result, err := Check(testGroup, missing, Create)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +124,7 @@ func TestCheckAnswersAboutTheParentWhenCreating(t *testing.T) {
 
 func TestCheckReportsAMissingPath(t *testing.T) {
 	granted, _ := prepared(t)
-	if _, err := Check(testGroup, filepath.Join(granted, "absent"), Write, false); err == nil {
+	if _, err := Check(testGroup, filepath.Join(granted, "absent"), Write); err == nil {
 		t.Error("expected an error for a path that does not exist")
 	}
 }
@@ -132,8 +136,8 @@ func TestCheckChangesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, operation := range Operations {
-		_, _ = Check(testGroup, filepath.Join(granted, "probe.txt"), operation, false)
-		_, _ = Check(testGroup, denied, operation, false)
+		_, _ = Check(testGroup, filepath.Join(granted, "probe.txt"), operation)
+		_, _ = Check(testGroup, denied, operation)
 	}
 	after, err := os.ReadDir(granted)
 	if err != nil {
@@ -150,11 +154,11 @@ func TestCheckAgreesWithARealWrite(t *testing.T) {
 	if err := acl.Protect(filepath.Join(denied)); err != nil {
 		t.Fatal(err)
 	}
-	allowed, err := Check(testGroup, granted, Create, false)
+	allowed, err := Check(testGroup, granted, Create)
 	if err != nil {
 		t.Fatal(err)
 	}
-	refused, err := Check(testGroup, denied, Create, false)
+	refused, err := Check(testGroup, denied, Create)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +186,7 @@ func TestCheckLeavesTheThreadAsItFoundIt(t *testing.T) {
 		go func(worker int) {
 			defer wait.Done()
 			for round := 0; round < 8; round++ {
-				if _, err := Check(testGroup, denied, Write, false); err != nil {
+				if _, err := Check(testGroup, denied, Write); err != nil {
 					failures <- fmt.Sprintf("worker %d: %v", worker, err)
 					return
 				}
@@ -210,7 +214,7 @@ func TestCheckLeavesTheThreadAsItFoundIt(t *testing.T) {
 func TestCheckReportsAFailureToAskRatherThanGuessing(t *testing.T) {
 	// A malformed group cannot produce a token, so the answer must be an
 	// error and not a cheerful "allowed".
-	result, err := Check("not-a-sid", t.TempDir(), Write, false)
+	result, err := Check("not-a-sid", t.TempDir(), Write)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -230,7 +234,7 @@ func TestCheckHonoursTheReadOnlyMark(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	before, err := Check(testGroup, file, Write, false)
+	before, err := Check(testGroup, file, Write)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +245,7 @@ func TestCheckHonoursTheReadOnlyMark(t *testing.T) {
 	if err := os.Chmod(file, 0o444); err != nil {
 		t.Fatal(err)
 	}
-	after, err := Check(testGroup, file, Write, false)
+	after, err := Check(testGroup, file, Write)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +256,7 @@ func TestCheckHonoursTheReadOnlyMark(t *testing.T) {
 		t.Errorf("the reason does not mention the mark: %q", after.Reason)
 	}
 	// Reading is unaffected by the mark.
-	readable, err := Check(testGroup, file, Read, false)
+	readable, err := Check(testGroup, file, Read)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +270,7 @@ func TestCheckIgnoresTheMarkOnDirectories(t *testing.T) {
 	// Windows sets the same bit on directories for unrelated reasons, so it
 	// must not be read as a refusal there.
 	granted, _ := prepared(t)
-	result, err := Check(testGroup, granted, Create, false)
+	result, err := Check(testGroup, granted, Create)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +290,8 @@ func TestCheckSeesDeletionThroughTheParent(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The file itself says no to everyone but its owner.
+	// The file itself refuses changing or deleting it to everyone but its
+	// owner, system and administrators.
 	if err := acl.Protect(file); err != nil {
 		t.Fatal(err)
 	}
@@ -294,10 +299,10 @@ func TestCheckSeesDeletionThroughTheParent(t *testing.T) {
 	// remove things from it, so with the file itself closed both doors are
 	// shut. Unless the machine's temporary directory says otherwise, in which
 	// case only the second half of this test means anything.
-	if through, err := deleteThroughParent(testGroup, file, false); err != nil {
+	if through, err := deleteThroughParent(testGroup, file); err != nil {
 		t.Fatal(err)
 	} else if !through {
-		onTheFile, err := Check(testGroup, file, Delete, false)
+		onTheFile, err := Check(testGroup, file, Delete)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -320,7 +325,7 @@ func TestCheckSeesDeletionThroughTheParent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	throughParent, err := Check(testGroup, file, Delete, false)
+	throughParent, err := Check(testGroup, file, Delete)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +365,7 @@ func TestCheckHonoursTheReadOnlyMarkOnDeletionThroughTheParent(t *testing.T) {
 	if err := acl.Protect(file); err != nil {
 		t.Fatal(err)
 	}
-	through, err := deleteThroughParent(testGroup, file, false)
+	through, err := deleteThroughParent(testGroup, file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +378,7 @@ func TestCheckHonoursTheReadOnlyMarkOnDeletionThroughTheParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = os.Chmod(file, 0o644) }()
-	answer, err := Check(testGroup, file, Delete, false)
+	answer, err := Check(testGroup, file, Delete)
 	if err != nil {
 		t.Fatal(err)
 	}

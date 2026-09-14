@@ -26,6 +26,14 @@ func Init(o Options) (*state.State, error) {
 	if err != nil {
 		return nil, err
 	}
+	// wub-read needs admin rights the same as a sandbox's own group, so this
+	// piggybacks on the elevation init already needs rather than asking for a
+	// separate one. Failing here does not stop the build: without it, only
+	// the profile reads that depended on it are missing, the same as any
+	// other grant an unprivileged run could not finish.
+	if err := grants.EnsureReadGroup(); err != nil {
+		note(o, "could not set up profile reads for every sandbox: %v", err)
+	}
 	var built *state.State
 	// Everything from reading the record to writing it back is one operation.
 	// Another wuserbox working on the same sandbox waits here rather than
@@ -36,7 +44,10 @@ func Init(o Options) (*state.State, error) {
 	}); err != nil {
 		return nil, err
 	}
-	return built, grants.ProtectSettings(built)
+	if err := grants.ProtectSettings(built); err != nil {
+		return built, err
+	}
+	return built, nil
 }
 
 // build does the work of Init with the sandbox's record already held.
@@ -95,11 +106,6 @@ func build(name, dir string, o Options) (*state.State, error) {
 	if err := grants.Reapply(s); err != nil {
 		return nil, err
 	}
-	// Everything writable was handed over just now, and every one of those
-	// calls carries the Low label or fails, so the sandbox can be run Low from
-	// here on. This is the only place that may say so: it is the only one that
-	// applies the whole set rather than one directory of it.
-	s.Labeled = true
 	if err := s.Save(); err != nil {
 		return nil, err
 	}

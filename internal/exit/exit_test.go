@@ -132,3 +132,23 @@ func TestJSONAskedFollowsTheLastFlagLikeTheParserDoes(t *testing.T) {
 		t.Error("a later --json=false should override an earlier --json")
 	}
 }
+
+// TestJSONAskedReadsBooleansTheWayTheParserDoes covers the spellings the flag
+// package accepts through strconv.ParseBool. Judging them by hand read
+// --json=False as asking while the parser that followed read it as not
+// asking, so the error and the command disagreed about the shape of the
+// answer.
+func TestJSONAskedReadsBooleansTheWayTheParserDoes(t *testing.T) {
+	for _, off := range []string{"--json=false", "--json=False", "--json=FALSE",
+		"--json=f", "--json=F", "--json=0"} {
+		if JSONAsked([]string{off}) {
+			t.Errorf("%q asks for JSON", off)
+		}
+	}
+	for _, on := range []string{"--json=true", "--json=True", "--json=TRUE",
+		"--json=t", "--json=T", "--json=1"} {
+		if !JSONAsked([]string{on}) {
+			t.Errorf("%q does not ask for JSON", on)
+		}
+	}
+}

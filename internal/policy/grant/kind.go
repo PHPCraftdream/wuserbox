@@ -53,19 +53,21 @@ func (k Kind) Writable() bool {
 	return k == RW || k == File || k == HomeTop
 }
 
-// LabelInheritance says how far the mandatory integrity label that
-// accompanies a writable permission reaches. It follows the permission
-// itself: a directory handed over whole is labeled through and through, a
-// single file is labeled alone, and the profile root — which may only take
-// new files — labels those files without reaching the subdirectories that
-// were already there.
+// IsolationReach says how far a grant's isolation from Everyone and
+// BUILTIN\Users reaches. It follows the permission itself: a directory handed
+// over whole is isolated through and through, a single file is isolated
+// alone, and the profile root — which may only take new files — isolates
+// those files without reaching the subdirectories that were already there.
 //
-// Getting this wrong is not cosmetic. A label that reaches further than the
-// permission marks somebody's whole profile as Low, and one that reaches less
-// far leaves the sandbox unable to write where it was just allowed to.
-func (k Kind) LabelInheritance() uint32 {
+// Read-only grants need this too, and for the same reason a write-restricted
+// token stopped being enough for delete: a sandbox's own restricted list has
+// to carry Everyone and Users so it can read the system it needs to run
+// anything, so a directory that merely inherited a write grant for either of
+// them is writable by any sandbox that holds it, whichever one asked for it
+// read-only.
+func (k Kind) IsolationReach() uint32 {
 	switch k {
-	case RW:
+	case RW, RO:
 		return acl.InheritObjects | acl.InheritContainers
 	case File:
 		return acl.InheritNone

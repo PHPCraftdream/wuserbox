@@ -1,14 +1,17 @@
-package group
+// External test package: token now imports group for group.ReadGroup, so a
+// test file that is package group and also imports token would be a cycle.
+package group_test
 
 import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
 
 // name for a group this test may create and delete.
-const testName = Prefix + "selftest-0000dead"
+const testName = group.Prefix + "selftest-0000dead"
 
 func requireAdmin(t *testing.T) {
 	t.Helper()
@@ -18,7 +21,7 @@ func requireAdmin(t *testing.T) {
 }
 
 func TestCommentReportsAMissingGroup(t *testing.T) {
-	_, exists, err := Comment(Prefix + "definitely-not-here")
+	_, exists, err := group.Comment(group.Prefix + "definitely-not-here")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,12 +31,12 @@ func TestCommentReportsAMissingGroup(t *testing.T) {
 }
 
 func TestListReturnsOnlySandboxGroups(t *testing.T) {
-	entries, err := List()
+	entries, err := group.List()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if !strings.HasPrefix(e.Name, Prefix) {
+		if !strings.HasPrefix(e.Name, group.Prefix) {
 			t.Errorf("List returned an unrelated group: %q", e.Name)
 		}
 	}
@@ -43,9 +46,9 @@ func TestAddNeedsAdministratorRights(t *testing.T) {
 	if token.IsAdmin() {
 		t.Skip("this check is about the unprivileged case")
 	}
-	err := Add(testName, `C:\nowhere`)
+	err := group.Add(testName, `C:\nowhere`)
 	if err == nil {
-		_ = Delete(testName)
+		_ = group.Delete(testName)
 		t.Fatal("a local group was created without administrator rights")
 	}
 	if !strings.Contains(err.Error(), "administrator") {
@@ -56,27 +59,27 @@ func TestAddNeedsAdministratorRights(t *testing.T) {
 func TestLifecycle(t *testing.T) {
 	requireAdmin(t)
 	const dir = `C:\projects\selftest`
-	if err := Add(testName, dir); err != nil {
+	if err := group.Add(testName, dir); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = Delete(testName) })
+	t.Cleanup(func() { _ = group.Delete(testName) })
 
-	comment, exists, err := Comment(testName)
+	comment, exists, err := group.Comment(testName)
 	if err != nil || !exists {
 		t.Fatalf("the new group was not found: %v", err)
 	}
 	if comment != dir {
 		t.Errorf("the group remembers %q, want %q", comment, dir)
 	}
-	if err := SetComment(testName, dir+`2`); err != nil {
+	if err := group.SetComment(testName, dir+`2`); err != nil {
 		t.Fatal(err)
 	}
-	if comment, _, _ := Comment(testName); comment != dir+`2` {
+	if comment, _, _ := group.Comment(testName); comment != dir+`2` {
 		t.Errorf("the comment was not updated, it reads %q", comment)
 	}
 
 	var listed bool
-	entries, err := List()
+	entries, err := group.List()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,10 +91,10 @@ func TestLifecycle(t *testing.T) {
 	if !listed {
 		t.Error("the new group is missing from the list")
 	}
-	if err := Delete(testName); err != nil {
+	if err := group.Delete(testName); err != nil {
 		t.Fatal(err)
 	}
-	if _, exists, _ := Comment(testName); exists {
+	if _, exists, _ := group.Comment(testName); exists {
 		t.Error("the group survived deletion")
 	}
 }

@@ -12,6 +12,12 @@ import (
 // Prefix marks groups owned by wuserbox.
 const Prefix = "wub-"
 
+// ReadGroup is the one group shared by every sandbox, rather than made fresh
+// per project: a fully restricted token needs BUILTIN\Users to read System32
+// and Program Files, but nothing built in covers the user's own profile the
+// same way, so this is granted read-and-execute there once, machine-wide.
+const ReadGroup = Prefix + "read"
+
 const errNotFound = 2220 // NERR_GroupNotFound
 
 var (

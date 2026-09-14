@@ -16,7 +16,20 @@ var (
 // stay writable inside a sandbox, because Everyone is one of the identifiers
 // the sandbox token is restricted to.
 func EveryoneWritable(path string) bool {
-	everyone, err := sid.Parse(sid.Everyone)
+	return writableBy(path, sid.Everyone)
+}
+
+// UsersWritable reports whether BUILTIN\Users may write to path, the same
+// concern as EveryoneWritable for the other identifier every sandbox's
+// restricted list has to carry. Some machines grant Users write access to
+// shared system directories -- C:\ProgramData is a common one -- by Windows'
+// own default, not through anything wuserbox did.
+func UsersWritable(path string) bool {
+	return writableBy(path, sid.Users)
+}
+
+func writableBy(path, account string) bool {
+	value, err := sid.Parse(account)
 	if err != nil {
 		return false
 	}
@@ -42,7 +55,7 @@ func EveryoneWritable(path string) bool {
 		if e.mode != grantAccess || e.trustee.form != trusteeIsSID || e.permissions&writeMask == 0 {
 			continue
 		}
-		if same, _, _ := procEqualSid.Call(e.trustee.name, everyone); same != 0 {
+		if same, _, _ := procEqualSid.Call(e.trustee.name, value); same != 0 {
 			return true
 		}
 	}

@@ -10,9 +10,9 @@ import (
 	"unsafe"
 )
 
-// auditCmd lists directories that Everyone may write to. The sandbox can write
-// there too, because Everyone has to be a restricting SID for processes to
-// start at all.
+// auditCmd lists directories that Everyone or BUILTIN\Users may write to. The
+// sandbox can write there too, because both have to be restricting
+// identifiers for processes to start and read System32 at all.
 func Audit(args []string) error {
 	depth := 2
 	if len(args) == 1 {
@@ -25,8 +25,16 @@ func Audit(args []string) error {
 	found := 0
 	var walk func(dir string, left int)
 	walk = func(dir string, left int) {
-		if acl.EveryoneWritable(dir) {
-			fmt.Println(dir)
+		everyone, users := acl.EveryoneWritable(dir), acl.UsersWritable(dir)
+		switch {
+		case everyone && users:
+			fmt.Printf("%s (Everyone, Users)\n", dir)
+			found++
+		case everyone:
+			fmt.Printf("%s (Everyone)\n", dir)
+			found++
+		case users:
+			fmt.Printf("%s (Users)\n", dir)
 			found++
 		}
 		if left == 0 {
@@ -45,7 +53,7 @@ func Audit(args []string) error {
 	for _, drive := range fixedDrives() {
 		walk(drive, depth)
 	}
-	fmt.Fprintf(os.Stderr, "%d directories writable by Everyone\n", found)
+	fmt.Fprintf(os.Stderr, "%d directories writable by Everyone or Users\n", found)
 	return nil
 }
 

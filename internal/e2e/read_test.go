@@ -4,7 +4,21 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 )
+
+// needsReadGroup leaves a test unrun where group.ReadGroup was never created.
+// Creating it needs administrator rights, the same as a sandbox's own group,
+// so an unprivileged run of these tests has nowhere to get it from.
+func needsReadGroup(t *testing.T) {
+	t.Helper()
+	if _, exists, err := group.Comment(group.ReadGroup); err != nil {
+		t.Fatal(err)
+	} else if !exists {
+		t.Skip("wub-read does not exist yet; run `wuserbox --init` elevated once to cover profile reads")
+	}
+}
 
 func TestReadsFilesTheCallerCanRead(t *testing.T) {
 	box := newBox(t)
@@ -17,6 +31,7 @@ func TestReadsFilesTheCallerCanRead(t *testing.T) {
 }
 
 func TestReadsTheUserProfile(t *testing.T) {
+	needsReadGroup(t)
 	box := newBox(t)
 	mustSucceed(t, box.state, script(t, box, `dir /b "%USERPROFILE%" >nul`))
 }

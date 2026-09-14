@@ -50,7 +50,7 @@ func Check(args []string) error {
 	if err != nil {
 		return err
 	}
-	result, err := access.Check(s.SID, path, wanted, s.Labeled)
+	result, err := access.Check(s.SID, path, wanted)
 	if err != nil {
 		return err
 	}

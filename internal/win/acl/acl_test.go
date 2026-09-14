@@ -1,7 +1,6 @@
 package acl
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -159,18 +158,70 @@ func TestRemoveTakesRefusalsAwayToo(t *testing.T) {
 
 // holds reports whether the account appears in the permissions of path, with
 // the given text in its entry. An empty text matches any entry.
+//
+// icacls prints the path itself at the start of the first entry's line, and a
+// test name embedded in a temporary directory can spell an account's name by
+// accident, so that line has the path taken off it before it is searched.
 func holds(t *testing.T, path, account, text string) bool {
 	t.Helper()
 	out, err := exec.Command("icacls", path).CombinedOutput()
 	if err != nil {
 		t.Fatalf("icacls %s: %v", path, err)
 	}
-	for _, line := range strings.Split(string(out), "\n") {
+	for i, line := range strings.Split(string(out), "\n") {
+		if i == 0 {
+			line = strings.TrimPrefix(line, path)
+		}
 		if strings.Contains(line, account) && strings.Contains(line, text) {
 			return true
 		}
 	}
 	return false
+}
+
+// TestIsolateReplacesEveryoneAndUsersWithReadOnly is the regression guard for
+// peer isolation: a directory that already carries Everyone and Users write
+// access -- the shape a directory takes when it merely inherited it from
+// somewhere, the reviewer's mandatory case -- has to lose that access on the
+// very same update that grants the account this call is for, or every other
+// sandbox holding Everyone or Users (every sandbox does) could still reach it.
+func TestIsolateReplacesEveryoneAndUsersWithReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	inherited := []ACE{{Access: AccessModify, Inheritance: InheritObjects | InheritContainers}}
+	if err := Set(dir, sid.Everyone, inherited); err != nil {
+		t.Fatal(err)
+	}
+	if err := Set(dir, sid.Users, inherited); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := []ACE{{Access: AccessModify, Inheritance: InheritObjects | InheritContainers}}
+	if err := Isolate(dir, unusedAccount, entries, InheritObjects|InheritContainers); err != nil {
+		t.Fatal(err)
+	}
+	if holds(t, dir, "Everyone", "(M)") {
+		t.Error("Everyone still holds Modify after Isolate")
+	}
+	if holds(t, dir, "Everyone", "(DENY)") {
+		t.Error("Isolate denied Everyone instead of replacing its access")
+	}
+	if !holds(t, dir, "Everyone", "(RX)") {
+		t.Error("Everyone lost its read access instead of being narrowed to it")
+	}
+	// "BUILTIN\Users", not the bare word: "NT AUTHORITY\Authenticated Users"
+	// also contains "Users" and would false-positive a substring match.
+	if holds(t, dir, `BUILTIN\Users`, "(M)") {
+		t.Error("Users still holds Modify after Isolate")
+	}
+	if holds(t, dir, `BUILTIN\Users`, "(DENY)") {
+		t.Error("Isolate denied Users instead of replacing its access")
+	}
+	if !holds(t, dir, `BUILTIN\Users`, "(RX)") {
+		t.Error("Users lost its read access instead of being narrowed to it")
+	}
+	if !holds(t, dir, unusedAccount, "(M)") {
+		t.Error("the account this call was for did not get its own grant")
+	}
 }
 
 // TestSetReachesTheFileSystemOnce is the regression guard for a replacement
@@ -183,9 +234,9 @@ func TestSetReachesTheFileSystemOnce(t *testing.T) {
 	dir := t.TempDir()
 	original := publish
 	updates := 0
-	publish = func(path string, list []explicitAccess, sacl uintptr) error {
+	publish = func(path string, list []explicitAccess) error {
 		updates++
-		return original(path, list, sacl)
+		return original(path, list)
 	}
 	defer func() { publish = original }()
 
@@ -198,65 +249,6 @@ func TestSetReachesTheFileSystemOnce(t *testing.T) {
 	if updates != 1 {
 		t.Errorf("the permissions were published %d times, and any number above one "+
 			"leaves a moment where the account holds neither the old entries nor the new", updates)
-	}
-}
-
-// TestSetWritableStillGrantsWhenItCannotLabel covers the case an ordinary
-// user's token is always in: the permission has to go on, so the caller is
-// left with something to work with, and the caller has to be told the
-// boundary did not, so it can come back with the rights that write it.
-// Silently doing half of this either cripples the sandbox or leaves it
-// looking protected when it is not.
-func TestSetWritableStillGrantsWhenItCannotLabel(t *testing.T) {
-	original := canLabel
-	canLabel = func() bool { return false }
-	defer func() { canLabel = original }()
-
-	dir := t.TempDir()
-	err := SetWritable(dir, unusedAccount, []ACE{
-		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
-	}, InheritObjects|InheritContainers)
-	if !errors.Is(err, ErrNotLabeled) {
-		t.Fatalf("got %v, want %v", err, ErrNotLabeled)
-	}
-	if !holds(t, dir, unusedAccount, "(M)") {
-		t.Error("the permission did not go on, so the caller was left with nothing")
-	}
-}
-
-// TestSetWritableLabelsWhereItCan is the other half, and only runs where the
-// rights to write a label are actually held.
-func TestSetWritableLabelsWhereItCan(t *testing.T) {
-	if !canLabel() {
-		t.Skip("writing an integrity label needs administrator rights; run this elevated to cover it")
-	}
-	dir := t.TempDir()
-	if err := SetWritable(dir, unusedAccount, []ACE{
-		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
-	}, InheritObjects|InheritContainers); err != nil {
-		t.Fatal(err)
-	}
-	out, err := exec.Command("icacls", dir).CombinedOutput()
-	if err != nil {
-		t.Fatalf("icacls %s: %v", dir, err)
-	}
-	if !strings.Contains(string(out), "Mandatory Label\\Low Mandatory Level") {
-		t.Errorf("the directory carries no Low label:\n%s", out)
-	}
-}
-
-// TestSDDLFlagsFollowTheInheritanceAsked keeps the label from reaching further
-// than the permission it accompanies.
-func TestSDDLFlagsFollowTheInheritanceAsked(t *testing.T) {
-	for inheritance, want := range map[uint32]string{
-		InheritNone:                         "",
-		InheritObjects | InheritContainers:  "OICI",
-		InheritObjects | InheritNoPropagate: "OINP",
-		InheritContainers | InheritOnly:     "CIIO",
-	} {
-		if got := sddlFlags(inheritance); got != want {
-			t.Errorf("%#x spells %q, want %q", inheritance, got, want)
-		}
 	}
 }
 

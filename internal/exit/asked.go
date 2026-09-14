@@ -1,6 +1,9 @@
 package exit
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // JSONAsked reports whether the command line asks for JSON.
 //
@@ -30,7 +33,15 @@ func JSONAsked(args []string) bool {
 			asked = true
 			continue
 		}
-		asked = value != "false" && value != "0"
+		// Read the value the way the flag package will read it. It uses
+		// strconv.ParseBool, which takes F, False and FALSE as readily as
+		// false, so judging the spellings by hand answers --json=False one way
+		// here and the other way there. A value it refuses is left to it to
+		// refuse: the failure that follows is itself the answer, and it is
+		// reported in whatever shape the last readable --json asked for.
+		if wanted, err := strconv.ParseBool(value); err == nil {
+			asked = wanted
+		}
 	}
 	return asked
 }

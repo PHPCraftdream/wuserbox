@@ -210,7 +210,7 @@ func TestExplainNoticesAccessBeyondTheRecord(t *testing.T) {
 	if err := s.Add(target, grant.RO); err != nil {
 		t.Fatal(err)
 	}
-	if err := grant.Apply(s.SID, target, grant.RW); !grant.Applied(err) {
+	if err := grant.Apply(s.SID, target, grant.RW); err != nil {
 		t.Fatal(err)
 	}
 
@@ -413,12 +413,12 @@ func TestExplainNoticesCreationUnderAReadOnlyRecord(t *testing.T) {
 	s := &state.State{Group: "wub-ro-record", SID: account, Dir: t.TempDir(), Temp: t.TempDir()}
 	// The record says read-only; the file system says otherwise. That is the
 	// drift the report exists to catch, so it is built rather than asked for.
-	if err := grant.Apply(account, dir, grant.HomeTop); !grant.Applied(err) {
+	if err := grant.Apply(account, dir, grant.HomeTop); err != nil {
 		t.Fatal(err)
 	}
 	s.Grants = []grant.Spec{{Path: dir, Kind: grant.RO}}
 
-	inForce, note := inForce(account, s.Grants[0], false)
+	inForce, note := inForce(account, s.Grants[0])
 	if inForce {
 		t.Fatal("a directory the sandbox can create files in was reported as read-only")
 	}
@@ -444,7 +444,7 @@ func TestExplainAcceptsAReadOnlyRecordThatHoldsUp(t *testing.T) {
 	if err := s.Add(inner, grant.RO); err != nil {
 		t.Fatal(err)
 	}
-	if ok, note := inForce(account, grant.Spec{Path: inner, Kind: grant.RO}, false); !ok {
+	if ok, note := inForce(account, grant.Spec{Path: inner, Kind: grant.RO}); !ok {
 		t.Errorf("a sound read-only permission was called broken: %s", note)
 	}
 }
@@ -468,12 +468,12 @@ func TestExplainJudgesAReadOnlyFileByTheFileItself(t *testing.T) {
 	if err := s.Add(guarded, grant.RO); err != nil {
 		t.Fatal(err)
 	}
-	if ok, note := inForce(account, grant.Spec{Path: guarded, Kind: grant.RO}, false); !ok {
+	if ok, note := inForce(account, grant.Spec{Path: guarded, Kind: grant.RO}); !ok {
 		t.Errorf("a file that is genuinely read-only was called broken: %s", note)
 	}
 
 	// Writing it must still be refused, or the check would say nothing at all.
-	writable, err := access.Check(account, guarded, access.Write, false)
+	writable, err := access.Check(account, guarded, access.Write)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,10 +488,10 @@ func TestExplainJudgesAReadOnlyFileByTheFileItself(t *testing.T) {
 func TestExplainStillAsksADirectoryAboutCreating(t *testing.T) {
 	const account = "S-1-5-21-1111111111-2222222222-3333333333-232323"
 	dir := t.TempDir()
-	if err := grant.Apply(account, dir, grant.HomeTop); !grant.Applied(err) {
+	if err := grant.Apply(account, dir, grant.HomeTop); err != nil {
 		t.Fatal(err)
 	}
-	if ok, note := inForce(account, grant.Spec{Path: dir, Kind: grant.RO}, false); ok {
+	if ok, note := inForce(account, grant.Spec{Path: dir, Kind: grant.RO}); ok {
 		t.Error("a directory the sandbox can create files in was reported as read-only")
 	} else if !strings.Contains(note, "create") {
 		t.Errorf("the note does not name the operation that is allowed: %s", note)

@@ -65,53 +65,55 @@ func Set(path, account string, entries []ACE) error {
 	if err != nil {
 		return err
 	}
-	return publish(path, listFor(value, entries), 0)
+	return publish(path, listFor(value, entries))
 }
 
-// SetWritable is Set for a permission that lets the sandbox change something,
-// with a Low mandatory integrity label added in the same update.
+// Isolate is Set, with one addition: Everyone and BUILTIN\Users are replaced
+// with read-only over the same reach the entries are given, in the same
+// update.
 //
-// The label is what actually holds the boundary against deleting. DELETE and
-// FILE_DELETE_CHILD are not part of a file's generic-write mapping, so the
-// second, restricted access check a sandbox token gets never sees them, and
-// the sandbox keeps the real user's own right to delete wherever their
-// account already holds it — which, by Windows' own defaults, is everything
-// in their home directory. Mandatory integrity is checked separately from the
-// permissions and does cover those two, so a sandbox token running Low is
-// refused them everywhere that is not labeled Low as well.
+// The sandbox's own token is a fully restricted one now, checked against
+// every access rather than only writes, which is what makes DELETE and
+// FILE_DELETE_CHILD answer to the sandbox's own SID instead of the caller's.
+// Everyone and Users have to sit in that restricted list too, or the sandbox
+// could not read the system it needs to run anything — but that means any
+// directory whose tree happens to carry a write grant for either of them is
+// then writable by every sandbox equally, whichever one this call is
+// actually for.
 //
-// That is also why this cannot be skipped quietly: the sandbox's own writes
-// are refused the same way, so a permission handed over without the label is
-// a permission that does not work. Writing the label needs a privilege an
-// ordinary user's token does not carry, so a caller without it gets
-// errNotLabeled back and can re-run the work with administrator rights.
+// A deny cannot fix this, however it is ordered: the sandbox this grant is
+// for belongs to Everyone and Users too, so a deny for either would refuse
+// this same sandbox its own grant. Windows honors any matching deny over any
+// matching allow for one token, regardless of which entry the ACL lists
+// first — measured directly, on this machine, holding for a hand-built ACL
+// where the allow for the sandbox's own SID came first in the list. Replacing
+// their access outright, the way a plain grant already replaces whatever an
+// account held before, has no such conflict: there is no deny in it for
+// either group to be caught by.
 //
-// Both go in the one call that reaches the file system. Two calls would walk
-// a directory that already holds files twice over, and the whole cost of
-// handing a directory to a sandbox is that walk.
-func SetWritable(path, account string, entries []ACE, inheritance uint32) error {
-	if len(entries) == 0 {
-		return fmt.Errorf("no access entries given for %s", path)
-	}
+// It reaches everywhere the permission does, in the same call a second pass
+// would walk the same tree over again for nothing: Windows copies an
+// inheritable entry onto every file already under a directory rather than
+// looking one up on a parent each time, so a write grant sitting anywhere in
+// the tree has to be replaced there directly, not only at the root.
+func Isolate(path, account string, entries []ACE, reach uint32) error {
 	value, err := sid.Parse(account)
 	if err != nil {
 		return err
 	}
-	if !canLabel() {
-		// The permission still goes on: refusing it outright would leave the
-		// caller with nothing, and the caller is the one that knows whether it
-		// can come back with the rights the label needs. What it must not do
-		// is pretend the boundary is in force, so it is told.
-		if err := publish(path, listFor(value, entries), 0); err != nil {
-			return err
-		}
-		return ErrNotLabeled
-	}
-	label, err := lowIntegritySACL(inheritance)
+	everyone, err := sid.Parse(sid.Everyone)
 	if err != nil {
 		return err
 	}
-	return publish(path, listFor(value, entries), label)
+	users, err := sid.Parse(sid.Users)
+	if err != nil {
+		return err
+	}
+	readOnly := []ACE{{Access: AccessReadExecute, Inheritance: reach}}
+	list := listFor(value, entries)
+	list = append(list, listFor(everyone, readOnly)...)
+	list = append(list, listFor(users, readOnly)...)
+	return publish(path, list)
 }
 
 // listFor builds the whole update for one account, in the order Windows
@@ -150,9 +152,7 @@ func entry(account uintptr, access, inheritance uint32, mode int32) explicitAcce
 	}
 }
 
-// apply writes the finished list to the file system, together with the
-// mandatory-label list when one was built for it.
-func apply(path string, list []explicitAccess, sacl uintptr) error {
+func apply(path string, list []explicitAccess) error {
 	var current, descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
 		seFileObject, daclInfo, 0, 0, uintptr(unsafe.Pointer(&current)), 0,
@@ -168,18 +168,9 @@ func apply(path string, list []explicitAccess, sacl uintptr) error {
 	}
 	defer w32.Free(updated)
 
-	info := uintptr(daclInfo)
-	if sacl != 0 {
-		info |= labelInfo
-	}
 	if r, _, _ := procSetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
-		seFileObject, info, 0, 0, updated, sacl); r != 0 {
+		seFileObject, daclInfo, 0, 0, updated, 0); r != 0 {
 		if r == 5 {
-			if sacl != 0 {
-				// The label is the part an ordinary token cannot write, so say
-				// which of the two was refused rather than blaming ownership.
-				return fmt.Errorf("labeling %s: %w", path, ErrNotLabeled)
-			}
 			return fmt.Errorf("changing the permissions of %s: access denied, you do not own it", path)
 		}
 		return fmt.Errorf("changing the permissions of %s: error %d", path, r)

@@ -137,9 +137,8 @@ C:\tools    c:/tools    /c/tools    /mnt/c/tools    /cygdrive/c/tools
 
 Deciding what a sandbox may write to needs administrator rights, so `--init`,
 `--rm`, `--grant`, `--revoke`, `--add-dir` and `--remove-dir` raise a consent
-prompt. Starting a program does not, unless the sandbox does not exist yet or
-was built before the delete boundary described below, in which case it is
-built again once.
+prompt. Starting a program does not, unless the sandbox does not exist yet, in
+which case it is built first.
 
 ## What is writable by default
 
@@ -160,31 +159,38 @@ one.
 
 ## The delete boundary
 
-Refusing writes is not enough on its own. Windows decides `DELETE` and
-`FILE_DELETE_CHILD` outside the mapping a write-restricted token checks a
-second time, so a sandbox held to its own directories by permissions alone
-still carried the user's own right to delete — and by default a Windows
-profile grants its owner Full Control over everything in it, which includes
-removing what is inside a directory whatever the thing inside says about
-itself. Writing to a file elsewhere was refused; deleting it was not.
+Refusing writes is not enough on its own. `DELETE` and `FILE_DELETE_CHILD`
+fall outside the mapping a write-restricted token checks a second time, so a
+sandbox held to its own directories by permissions alone still carried the
+user's own right to delete wherever their account already held it — and by
+default a Windows profile grants its owner Full Control over everything in
+it, which includes removing what is inside a directory whatever the thing
+inside says about itself. Writing to a file elsewhere was refused; deleting
+it was not.
 
-The boundary is held by mandatory integrity instead, which Windows checks
-separately from the permissions and which does cover those two rights:
+The sandbox runs on a **fully restricted token** instead: every access, not
+only writes, is checked a second time against the sandbox's own identifier,
+`DELETE` and `FILE_DELETE_CHILD` included. Deleting now answers to that
+identifier like everything else, rather than to the caller's own account —
+which closes the same gap for a directory another sandbox holds, and for a
+protected file inside a directory the sandbox may otherwise write to.
 
-* the sandbox runs at Low integrity;
-* every directory handed to it is labeled Low in the same update that grants
-  the permission, so the sandbox can still write and delete inside it;
-* everything else keeps the ordinary level, and a Low process is refused
-  writing, deleting, taking ownership and changing permissions there
-  regardless of what the permissions say.
+`Everyone` and `BUILTIN\Users` have to sit in that same restricted list, or
+the sandbox could not read System32, Program Files, or start a program that
+opens a window at all. Handing a directory to one sandbox therefore replaces
+whatever access `Everyone` and `Users` hold there with read-only, in the same
+update as the grant: a directory that merely inherited broad access from
+somewhere else is narrowed exactly like one that never had any. Neither is
+ever denied outright — Windows honors a matching deny over a matching allow
+for one token regardless of which entry an access control list lists first,
+and every sandbox's restricted list carries both identifiers, so a deny for
+either would refuse the sandbox its own directory too.
 
-Reading is untouched: the policy Windows applies by default is no-write-up,
-so a sandbox still reads everything its user can read.
-
-Writing those labels needs administrator rights, which is why the commands
-that hand a directory over ask for them. A sandbox whose labels could not be
-written records that, and is built again — once, with a consent prompt —
-before it is used, rather than running without the boundary.
+Reading is untouched by any of this: a sandbox still reads everything its
+user can read that `Everyone`, `BUILTIN\Users`, or its own account already
+covers. The profile root is the one place neither of those two reaches by
+Windows' own default, which is what `wub-read` — a machine-wide group,
+created once the first time any sandbox is built — is for.
 
 ## Protecting your settings
 
@@ -252,10 +258,11 @@ returned, so the code you read after it is the sandboxed program's own.
   data, and can decrypt whatever your account can. It prevents damage, not a
   determined leak.
 * **The network is not restricted.**
-* **Directories writable by Everyone stay writable**, because `Everyone` has to
-  be one of the restricting identifiers for programs to start at all.
-  `wuserbox --audit` lists them; there are usually a handful under
-  `C:\ProgramData`.
+* **Directories writable by `Everyone` or `BUILTIN\Users` stay writable**,
+  because both have to be restricting identifiers — the first for programs to
+  start at all, the second to read System32 and Program Files. Some machines
+  grant `Users` write access to `C:\ProgramData` by Windows' own default.
+  `wuserbox --audit` lists what it finds under either.
 * **`HKEY_CURRENT_USER` is read-only.** Command-line tools rarely care;
   anything that saves settings in the registry will fail to.
 * **Interface isolation is weak.** A sandboxed process shares your desktop and
@@ -303,11 +310,12 @@ The end-to-end tests create real permissions under a synthetic identifier and
 try to escape: writing outside the project, through a child process, into the
 profile, into the registry, and deleting a whole tree. Most need no elevation.
 
-The ones that cover the delete boundary do, because writing an integrity label
-does: without administrator rights they skip rather than pass, so a run that
-cannot test the boundary never reports it as holding. The full lifecycle test
-creates an actual local group and needs elevation for the same reason. Run
-both from an elevated shell:
+One test reads the user's profile directory, which needs `wub-read` — the
+group a fully restricted token needs to reach it, created once the first time
+any sandbox is built. Creating a group needs administrator rights, so that
+test skips rather than fails without them. The full lifecycle test creates an
+actual local group and needs elevation for the same reason. Run both from an
+elevated shell:
 
 ```
 go test ./... -count=1

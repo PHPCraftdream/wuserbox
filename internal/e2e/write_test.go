@@ -70,12 +70,23 @@ func TestRefusesWritesToTheUserProfile(t *testing.T) {
 	}
 }
 
+// TestRefusesWritesToPublicAndProgramData is scoped to what a sandbox can
+// actually be asked to refuse. BUILTIN\Users has to sit in every restricted
+// list, or a sandbox could not read System32 or Program Files, and some
+// machines — this compatibility setting is not universal — also grant Users
+// write access to shared system directories like C:\ProgramData by Windows'
+// own default. A sandbox cannot refuse what every local account already has
+// there regardless of it, so that case is skipped rather than asserted.
 func TestRefusesWritesToPublicAndProgramData(t *testing.T) {
 	box := newBox(t)
 	for _, dir := range []string{`C:\Users\Public`, `C:\ProgramData`} {
 		target := filepath.Join(dir, "wuserbox-escape-check.txt")
 		if _, err := os.Stat(target); err == nil {
 			continue
+		}
+		if err := os.WriteFile(target, []byte("probe"), 0o644); err == nil {
+			os.Remove(target)
+			t.Skipf("%s already accepts writes from any local account on this machine", dir)
 		}
 		mustFail(t, box.state, writeFileCommand(target))
 		if _, err := os.Stat(target); err == nil {

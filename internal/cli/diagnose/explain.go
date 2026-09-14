@@ -73,7 +73,7 @@ func build(s *state.State) (Report, error) {
 		if account.Source == "" {
 			account.Source = "given once"
 		}
-		account.InForce, account.Note = inForce(s.SID, held, s.Labeled)
+		account.InForce, account.Note = inForce(s.SID, held)
 		report.Accounts = append(report.Accounts, account)
 		if !account.InForce {
 			report.Drifted = append(report.Drifted, held.Path)
@@ -105,8 +105,8 @@ func sourcesFor(s *state.State) (map[string]plan.Source, error) {
 // written down as readable that the sandbox can in fact write to is exactly
 // the situation this tool exists to prevent, and it would otherwise be
 // reported as being in good order.
-func inForce(account string, held grant.Spec, low bool) (bool, string) {
-	readable, err := access.Check(account, held.Path, access.Read, low)
+func inForce(account string, held grant.Spec) (bool, string) {
+	readable, err := access.Check(account, held.Path, access.Read)
 	if err != nil {
 		return false, err.Error()
 	}
@@ -121,7 +121,7 @@ func inForce(account string, held grant.Spec, low bool) (bool, string) {
 	if err != nil {
 		return false, err.Error()
 	}
-	granted, err := access.Check(account, held.Path, proving, low)
+	granted, err := access.Check(account, held.Path, proving)
 	if err != nil {
 		return false, err.Error()
 	}
@@ -155,7 +155,7 @@ func inForce(account string, held grant.Spec, low bool) (bool, string) {
 	// right down, and a read-only entry does not promise what it cannot
 	// deliver.
 	for _, changing := range changingOperations(held.Path) {
-		answer, err := access.Check(account, held.Path, changing, low)
+		answer, err := access.Check(account, held.Path, changing)
 		if err != nil {
 			return false, err.Error()
 		}

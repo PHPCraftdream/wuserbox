@@ -5,54 +5,29 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/win/access"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
-
-// needsLabeling leaves a test unrun where the rights to write an integrity
-// label are not held. It is a skip rather than a pass: the boundary these
-// tests are about does not exist without the label, so pretending otherwise
-// would report a sandbox as safe on exactly the machines where it is not.
-func needsLabeling(t *testing.T) {
-	t.Helper()
-	if !acl.CanLabelHere() {
-		t.Skip("writing an integrity label needs administrator rights; " +
-			"run these elevated to cover the delete boundary")
-	}
-}
-
-// labeledBox is newBox carrying the mark an elevated build leaves behind, so
-// the sandbox actually runs at Low integrity. The mark is set here rather
-// than taken on trust: these tests build their sandbox by hand, without the
-// init that would otherwise set it, and every grant above went on labeled
-// because needsLabeling has already established that labels can be written.
-func labeledBox(t *testing.T) *box {
-	t.Helper()
-	b := newBox(t)
-	b.state.Labeled = true
-	if err := b.state.Save(); err != nil {
-		t.Fatal(err)
-	}
-	return b
-}
 
 // TestDeletingOutsideTheBoundaryIsRefused is the regression guard for the way
 // a sandbox could destroy anything its user owned.
 //
-// DELETE and FILE_DELETE_CHILD are not part of a file's generic-write
-// mapping, so the second access check a write-restricted token gets never saw
-// them: the sandbox kept the user's own right to delete wherever their
-// account already held it. By Windows' own defaults that is the whole of
-// their home directory, which grants the owner Full Control all the way down
-// — and Full Control includes removing what is inside a directory, whatever
-// the thing inside says about itself. Writing to the file was refused and
-// deleting it succeeded.
+// A fully restricted token checks every access, deleting included, against
+// the sandbox's own restricting identifiers — not only writes, the way a
+// write-restricted token's second check did, which left DELETE and
+// FILE_DELETE_CHILD answering to the caller's own account instead. By
+// Windows' own defaults a user's account holds Full Control all the way down
+// their home directory, Full Control included the right to remove things
+// inside it whatever they said about themselves, and a write-restricted
+// sandbox kept that right wherever the account already had it.
 //
 // The parent here is given exactly that shape on purpose, rather than
 // whatever the machine's temporary directory happens to hand out, so the test
 // asks the same question everywhere it runs.
 func TestDeletingOutsideTheBoundaryIsRefused(t *testing.T) {
-	needsLabeling(t)
-	box := labeledBox(t)
+	box := newBox(t)
 
 	outside := filepath.Join(box.root, "not-granted")
 	if err := os.Mkdir(outside, 0o755); err != nil {
@@ -77,8 +52,7 @@ func TestDeletingOutsideTheBoundaryIsRefused(t *testing.T) {
 // agent actually reaches for when it goes wrong: a recursive delete over
 // everything in sight.
 func TestASweepStopsAtTheBoundary(t *testing.T) {
-	needsLabeling(t)
-	box := labeledBox(t)
+	box := newBox(t)
 
 	outside := filepath.Join(box.root, "not-granted")
 	if err := os.Mkdir(outside, 0o755); err != nil {
@@ -105,12 +79,10 @@ func TestASweepStopsAtTheBoundary(t *testing.T) {
 	}
 }
 
-// TestTheSandboxKeepsItsOwnWrites is the other side of the same change, and
-// the one that would break first if a grant ever went on without its label:
-// the sandbox has to be able to write and delete inside what it was given.
+// TestTheSandboxKeepsItsOwnWrites is the other side of the same change: the
+// sandbox has to be able to write and delete inside what it was given.
 func TestTheSandboxKeepsItsOwnWrites(t *testing.T) {
-	needsLabeling(t)
-	box := labeledBox(t)
+	box := newBox(t)
 
 	target := filepath.Join(box.granted, "mine.txt")
 	mustSucceed(t, box.state, writeFileCommand(target))
@@ -121,7 +93,7 @@ func TestTheSandboxKeepsItsOwnWrites(t *testing.T) {
 	if exists(target) {
 		t.Error("the sandbox could not delete what it had just written")
 	}
-	// New subdirectories inherit the label, or the sandbox loses the ability
+	// New subdirectories inherit the grant, or the sandbox loses the ability
 	// to work inside what it just made.
 	nested := filepath.Join(box.granted, "nested")
 	mustSucceed(t, box.state, []string{"cmd.exe", "/c", "mkdir " + nested})
@@ -129,12 +101,13 @@ func TestTheSandboxKeepsItsOwnWrites(t *testing.T) {
 }
 
 // TestReadingIsStillUnrestricted keeps the promise the whole tool is built
-// on. Running Low restricts writing, not reading: the mandatory policy
-// Windows applies by default is no-write-up, and a sandbox that could no
-// longer read the toolchain would be useless.
+// on. A fully restricted token's second check applies to every access, but
+// Everyone and BUILTIN\Users still sit in the restricted list to make that
+// possible, and grant.Apply only ever narrows either of them to read access,
+// never takes reading away — so a sandbox that could no longer read the
+// toolchain would be useless.
 func TestReadingIsStillUnrestricted(t *testing.T) {
-	needsLabeling(t)
-	box := labeledBox(t)
+	box := newBox(t)
 
 	outside := filepath.Join(box.root, "readable")
 	if err := os.Mkdir(outside, 0o755); err != nil {
@@ -145,16 +118,152 @@ func TestReadingIsStillUnrestricted(t *testing.T) {
 	mustSucceed(t, box.state, []string{"cmd.exe", "/c", "type " + target})
 }
 
-// TestASandboxWithoutLabelsIsNotRunLow is the migration guard. A sandbox
-// built before the labels existed carries none, and running it Low would
-// refuse it its own writes rather than protect anything — so the record says
-// so, and the token follows the record.
-func TestASandboxWithoutLabelsIsNotRunLow(t *testing.T) {
+// TestRevokingTakesTheDeleteBackToo is the regression guard for a permission
+// that was revoked in name only. Deleting goes through the sandbox's own
+// restricting identifier now, the same as any other access, so taking that
+// identifier's entry away has to take the delete right with it.
+func TestRevokingTakesTheDeleteBackToo(t *testing.T) {
 	b := newBox(t)
-	b.state.Labeled = false
-	target := filepath.Join(b.granted, "still-writable.txt")
-	mustSucceed(t, b.state, writeFileCommand(target))
+	extra := filepath.Join(b.root, "extra")
+	if err := os.Mkdir(extra, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.state.Add(extra, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(extra, "f.txt")
+	place(t, target, "data")
+	if err := b.state.Remove(extra); err != nil {
+		t.Fatal(err)
+	}
+
+	runSandboxed(t, b.state, []string{"cmd.exe", "/c", "del /q " + target})
 	if !exists(target) {
-		t.Error("a sandbox from before the boundary lost the writes it used to have")
+		t.Error("the sandbox deleted inside a directory it no longer holds")
+	}
+}
+
+// TestNarrowingToReadOnlyTakesTheDeleteBackToo is the same guarantee for the
+// other way a permission is taken away. Read-only that still lets the
+// directory be emptied is not read-only.
+func TestNarrowingToReadOnlyTakesTheDeleteBackToo(t *testing.T) {
+	b := newBox(t)
+	narrowed := filepath.Join(b.root, "narrowed")
+	if err := os.Mkdir(narrowed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.state.Add(narrowed, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(narrowed, "f.txt")
+	place(t, target, "data")
+	if err := b.state.Add(narrowed, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+
+	runSandboxed(t, b.state, []string{"cmd.exe", "/c", "del /q " + target})
+	if !exists(target) {
+		t.Error("the sandbox emptied a directory it holds read-only")
+	}
+}
+
+// TestTheDiagnosticAgreesWithWhatHappens pairs every answer --check gives
+// with the operation itself, deleting included: a fully restricted token
+// applies the same two checks to every access, so --check's simulation and a
+// real delete now agree the way they already did for every other operation —
+// unlike a write-restricted token, whose second check never applied to
+// deleting at all, which used to make a delete refusal from the simulation
+// unusable as an answer.
+//
+// An answer that disagrees with the result is worse than no answer: it is the
+// tool certifying a boundary it does not have, and somebody deciding what to
+// hand over on the strength of it.
+func TestTheDiagnosticAgreesWithWhatHappens(t *testing.T) {
+	b := newBox(t)
+
+	outside := filepath.Join(b.root, "not-granted")
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := acl.Protect(outside); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{
+		filepath.Join(b.granted, "mine.txt"),
+		filepath.Join(outside, "theirs.txt"),
+	} {
+		place(t, target, "data")
+		answer, err := access.Check(b.state.SID, target, access.Delete)
+		if err != nil {
+			t.Fatalf("%s: %v", target, err)
+		}
+		runSandboxed(t, b.state, []string{"cmd.exe", "/c", "del /q " + target})
+		gone := !exists(target)
+
+		if answer.Allowed != gone {
+			t.Errorf("%s: --check said deleting is allowed=%v (%s), and the sandbox %s it",
+				target, answer.Allowed, answer.Reason,
+				map[bool]string{true: "deleted", false: "could not delete"}[gone])
+		}
+	}
+}
+
+// TestOneSandboxCannotDeleteAnothersFiles is the regression guard for the gap
+// a fully restricted token alone does not close: every sandbox's restricted
+// list carries Everyone and BUILTIN\Users, so it can read the system it needs
+// to run anything, and without grant.Apply narrowing either of them on every
+// granted directory, any sandbox holding one of those identifiers — every
+// sandbox does — could reach what was granted to another.
+//
+// The shared directory here is given Users:Modify before it is granted, the
+// reviewer's mandatory case: an ordinary grant that left inherited access
+// like that standing would not close the gap even though it looks closed by
+// every test that only checks a sandbox's own directories.
+func TestOneSandboxCannotDeleteAnothersFiles(t *testing.T) {
+	a, b := newBox(t), newBox(t)
+	shared := filepath.Join(b.root, "shared")
+	if err := os.Mkdir(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := acl.Set(shared, sid.Users, []acl.ACE{
+		{Access: acl.AccessModify, Inheritance: acl.InheritObjects | acl.InheritContainers},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.state.Add(shared, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(shared, "b-owns-this.txt")
+	place(t, target, "data")
+
+	mustFail(t, a.state, writeFileCommand(target))
+	runSandboxed(t, a.state, []string{"cmd.exe", "/c", "del /q " + target})
+	if !exists(target) {
+		t.Error("one sandbox deleted a file granted to another")
+	}
+	// Isolating a peer must not cost the owner its own access.
+	runSandboxed(t, b.state, []string{"cmd.exe", "/c", "del /q " + target})
+	if exists(target) {
+		t.Error("isolating a peer also took the owning sandbox's own access away")
+	}
+}
+
+// TestAProtectedFileInsideAGrantedDirectorySurvives is the regression guard
+// for FILE_DELETE_CHILD. grant.RW's AccessModify does not include it — a
+// sandbox's right to delete inside its own directory comes from DELETE on
+// each file, inherited from the grant — so a file whose own permissions were
+// replaced by acl.Protect, with inheritance switched off, never inherits
+// that entry and the directory's own grant cannot reach around it.
+func TestAProtectedFileInsideAGrantedDirectorySurvives(t *testing.T) {
+	box := newBox(t)
+	target := filepath.Join(box.granted, "protected.txt")
+	place(t, target, "data")
+	if err := acl.Protect(target); err != nil {
+		t.Fatal(err)
+	}
+	mustFail(t, box.state, writeFileCommand(target))
+	runSandboxed(t, box.state, []string{"cmd.exe", "/c", "del /q " + target})
+	if !exists(target) {
+		t.Error("a protected file inside a granted directory was deleted")
 	}
 }

@@ -14,7 +14,6 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
-	"github.com/PHPCraftdream/wuserbox/internal/win/access"
 )
 
 // testSID returns a SID that belongs to no account on this machine. Access
@@ -75,18 +74,28 @@ func newBox(t *testing.T) *box {
 //
 // It is a variable because the two tests about this rule itself need both
 // answers, and neither can be arranged reliably: how much a temporary
-// directory hands down differs from one machine to the next, and a restricted
-// token does not take deleting away the way it takes writing away. Every other
+// directory hands down differs from one machine to the next. Every other
 // test asks the machine.
 var machineIsOpen = askTheMachine
 
+// askTheMachine finds out by trying, on the control file, which exists to be
+// spent this way and is never the subject of a test.
+//
+// This is what the question is actually about: not what a sandbox's own
+// permissions say, which access.Check could answer directly, but what the
+// directory the tests happen to run in hands out on its own regardless of
+// the sandbox at all. Doing it settles that the way asking about it never
+// could.
 func askTheMachine(t *testing.T, b *box) (bool, string) {
 	t.Helper()
-	answer, err := access.Check(b.state.SID, b.control, access.Delete, false)
-	if err != nil {
-		t.Fatalf("asking about %s: %v", b.control, err)
+	runSandboxed(t, b.state, []string{"cmd.exe", "/c", "del /q " + b.control})
+	if exists(b.control) {
+		return false, ""
 	}
-	return answer.Allowed, answer.Reason
+	// Put it back: later checks in the same test ask the same question, and a
+	// missing control file would answer it differently.
+	place(t, b.control, "control")
+	return true, "the sandbox removed the control file, which no permission names"
 }
 
 // pretendTheMachineIs fixes that answer for one test.

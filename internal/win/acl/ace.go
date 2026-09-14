@@ -34,7 +34,18 @@ const (
 	// AccessChange is everything that alters an object rather than reads it:
 	// writing, appending, changing attributes, and deleting it or what is
 	// inside it. It is what a read-only grant has to refuse.
-	AccessChange uint32 = 0x2 | 0x4 | 0x10 | 0x40 | 0x100 | 0x10000 | 0x40000000
+	//
+	// This must never carry a generic bit (the top four, 0x10000000 and up).
+	// Windows expands a generic bit found in an ACE's own mask to its full
+	// specific-rights mapping before comparing it against what was asked for
+	// -- GENERIC_WRITE (0x40000000) expands to FILE_GENERIC_WRITE, which
+	// includes READ_CONTROL and SYNCHRONIZE -- so a refusal built from one
+	// would deny part of an ordinary read alongside every write bit, and
+	// deny it outright: a restricted token's second check refuses the whole
+	// request the moment any bit still wanted is denied. A write-restricted
+	// token never surfaced this, because it skipped that second check for
+	// reads entirely; a fully restricted one does not.
+	AccessChange uint32 = 0x2 | 0x4 | 0x10 | 0x40 | 0x100 | 0x10000
 )
 
 // Write bits, used when judging whether a permission is dangerous.
