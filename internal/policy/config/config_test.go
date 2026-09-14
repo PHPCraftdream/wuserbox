@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -261,4 +262,51 @@ func tempDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return resolved
+}
+
+// TestTheRulesFileIsNeverSeenHalfWritten is the regression guard for a writer
+// that emptied the file and filled it again. A run reading the rules at that
+// moment saw no projects at all and went ahead without the standing rules, so
+// a project quietly lost the directories it is always given.
+func TestTheRulesFileIsNeverSeenHalfWritten(t *testing.T) {
+	t.Setenv(EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
+	rules := &Config{}
+	for i := 0; i < 60; i++ {
+		rules.Projects = append(rules.Projects, Rule{
+			Dir: fmt.Sprintf(`C:/projects/number%03d`, i),
+			RW:  []string{fmt.Sprintf(`C:/tools/number%03d`, i)},
+		})
+	}
+	if err := rules.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	writing := make(chan error, 1)
+	go func() {
+		for i := 0; i < 60; i++ {
+			if err := rules.Save(); err != nil {
+				writing <- err
+				return
+			}
+		}
+		writing <- nil
+	}()
+
+	for {
+		select {
+		case err := <-writing:
+			if err != nil {
+				t.Fatalf("writing the rules failed: %v", err)
+			}
+			return
+		default:
+		}
+		read, err := Load()
+		if err != nil {
+			t.Fatalf("a reader saw rules that were not whole: %v", err)
+		}
+		if len(read.Projects) != len(rules.Projects) {
+			t.Fatalf("a reader saw %d of %d projects", len(read.Projects), len(rules.Projects))
+		}
+	}
 }

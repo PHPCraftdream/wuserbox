@@ -5,11 +5,13 @@ import (
 	"os"
 
 	ktav "github.com/ktav-lang/golang"
+
+	"github.com/PHPCraftdream/wuserbox/internal/paths"
 )
 
 // Load reads the config, returning an empty one when the file is absent.
 func Load() (*Config, error) {
-	data, err := os.ReadFile(Path())
+	data, err := paths.ReadWhole(Path())
 	if os.IsNotExist(err) {
 		return &Config{}, nil
 	}

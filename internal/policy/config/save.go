@@ -1,11 +1,12 @@
 package config
 
 import (
-	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
-	"os"
 	"path/filepath"
 
 	ktav "github.com/ktav-lang/golang"
+
+	"github.com/PHPCraftdream/wuserbox/internal/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
 const header = "## wuserbox: extra directories each project may write to.\n" +
@@ -30,11 +31,14 @@ func (c *Config) Save() error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(Path(), []byte(header+text), 0o644); err != nil {
-		return err
-	}
+	// Published whole, like the per-sandbox record: writing into the file
+	// itself empties it first, and a run reading the rules at that moment saw
+	// no projects and quietly went without the standing rules.
+	//
 	// The rules decide what a sandbox may write to, so they must not be
-	// writable by one. This also covers the file being created in the profile
-	// root after a sandbox was granted the right to create files there.
-	return acl.Protect(Path())
+	// writable by one; that is applied to the finished copy, so it is in force
+	// before the file is in place. This also covers the file being created in
+	// the profile root after a sandbox was granted the right to create files
+	// there.
+	return paths.Publish(Path(), []byte(header+text), acl.Protect)
 }
