@@ -41,9 +41,19 @@ type explicitAccess struct {
 	trustee     trustee
 }
 
+// publish is the step that writes a finished list to the file system. Tests
+// replace it to count how often one call to Set reaches the disk.
+var publish = apply
+
 // Set replaces the entries for account with the ones given. All of them go in
 // a single update, so one account can hold several entries that differ only in
 // how they are inherited.
+//
+// The update is also the only one: nothing is written to the file system until
+// the whole list is built. Clearing the account in its own update first would
+// leave a moment with neither the old entries nor the new ones, and a directory
+// held read-only inside a writable parent would be writable through inheritance
+// for exactly as long as that moment lasts.
 //
 // Windows pushes inheritable entries down to existing children as well, so a
 // permission set on a directory reaches the files already in it.
@@ -55,18 +65,22 @@ func Set(path, account string, entries []ACE) error {
 	if err != nil {
 		return err
 	}
-	// Start by clearing this account so stale entries cannot survive.
-	// Clearing comes first, and on its own, and it replaces rather than
-	// revokes: revoking takes away permissions and leaves refusals in place,
-	// so an account narrowed to read-only and then widened again would stay
-	// refused by an entry nobody asked to keep.
-	if err := apply(path, []explicitAccess{entry(value, 0, InheritNone, setAccess)}); err != nil {
-		return err
-	}
+	return publish(path, listFor(value, entries))
+}
 
-	// Refusals go in before permissions: Windows reads the list in order, and
-	// a refusal placed after a permission would never be reached.
-	var list []explicitAccess
+// listFor builds the whole update for one account, in the order Windows
+// applies it.
+//
+// The list opens by replacing everything the account holds, so stale entries
+// cannot survive. It replaces rather than revokes: revoking takes away
+// permissions and leaves refusals in place, so an account narrowed to
+// read-only and then widened again would stay refused by an entry nobody
+// asked to keep.
+//
+// Refusals come next and permissions last: Windows reads the finished list in
+// order, and a refusal placed after a permission would never be reached.
+func listFor(value uintptr, entries []ACE) []explicitAccess {
+	list := []explicitAccess{entry(value, 0, InheritNone, setAccess)}
 	for _, e := range entries {
 		if e.Refuse {
 			list = append(list, entry(value, e.Access, e.Inheritance, denyAccess))
@@ -77,7 +91,7 @@ func Set(path, account string, entries []ACE) error {
 			list = append(list, entry(value, e.Access, e.Inheritance, grantAccess))
 		}
 	}
-	return apply(path, list)
+	return list
 }
 
 func entry(account uintptr, access, inheritance uint32, mode int32) explicitAccess {

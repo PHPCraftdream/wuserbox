@@ -171,3 +171,53 @@ func holds(t *testing.T, path, account, text string) bool {
 	}
 	return false
 }
+
+// TestSetReachesTheFileSystemOnce is the regression guard for a replacement
+// that published a cleared list first and the real entries second. Between
+// those two updates the account held nothing at all, so a directory kept
+// read-only inside a writable parent was writable through inheritance for as
+// long as the gap lasted, and a sandbox that asked at the right moment could
+// create a file there.
+func TestSetReachesTheFileSystemOnce(t *testing.T) {
+	dir := t.TempDir()
+	original := publish
+	updates := 0
+	publish = func(path string, list []explicitAccess) error {
+		updates++
+		return original(path, list)
+	}
+	defer func() { publish = original }()
+
+	if err := Set(dir, unusedAccount, []ACE{
+		{Access: AccessChange, Inheritance: InheritObjects | InheritContainers, Refuse: true},
+		{Access: AccessReadExecute, Inheritance: InheritObjects | InheritContainers},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if updates != 1 {
+		t.Errorf("the permissions were published %d times, and any number above one "+
+			"leaves a moment where the account holds neither the old entries nor the new", updates)
+	}
+}
+
+// TestListForClearsFirstAndRefusesBeforeItPermits pins the order of the single
+// update: the account is replaced, then refused, then permitted. Windows reads
+// the finished list in order, so a refusal placed after a permission would
+// never be reached.
+func TestListForClearsFirstAndRefusesBeforeItPermits(t *testing.T) {
+	list := listFor(0, []ACE{
+		{Access: AccessReadExecute, Inheritance: InheritObjects},
+		{Access: AccessChange, Inheritance: InheritContainers, Refuse: true},
+	})
+	if len(list) != 3 {
+		t.Fatalf("the update has %d entries, want 3", len(list))
+	}
+	for i, want := range []int32{setAccess, denyAccess, grantAccess} {
+		if list[i].mode != want {
+			t.Errorf("entry %d is mode %d, want %d", i, list[i].mode, want)
+		}
+	}
+	if list[0].permissions != 0 {
+		t.Errorf("the clearing entry asks for %#x, and it should ask for nothing", list[0].permissions)
+	}
+}
