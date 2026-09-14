@@ -31,6 +31,9 @@ type box struct {
 	root    string // holds granted and denied, with no entry of its own
 	granted string // the project directory
 	denied  string // a sibling the sandbox was never given
+	// control is a file no grant names, used to ask what this machine hands
+	// out on its own. It is never the subject of a test.
+	control string
 }
 
 // newBox prepares a project directory with the test SID granted on it.
@@ -51,6 +54,10 @@ func newBox(t *testing.T) *box {
 	if err := os.Mkdir(temp, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	control := filepath.Join(root, "control.txt")
+	if err := os.WriteFile(control, []byte("control"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	s := &state.State{Group: "wub-test", SID: testSID(t), Dir: granted, Temp: temp}
 	if err := s.Add(granted, grant.RW); err != nil {
 		t.Fatalf("grant project directory: %v", err)
@@ -58,7 +65,63 @@ func newBox(t *testing.T) *box {
 	if err := s.Add(temp, grant.RW); err != nil {
 		t.Fatalf("grant temp directory: %v", err)
 	}
-	return &box{state: s, root: root, granted: granted, denied: denied}
+	return &box{state: s, root: root, granted: granted, denied: denied, control: control}
+}
+
+// machineIsOpen reports whether this machine hands out the right to delete
+// things in the directory these tests run in, whatever wuserbox did. It asks
+// about the control file, which no permission names, so an answer of yes can
+// have come from nowhere else.
+func machineIsOpen(t *testing.T, b *box) (bool, string) {
+	t.Helper()
+	answer, err := access.Check(b.state.SID, b.control, access.Delete)
+	if err != nil {
+		t.Fatalf("asking about %s: %v", b.control, err)
+	}
+	return answer.Allowed, answer.Reason
+}
+
+// skipIfTheMachineIsOpen leaves a test unrun where the machine itself makes
+// its question unanswerable. It is for checks that destroy their own subject,
+// such as a sweep over a whole tree, and that therefore cannot ask afterwards.
+func skipIfTheMachineIsOpen(t *testing.T, b *box) {
+	t.Helper()
+	if open, reason := machineIsOpen(t, b); open {
+		t.Skipf("this machine lets the sandbox delete %s, which no permission names, "+
+			"so a boundary cannot be tested here: %s", b.control, reason)
+	}
+}
+
+// deleteOutcome is what came of telling the sandbox to delete something.
+type deleteOutcome int
+
+const (
+	// refused: the path survived, which is what a boundary test wants.
+	refused deleteOutcome = iota
+	// deleted: the sandbox removed it, and a boundary did not hold.
+	deleted
+	// unanswerable: this machine hands out rights of its own, so the
+	// question cannot be asked here at all.
+	unanswerable
+)
+
+// attemptDelete tells the sandbox to delete a path and reports what happened.
+//
+// Whether the machine is open is decided from the control file, which no grant
+// names and which no test is about. Deciding it from the path under test would
+// be worse than useless: a token or an access control entry that stopped
+// working would let the sandbox delete exactly what it must not, and that
+// answer would be read as a reason to look away.
+func attemptDelete(t *testing.T, b *box, path string) (deleteOutcome, string) {
+	t.Helper()
+	if open, reason := machineIsOpen(t, b); open {
+		return unanswerable, reason
+	}
+	runSandboxed(t, b.state, []string{"cmd.exe", "/c", "del /q " + path})
+	if exists(path) {
+		return refused, ""
+	}
+	return deleted, ""
 }
 
 // writeFileCommand is a shell command that creates a file, failing if it cannot.
@@ -78,24 +141,16 @@ func script(t *testing.T, b *box, body string) []string {
 	return []string{path}
 }
 
-// mustNotDelete checks that the sandbox cannot remove a path, and says so
-// rather than failing when the machine itself is the reason.
-//
-// A temporary directory is not equally closed everywhere. Where the one this
-// test runs in hands out rights of its own, a sandbox inherits them, and the
-// question the test means to ask cannot be asked there at all.
+// mustNotDelete checks that the sandbox cannot remove a path, failing when it
+// can and skipping only where the machine itself makes the question
+// unanswerable.
 func mustNotDelete(t *testing.T, b *box, path string) {
 	t.Helper()
-	answer, err := access.Check(b.state.SID, path, access.Delete)
-	if err != nil {
-		t.Fatalf("asking about %s: %v", path, err)
-	}
-	if answer.Allowed {
-		t.Skipf("the temporary directory on this machine lets the sandbox delete %s, "+
-			"so the boundary cannot be tested here: %s", path, answer.Reason)
-	}
-	runSandboxed(t, b.state, []string{"cmd.exe", "/c", "del /q " + path})
-	if !exists(path) {
+	switch outcome, reason := attemptDelete(t, b, path); outcome {
+	case unanswerable:
+		t.Skipf("this machine lets the sandbox delete %s, which no permission names, "+
+			"so a boundary cannot be tested here: %s", b.control, reason)
+	case deleted:
 		t.Errorf("%s was deleted from inside the sandbox", path)
 	}
 }

@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
-	"github.com/PHPCraftdream/wuserbox/internal/win/access"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
@@ -115,13 +114,12 @@ func TestRecursiveDeleteStopsAtTheSandboxBoundary(t *testing.T) {
 	place(t, outside, "data")
 	place(t, inside, "data")
 
-	// Whether the file outside can be removed at all is a property of the
+	// Whether anything outside can be removed at all is a property of the
 	// machine's temporary directory, and has to be asked before the sweep
-	// rather than after, when there may be nothing left to ask about.
-	if answer, err := access.Check(box.state.SID, outside, access.Delete); err == nil && answer.Allowed {
-		t.Skipf("the temporary directory on this machine lets the sandbox delete outside the project: %s",
-			answer.Reason)
-	}
+	// rather than after, when there may be nothing left to ask about. It is
+	// asked about the control file: asking about the file this test guards
+	// would turn a broken boundary into a skipped test.
+	skipIfTheMachineIsOpen(t, box)
 
 	// A sweeping delete over the whole tree, the way `rm -rf` behaves.
 	runSandboxed(t, box.state, []string{"cmd.exe", "/c", "rmdir /s /q " + box.root})
@@ -158,4 +156,46 @@ func TestTwoSandboxesCannotReachEachOther(t *testing.T) {
 		t.Error("two sandboxes share a temp directory")
 	}
 	mustFail(t, first.state, writeFileCommand(filepath.Join(second.state.Temp, "crossed.txt")))
+}
+
+// TestABrokenBoundaryIsAFailureAndNotASkip guards the guard. These tests
+// excuse themselves on a machine whose temporary directory hands out rights of
+// its own, and that excuse used to be decided by asking whether the sandbox
+// could delete the very file under test. A token or an access control entry
+// that stopped working would then answer yes, and a security failure would
+// have been reported as a skipped test.
+func TestABrokenBoundaryIsAFailureAndNotASkip(t *testing.T) {
+	box := newBox(t)
+	target := filepath.Join(box.denied, "precious.txt")
+	place(t, target, "x")
+	// What a broken sandbox looks like: the file it must not touch is
+	// reachable after all.
+	if err := box.state.Add(target, grant.File); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, _ := attemptDelete(t, box, target); outcome != deleted {
+		t.Errorf("a file the sandbox could delete was reported as %v, want %v", outcome, deleted)
+	}
+}
+
+// TestAnOpenMachineIsWhatMakesAQuestionUnanswerable keeps the other half of
+// that decision working: where the machine gives the right away by itself, the
+// control file says so and the question is not answered wrongly.
+func TestAnOpenMachineIsWhatMakesAQuestionUnanswerable(t *testing.T) {
+	box := newBox(t)
+	target := filepath.Join(box.denied, "precious.txt")
+	place(t, target, "x")
+	if outcome, _ := attemptDelete(t, box, target); outcome != refused {
+		t.Fatalf("the boundary did not hold before the machine was made open: %v", outcome)
+	}
+	// The control file stands for what the machine hands out on its own.
+	if err := box.state.Add(box.control, grant.File); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, _ := attemptDelete(t, box, target); outcome != unanswerable {
+		t.Errorf("an open machine gave %v, want %v", outcome, unanswerable)
+	}
+	if !exists(target) {
+		t.Error("the file was deleted while deciding that the question was unanswerable")
+	}
 }
