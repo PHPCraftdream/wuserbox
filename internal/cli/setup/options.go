@@ -18,17 +18,18 @@ type repeated []string
 func (r *repeated) String() string     { return strings.Join(*r, string(os.PathListSeparator)) }
 func (r *repeated) Set(v string) error { *r = append(*r, v); return nil }
 
-// ParseOptions reads the options shared by init and run. Everything after "--"
-// is returned separately as the command to execute.
+// ParseOptions reads the options shared by init and run. Everything from the
+// program onwards — including any "--" of its own — is returned separately as
+// the command to execute.
+//
+// There is no separate pass looking for "--": flag.Parse already stops at the
+// first argument that is not one of wuserbox's own flags, and leaves
+// everything from there on, unexamined, in Args(). A "--" only ends wuserbox's
+// own flags when it is the thing parsing reaches first, which is exactly the
+// explicit "wuserbox --run -- list" spelling. One that turns up later, inside
+// the program's own arguments — "wuserbox git checkout -- file.txt" — is never
+// looked at, so it reaches the program exactly as typed.
 func ParseOptions(name string, args []string) (sandbox.Options, []string, error) {
-	var command []string
-	for i, a := range args {
-		if a == "--" {
-			command = args[i+1:]
-			args = args[:i]
-			break
-		}
-	}
 	var rw, ro repeated
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	usage.Quiet(flags)
@@ -59,5 +60,5 @@ func ParseOptions(name string, args []string) (sandbox.Options, []string, error)
 		NoAI: *noAI, HomeWrites: *homeWrites, Quiet: *quiet,
 		DryRun: *dryRun, JSON: *asJSON,
 	}
-	return options, append(flags.Args(), command...), nil
+	return options, flags.Args(), nil
 }

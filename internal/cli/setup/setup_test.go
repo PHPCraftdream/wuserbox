@@ -334,6 +334,42 @@ func TestAProgramNeedsNoSeparator(t *testing.T) {
 	}
 }
 
+// TestASeparatorInsideTheProgramsOwnArgumentsSurvives is the regression guard
+// for a "--" that never belonged to wuserbox at all. A single scan for the
+// first "--" anywhere in the arguments used to strip it wherever it turned
+// up, so `wuserbox git checkout -- file.txt` silently became
+// `git checkout file.txt`, changing what git was told. wuserbox's own "--"
+// only ever appears before the program name, so parsing must stop there and
+// leave everything after the program alone, "--" included.
+func TestASeparatorInsideTheProgramsOwnArgumentsSurvives(t *testing.T) {
+	_, command, err := ParseOptions("run", []string{"git", "checkout", "--", "file.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"git", "checkout", "--", "file.txt"}
+	if len(command) != len(want) {
+		t.Fatalf("command is %v, want %v", command, want)
+	}
+	for i := range want {
+		if command[i] != want[i] {
+			t.Fatalf("command is %v, want %v", command, want)
+		}
+	}
+}
+
+// TestTheExplicitRunSeparatorStillWorks keeps the one spelling that leans on
+// wuserbox's own "--": nothing before it, so flag.Parse reads it as the end of
+// wuserbox's own flags rather than as something belonging to the program.
+func TestTheExplicitRunSeparatorStillWorks(t *testing.T) {
+	_, command, err := ParseOptions("run", []string{"--", "list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(command) != 1 || command[0] != "list" {
+		t.Errorf("command is %v, want [list]", command)
+	}
+}
+
 // TestAMistypedCommandSaysSo keeps a typo from being reported as a missing
 // program, now that anything which is not a command is taken for one.
 func TestAMistypedCommandSaysSo(t *testing.T) {
@@ -390,5 +426,44 @@ func TestReconcilePresetHonoursTheSandboxsOwnDecision(t *testing.T) {
 	}
 	if !s.Has(agent) {
 		t.Error("clearing the decision did not bring the agent directory back")
+	}
+}
+
+// TestRebuildOptionsCarriesForwardAPersistedNoAIDecision is the regression
+// guard for the other place --no-ai can lapse. A run cannot carry the flag
+// either, and when the sandbox has to be rebuilt from scratch — the group is
+// missing, or broken — the elevated re-exec used to be built from the run's
+// own options alone, which never set NoAI. That read as "presets are wanted
+// again" and handed the agent directories back to a sandbox --no-ai had
+// explicitly taken them from.
+func TestRebuildOptionsCarriesForwardAPersistedNoAIDecision(t *testing.T) {
+	plainRun := sandbox.Options{Dir: `C:\project`}
+	existing := &state.State{NoAI: true}
+
+	got := rebuildOptions(plainRun, existing)
+	if !got.NoAI {
+		t.Error("a persisted --no-ai decision was dropped when the sandbox had to be rebuilt")
+	}
+	args := got.Args()
+	found := false
+	for _, a := range args {
+		if a == "--no-ai" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the rebuild command line does not carry --no-ai: %v", args)
+	}
+}
+
+// TestRebuildOptionsLeavesANewSandboxAlone keeps a project that was never
+// configured from being handed --no-ai it never asked for.
+func TestRebuildOptionsLeavesANewSandboxAlone(t *testing.T) {
+	plainRun := sandbox.Options{Dir: `C:\project`}
+	if got := rebuildOptions(plainRun, nil); got.NoAI {
+		t.Error("NoAI should stay false when nothing was ever recorded")
+	}
+	if got := rebuildOptions(plainRun, &state.State{NoAI: false}); got.NoAI {
+		t.Error("NoAI should stay false when the record agrees with the run")
 	}
 }

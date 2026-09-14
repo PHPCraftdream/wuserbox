@@ -126,7 +126,11 @@ func reconcilePreset(s *state.State, options sandbox.Options) error {
 }
 
 func rebuild(options sandbox.Options, name string) (*state.State, error) {
-	if err := Elevate(options.Args()); err != nil {
+	existing, err := state.Load(name)
+	if err != nil {
+		return nil, err
+	}
+	if err := Elevate(rebuildOptions(options, existing).Args()); err != nil {
 		return nil, err
 	}
 	s, err := state.Load(name)
@@ -137,6 +141,21 @@ func rebuild(options sandbox.Options, name string) (*state.State, error) {
 		return nil, fmt.Errorf("sandbox %s was not created", name)
 	}
 	return s, nil
+}
+
+// rebuildOptions is what actually goes into the elevated re-exec.
+//
+// A run can never carry --no-ai; onlyRunning refuses it before options
+// reaches here. So when the group is missing or broken and has to be built
+// again, a record already on disk is the only place that decision survives.
+// Without folding it back in, the elevated init would read the run's own
+// silence as "presets are wanted again" and hand the agent preset back to a
+// sandbox it was explicitly taken from.
+func rebuildOptions(options sandbox.Options, existing *state.State) sandbox.Options {
+	if existing != nil && existing.NoAI {
+		options.NoAI = true
+	}
+	return options
 }
 
 // report prints a progress message, unless the caller asked for quiet. These
