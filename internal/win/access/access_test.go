@@ -30,14 +30,24 @@ func TestParseAcceptsTheFourOperations(t *testing.T) {
 func prepared(t *testing.T) (granted, denied string) {
 	t.Helper()
 	root := t.TempDir()
+	// Everyone reads the tree, the way it reads Program Files. Whether an
+	// un-granted file here is readable at all otherwise depends on where the
+	// machine keeps its temporary directory: a real Windows profile's own
+	// %TEMP% grants nothing past its owner, the system and administrators,
+	// while a machine with one redirected elsewhere can be far more open
+	// without meaning to be. What is under test is what a permission does,
+	// not that accident.
+	if err := acl.Set(root, sid.Everyone, []acl.ACE{
+		{Access: acl.AccessReadExecute, Inheritance: acl.InheritObjects | acl.InheritContainers},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	granted, denied = filepath.Join(root, "granted"), filepath.Join(root, "denied")
 	for _, dir := range []string{granted, denied} {
 		if err := os.Mkdir(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// Without administrator rights the integrity label does not go on, and
-	// these tests are about the permissions rather than the label.
 	if err := grant.Apply(testGroup, granted, grant.RW); err != nil {
 		t.Fatal(err)
 	}

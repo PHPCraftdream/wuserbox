@@ -30,7 +30,13 @@ const (
 	AccessReadExecute uint32 = 0x1200A9
 	// AccessCreateFiles lists a directory and creates files in it, without
 	// touching what is already there.
-	AccessCreateFiles uint32 = 0x10008B
+	//
+	// It carries READ_CONTROL (0x20000) for the same reason the two above do:
+	// reading an object means reading who may reach it, and a sandbox whose
+	// only entry on a directory left that out could not read the directory it
+	// had just been handed. That went unnoticed while every grant also handed
+	// Everyone read access, which covered it from the side.
+	AccessCreateFiles uint32 = 0x12008B
 	// AccessChange is everything that alters an object rather than reads it:
 	// writing, appending, changing attributes, and deleting it or what is
 	// inside it. It is what a read-only grant has to refuse.
