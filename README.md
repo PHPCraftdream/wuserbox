@@ -177,20 +177,32 @@ protected file inside a directory the sandbox may otherwise write to.
 
 `Everyone` and `BUILTIN\Users` have to sit in that same restricted list, or
 the sandbox could not read System32, Program Files, or start a program that
-opens a window at all. Handing a directory to one sandbox therefore replaces
-whatever access `Everyone` and `Users` hold there with read-only, in the same
-update as the grant: a directory that merely inherited broad access from
-somewhere else is narrowed exactly like one that never had any. Neither is
-ever denied outright — Windows honors a matching deny over a matching allow
-for one token regardless of which entry an access control list lists first,
-and every sandbox's restricted list carries both identifiers, so a deny for
-either would refuse the sandbox its own directory too.
+opens a window at all. That makes any directory those two may write to a
+directory every sandbox may write to, whichever one it was handed to. So
+handing a directory over rewrites its whole permission list:
+
+* whatever `Everyone` and `Users` held there is narrowed to reading — never
+  refused outright, because Windows honors a matching refusal over a matching
+  permission for one token whatever order the list is in, and every sandbox's
+  restricted list carries both identifiers, so a refusal aimed at either would
+  refuse the sandbox its own directory too;
+* an entry a directory **above** handed down is rewritten too, by making the
+  list the directory's own. Rewriting the directory alone would not have
+  touched it — a handed-down entry is a copy belonging to the parent — and
+  Windows adds up every entry that matches, so the writable copy would have
+  won back the part the narrowed one gave up;
+* nothing is *added* for those two. A directory they could not read stays one
+  they cannot read: widening is not isolating;
+* whatever was taken from them is handed back to the person doing the granting
+  by name, so a grant never costs somebody the directory they were granting.
 
 Reading is untouched by any of this: a sandbox still reads everything its
 user can read that `Everyone`, `BUILTIN\Users`, or its own account already
-covers. The profile root is the one place neither of those two reaches by
-Windows' own default, which is what `wub-read` — a machine-wide group,
-created once the first time any sandbox is built — is for.
+covers. The profile is the one place none of those reaches by Windows' own
+default, which is what `wub-read` is for — a machine-wide group nobody is a
+member of, granted reading on a profile the first time somebody builds a
+sandbox from it. No ordinary token carries it, so it lets a sandbox past its
+second check without letting another account on the machine read anything.
 
 ## Protecting your settings
 
@@ -201,7 +213,11 @@ Code running in the sandbox must not be able to widen its own permissions:
   inside, even if a permission is later granted on the directory around them.
 * The shell startup files and credential directories in the profile root get
   the same treatment: `.bashrc`, `.profile`, `.gitconfig`, `.npmrc`, `.netrc`,
-  `.ssh`, `.gnupg`, `.aws` and their neighbours.
+  `.ssh`, `.gnupg`, `.aws` and their neighbours. That fixed list names the
+  owner, the system, administrators and `wub-read`, and nobody else: a sandbox
+  reads them through the group it carries among its restricting identifiers,
+  while another account on the same machine is no closer to your keys than it
+  was before wuserbox was installed.
 * `--init`, `--rm`, `--grant`, `--revoke`, `--add-dir` and `--remove-dir`
   refuse to run from inside a sandbox, and wuserbox never asks for
   administrator rights from there. The check reads the kernel's
@@ -258,11 +274,21 @@ returned, so the code you read after it is the sandboxed program's own.
   data, and can decrypt whatever your account can. It prevents damage, not a
   determined leak.
 * **The network is not restricted.**
-* **Directories writable by `Everyone` or `BUILTIN\Users` stay writable**,
-  because both have to be restricting identifiers — the first for programs to
-  start at all, the second to read System32 and Program Files. Some machines
-  grant `Users` write access to `C:\ProgramData` by Windows' own default.
-  `wuserbox --audit` lists what it finds under either.
+* **Directories writable by `Everyone` or `BUILTIN\Users` stay writable**, and
+  this is the one place where what a sandbox may change is wider than what it
+  was handed. Both have to be restricting identifiers — the first for programs
+  to start at all, the second to read System32 and Program Files — so a
+  sandbox may change whatever the machine already lets every local account
+  change, without that directory ever having been granted. Many machines ship
+  `C:\ProgramData` that way. `wuserbox --audit` lists what it finds under
+  either. So the guarantee to hold wuserbox to is **a sandbox cannot change
+  what the machine does not already let every local account change** —
+  somebody's own files, another sandbox's files, and anything named to its
+  owner alone are outside a sandbox's reach; a shared drop box is not.
+* **A directory inside a granted tree that switched inheritance off keeps its
+  own permissions**, so if those permissions hand `Everyone` or `Users` write
+  access, the point above applies to it as well, even though everything around
+  it was normalised.
 * **`HKEY_CURRENT_USER` is read-only.** Command-line tools rarely care;
   anything that saves settings in the registry will fail to.
 * **Interface isolation is weak.** A sandboxed process shares your desktop and

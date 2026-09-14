@@ -65,55 +65,7 @@ func Set(path, account string, entries []ACE) error {
 	if err != nil {
 		return err
 	}
-	return publish(path, listFor(value, entries))
-}
-
-// Isolate is Set, with one addition: Everyone and BUILTIN\Users are replaced
-// with read-only over the same reach the entries are given, in the same
-// update.
-//
-// The sandbox's own token is a fully restricted one now, checked against
-// every access rather than only writes, which is what makes DELETE and
-// FILE_DELETE_CHILD answer to the sandbox's own SID instead of the caller's.
-// Everyone and Users have to sit in that restricted list too, or the sandbox
-// could not read the system it needs to run anything — but that means any
-// directory whose tree happens to carry a write grant for either of them is
-// then writable by every sandbox equally, whichever one this call is
-// actually for.
-//
-// A deny cannot fix this, however it is ordered: the sandbox this grant is
-// for belongs to Everyone and Users too, so a deny for either would refuse
-// this same sandbox its own grant. Windows honors any matching deny over any
-// matching allow for one token, regardless of which entry the ACL lists
-// first — measured directly, on this machine, holding for a hand-built ACL
-// where the allow for the sandbox's own SID came first in the list. Replacing
-// their access outright, the way a plain grant already replaces whatever an
-// account held before, has no such conflict: there is no deny in it for
-// either group to be caught by.
-//
-// It reaches everywhere the permission does, in the same call a second pass
-// would walk the same tree over again for nothing: Windows copies an
-// inheritable entry onto every file already under a directory rather than
-// looking one up on a parent each time, so a write grant sitting anywhere in
-// the tree has to be replaced there directly, not only at the root.
-func Isolate(path, account string, entries []ACE, reach uint32) error {
-	value, err := sid.Parse(account)
-	if err != nil {
-		return err
-	}
-	everyone, err := sid.Parse(sid.Everyone)
-	if err != nil {
-		return err
-	}
-	users, err := sid.Parse(sid.Users)
-	if err != nil {
-		return err
-	}
-	readOnly := []ACE{{Access: AccessReadExecute, Inheritance: reach}}
-	list := listFor(value, entries)
-	list = append(list, listFor(everyone, readOnly)...)
-	list = append(list, listFor(users, readOnly)...)
-	return publish(path, list)
+	return publish(path, listFor(value, entries), false)
 }
 
 // listFor builds the whole update for one account, in the order Windows
@@ -152,14 +104,28 @@ func entry(account uintptr, access, inheritance uint32, mode int32) explicitAcce
 	}
 }
 
-func apply(path string, list []explicitAccess) error {
-	var current, descriptor uintptr
-	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
-		seFileObject, daclInfo, 0, 0, uintptr(unsafe.Pointer(&current)), 0,
-		uintptr(unsafe.Pointer(&descriptor))); r != 0 {
-		return fmt.Errorf("reading the permissions of %s: error %d", path, r)
+// apply writes a finished list to the file system.
+//
+// whole says the list is the entire permission list of the object rather than
+// a change to it: nothing is merged into what is already there, and the
+// result is written as the object's own, so no directory above it hands
+// anything down to it afterwards. Isolate needs that — merging would bring
+// the inherited entries it just rewrote straight back, still inherited, and
+// still handing out what they were rewritten to take away.
+func apply(path string, list []explicitAccess, whole bool) error {
+	const protectedDacl = 0x80000000
+	information, current := uintptr(daclInfo), uintptr(0)
+	if whole {
+		information |= protectedDacl
+	} else {
+		var descriptor uintptr
+		if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
+			seFileObject, daclInfo, 0, 0, uintptr(unsafe.Pointer(&current)), 0,
+			uintptr(unsafe.Pointer(&descriptor))); r != 0 {
+			return fmt.Errorf("reading the permissions of %s: error %d", path, r)
+		}
+		defer w32.Free(descriptor)
 	}
-	defer w32.Free(descriptor)
 
 	var updated uintptr
 	if r, _, _ := procSetEntriesInAcl.Call(uintptr(len(list)), uintptr(unsafe.Pointer(&list[0])),
@@ -169,7 +135,7 @@ func apply(path string, list []explicitAccess) error {
 	defer w32.Free(updated)
 
 	if r, _, _ := procSetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
-		seFileObject, daclInfo, 0, 0, updated, 0); r != 0 {
+		seFileObject, information, 0, 0, updated, 0); r != 0 {
 		if r == 5 {
 			return fmt.Errorf("changing the permissions of %s: access denied, you do not own it", path)
 		}

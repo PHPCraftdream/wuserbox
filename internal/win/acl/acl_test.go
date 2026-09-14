@@ -179,19 +179,17 @@ func holds(t *testing.T, path, account, text string) bool {
 	return false
 }
 
-// TestIsolateReplacesEveryoneAndUsersWithReadOnly is the regression guard for
-// peer isolation: a directory that already carries Everyone and Users write
-// access -- the shape a directory takes when it merely inherited it from
-// somewhere, the reviewer's mandatory case -- has to lose that access on the
-// very same update that grants the account this call is for, or every other
-// sandbox holding Everyone or Users (every sandbox does) could still reach it.
-func TestIsolateReplacesEveryoneAndUsersWithReadOnly(t *testing.T) {
+// TestIsolateNarrowsSharedWriteSetOnTheDirectoryItself is the plain case:
+// what those two hold on the granted directory is narrowed to reading, and
+// never refused outright, because a refusal aimed at either would catch the
+// sandbox this grant is for along with everybody else.
+func TestIsolateNarrowsSharedWriteSetOnTheDirectoryItself(t *testing.T) {
 	dir := t.TempDir()
-	inherited := []ACE{{Access: AccessModify, Inheritance: InheritObjects | InheritContainers}}
-	if err := Set(dir, sid.Everyone, inherited); err != nil {
+	writable := []ACE{{Access: AccessModify, Inheritance: InheritObjects | InheritContainers}}
+	if err := Set(dir, sid.Everyone, writable); err != nil {
 		t.Fatal(err)
 	}
-	if err := Set(dir, sid.Users, inherited); err != nil {
+	if err := Set(dir, sid.Users, writable); err != nil {
 		t.Fatal(err)
 	}
 
@@ -203,24 +201,102 @@ func TestIsolateReplacesEveryoneAndUsersWithReadOnly(t *testing.T) {
 		t.Error("Everyone still holds Modify after Isolate")
 	}
 	if holds(t, dir, "Everyone", "(DENY)") {
-		t.Error("Isolate denied Everyone instead of replacing its access")
+		t.Error("Isolate refused Everyone instead of narrowing it")
 	}
 	if !holds(t, dir, "Everyone", "(RX)") {
-		t.Error("Everyone lost its read access instead of being narrowed to it")
+		t.Error("Everyone lost its reading instead of being narrowed to it")
 	}
 	// "BUILTIN\Users", not the bare word: "NT AUTHORITY\Authenticated Users"
 	// also contains "Users" and would false-positive a substring match.
 	if holds(t, dir, `BUILTIN\Users`, "(M)") {
 		t.Error("Users still holds Modify after Isolate")
 	}
-	if holds(t, dir, `BUILTIN\Users`, "(DENY)") {
-		t.Error("Isolate denied Users instead of replacing its access")
-	}
 	if !holds(t, dir, `BUILTIN\Users`, "(RX)") {
-		t.Error("Users lost its read access instead of being narrowed to it")
+		t.Error("Users lost its reading instead of being narrowed to it")
 	}
 	if !holds(t, dir, unusedAccount, "(M)") {
 		t.Error("the account this call was for did not get its own grant")
+	}
+}
+
+// TestIsolateNarrowsSharedWriteHandedDownFromAbove is the regression guard for
+// the hole that reopened the whole peer-isolation P0. Replacing what those two
+// hold on the granted directory does nothing about an entry a directory above
+// hands down, because that entry is a copy belonging to the parent -- and
+// Windows adds up every entry that matches, so the granted directory carried a
+// read-only one of ours and an inherited writable one, and the writable one
+// won the part it covered.
+func TestIsolateNarrowsSharedWriteHandedDownFromAbove(t *testing.T) {
+	parent := t.TempDir()
+	if err := Set(parent, sid.Users, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(parent, "granted")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Isolate(child, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers); err != nil {
+		t.Fatal(err)
+	}
+	if holds(t, child, `BUILTIN\Users`, "(M)") {
+		t.Error("the write access handed down from the parent survived the grant")
+	}
+	if !holds(t, child, unusedAccount, "(M)") {
+		t.Error("the account this call was for did not get its own grant")
+	}
+}
+
+// TestIsolateAddsNothingWhereThoseTwoHadNothing keeps narrowing from turning
+// into widening. Handing Everyone read access to a directory it could not read
+// before would show every account on the machine what is inside, which is the
+// opposite of what a grant is for.
+func TestIsolateAddsNothingWhereThoseTwoHadNothing(t *testing.T) {
+	dir := t.TempDir()
+	if err := Protect(dir); err != nil {
+		t.Fatal(err)
+	}
+	if holds(t, dir, "Everyone", "") {
+		t.Skip("this machine leaves Everyone an entry on a protected directory")
+	}
+	if err := Isolate(dir, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers); err != nil {
+		t.Fatal(err)
+	}
+	if holds(t, dir, "Everyone", "") {
+		t.Error("Isolate gave Everyone an entry on a directory that had none")
+	}
+}
+
+// TestIsolateLeavesTheUserAbleToWrite is the regression guard for a grant that
+// cost the person making it the directory they were granting: where Users was
+// the only thing letting them write, narrowing it took their own access away,
+// inside the sandbox and outside it alike.
+func TestIsolateLeavesTheUserAbleToWrite(t *testing.T) {
+	dir := t.TempDir()
+	// Only the crowd, the system and administrators: no entry naming the user.
+	if out, err := exec.Command("icacls", dir, "/inheritance:r",
+		"/grant", "*"+sid.Users+":(OI)(CI)M",
+		"/grant", "*S-1-5-18:(OI)(CI)F",
+		"/grant", "*S-1-5-32-544:(OI)(CI)F").CombinedOutput(); err != nil {
+		t.Skipf("could not arrange a directory the user reaches only through Users: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "before.txt"), []byte("x"), 0o644); err != nil {
+		t.Skipf("the user could not write here to begin with: %v", err)
+	}
+
+	if err := Isolate(dir, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "after.txt"), []byte("x"), 0o644); err != nil {
+		t.Errorf("granting the directory took the user's own write access away: %v", err)
 	}
 }
 
@@ -234,9 +310,9 @@ func TestSetReachesTheFileSystemOnce(t *testing.T) {
 	dir := t.TempDir()
 	original := publish
 	updates := 0
-	publish = func(path string, list []explicitAccess) error {
+	publish = func(path string, list []explicitAccess, whole bool) error {
 		updates++
-		return original(path, list)
+		return original(path, list, whole)
 	}
 	defer func() { publish = original }()
 

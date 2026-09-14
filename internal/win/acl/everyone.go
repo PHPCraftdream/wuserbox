@@ -28,7 +28,18 @@ func UsersWritable(path string) bool {
 	return writableBy(path, sid.Users)
 }
 
+// Reads reports whether account already holds read access on path. It is how
+// a one-time provisioning step can ask the file system whether it ever
+// finished, instead of trusting a marker written beside it.
+func Reads(path, account string) bool {
+	return heldBy(path, account, AccessReadExecute)
+}
+
 func writableBy(path, account string) bool {
+	return heldBy(path, account, writeMask)
+}
+
+func heldBy(path, account string, wanted uint32) bool {
 	value, err := sid.Parse(account)
 	if err != nil {
 		return false
@@ -52,7 +63,7 @@ func writableBy(path, account string) bool {
 	defer w32.Free(uintptr(unsafe.Pointer(entries)))
 	for _, e := range unsafe.Slice(entries, count) {
 		const trusteeIsSID = 0
-		if e.mode != grantAccess || e.trustee.form != trusteeIsSID || e.permissions&writeMask == 0 {
+		if e.mode != grantAccess || e.trustee.form != trusteeIsSID || e.permissions&wanted == 0 {
 			continue
 		}
 		if same, _, _ := procEqualSid.Call(e.trustee.name, value); same != 0 {

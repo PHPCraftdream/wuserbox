@@ -248,6 +248,59 @@ func TestOneSandboxCannotDeleteAnothersFiles(t *testing.T) {
 	}
 }
 
+// TestOneSandboxCannotReachWhatADirectoryAboveHandedDown is the harder half of
+// the same guarantee, and the one that reopened this P0 after it was first
+// called closed.
+//
+// Replacing what Everyone and Users hold on the granted directory does nothing
+// about an entry a directory *above* it hands down: that entry is a copy
+// belonging to the parent, and rewriting this object's list leaves it where it
+// is. Windows then adds up every entry that matches, so the granted directory
+// carried a read-only entry from the grant and an inherited writable one from
+// its parent, and every other sandbox — all of them carry Users — wrote and
+// deleted there through the second.
+func TestOneSandboxCannotReachWhatADirectoryAboveHandedDown(t *testing.T) {
+	a, b := newBox(t), newBox(t)
+
+	parent := filepath.Join(b.root, "parent")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := acl.Set(parent, sid.Users, []acl.ACE{
+		{Access: acl.AccessModify, Inheritance: acl.InheritObjects | acl.InheritContainers},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Created under it, so the writable entry arrives by inheritance rather
+	// than being set on the directory that is granted.
+	shared := filepath.Join(parent, "granted")
+	if err := os.Mkdir(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.state.Add(shared, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(shared, "b-owns-this.txt")
+	place(t, target, "data")
+
+	mustFail(t, a.state, writeFileCommand(filepath.Join(shared, "a-wrote-this.txt")))
+	if exists(filepath.Join(shared, "a-wrote-this.txt")) {
+		t.Error("one sandbox wrote into a directory granted to another")
+	}
+	runSandboxed(t, a.state, []string{"cmd.exe", "/c", "del /q " + target})
+	if !exists(target) {
+		t.Error("one sandbox deleted a file granted to another")
+	}
+	// And the sandbox it was granted to still has it, as does the user.
+	runSandboxed(t, b.state, []string{"cmd.exe", "/c", "del /q " + target})
+	if exists(target) {
+		t.Error("the owning sandbox lost its own access")
+	}
+	if err := os.WriteFile(filepath.Join(shared, "user.txt"), []byte("x"), 0o644); err != nil {
+		t.Errorf("granting the directory took the user's own write access away: %v", err)
+	}
+}
+
 // TestAProtectedFileInsideAGrantedDirectorySurvives is the regression guard
 // for FILE_DELETE_CHILD. grant.RW's AccessModify does not include it — a
 // sandbox's right to delete inside its own directory comes from DELETE on
