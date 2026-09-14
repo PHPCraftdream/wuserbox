@@ -1,6 +1,7 @@
 package token
 
 import (
+	"errors"
 	"syscall"
 	"unsafe"
 
@@ -70,5 +71,5 @@ func CanLabel() bool {
 		return false
 	}
 	const notAllAssigned = syscall.Errno(1300) // ERROR_NOT_ALL_ASSIGNED
-	return callErr != notAllAssigned
+	return !errors.Is(callErr, notAllAssigned)
 }
