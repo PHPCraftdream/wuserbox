@@ -85,8 +85,10 @@ func TestOptionsSurviveARoundTripThroughArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := original.Args()
-	if args[0] != "init" {
-		t.Fatalf("rebuilt arguments start with %q", args[0])
+	// The dash matters here too: a re-exec through Elevate reads a bare word
+	// as a program to run, not as init.
+	if args[0] != "--init" {
+		t.Fatalf("rebuilt arguments start with %q, want \"--init\"", args[0])
 	}
 	rebuilt, _, err := ParseOptions("init", args[1:])
 	if err != nil {

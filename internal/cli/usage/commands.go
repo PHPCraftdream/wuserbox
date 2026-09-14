@@ -20,9 +20,12 @@ belong to wuserbox and come before the program; everything from the
 program onwards belongs to the program, its own flags included, so
 "wuserbox git --version" reaches git untouched.
 
-A program whose name is also a wuserbox command needs the longer form:
-"wuserbox run -- list". The word "run" and the -- separator both still
-work, and mean exactly what the short form means.
+A program is never shadowed by a wuserbox command that happens to share
+its name: "wuserbox list" runs a program called list, and "wuserbox
+--list" asks wuserbox for the command, because nothing without a dash is
+a command. "wuserbox --run -- <program>" still works too, spelling this
+command out and marking where its arguments end, and means exactly what
+leaving out "--run --" means.
 
 The sandbox is created on first use, which needs administrator rights
 once. Later runs need none. The program keeps your console, your
@@ -30,8 +33,8 @@ environment and your exit code, so it behaves like any other program
 you start from the shell.
 
 A run changes nothing about the sandbox. What may be written is decided
-by "init", "grant" and "add-dir", and is the same whichever command line
-starts the program.`,
+by "--init", "--grant" and "--add-dir", and is the same whichever
+command line starts the program.`,
 		Options: []Option{
 			{"--dir <d>", "project directory (default: the current one)"},
 			{"--dry-run", "show what the sandbox holds and start nothing"},
@@ -44,13 +47,13 @@ starts the program.`,
 			`wuserbox npm test`,
 			`wuserbox notepad.exe`,
 			`wuserbox --dir /c/projects/app git status`,
-			`wuserbox run -- list`,
+			`wuserbox --run -- list`,
 		},
 	},
 	{
 		Name:       "init",
 		Summary:    "create the group and apply permissions",
-		Call:       "init [options]",
+		Call:       "--init [options]",
 		Elevates:   true,
 		Privileged: true,
 		Detail: `Creates the local group that carries this project's identity, applies
@@ -77,30 +80,30 @@ record, so an entry removed by hand comes back.`,
 			{"--non-interactive", "fail instead of asking for administrator rights"},
 		},
 		Examples: []string{
-			`wuserbox init`,
-			`wuserbox init --no-ai`,
-			`wuserbox init --dir C:\projects\app --rw C:\projects\shared`,
+			`wuserbox --init`,
+			`wuserbox --init --no-ai`,
+			`wuserbox --init --dir C:\projects\app --rw C:\projects\shared`,
 		},
 	},
 	{
 		Name:       "grant",
 		Summary:    "allow this sandbox to use one more directory",
-		Call:       "grant <dir> [--ro] [--dir project]",
+		Call:       "--grant <dir> [--ro] [--dir project]",
 		Privileged: true,
 		Detail: `Hands one more directory to the sandbox of a project. Without --ro the
 sandbox may create, change and delete anything under it; with --ro it
 may only read it.
 
 The permission is recorded and stays in force for later runs, until
-"revoke" takes it back or "rm" removes the sandbox. It is not written
-to the rules file, so it does not follow the project to another machine;
-use "add-dir" for that.
+"--revoke" takes it back or "--rm" removes the sandbox. It is not
+written to the rules file, so it does not follow the project to another
+machine; use "--add-dir" for that.
 
 Administrator rights are asked for only if you do not own the target
 directory.
 
 What you ask for here outranks the agent preset. Narrowing one of the
-directories the preset hands over, say "grant ~/.claude --ro", stays
+directories the preset hands over, say "--grant ~/.claude --ro", stays
 narrow: later runs apply the preset again and leave your decision alone.`,
 		Options: []Option{
 			{"--ro", "read access only, no writing"},
@@ -110,22 +113,22 @@ narrow: later runs apply the preset again and leave your decision alone.`,
 			{"--dir <d>", "project whose sandbox is meant (default: the current directory)"},
 		},
 		Examples: []string{
-			`wuserbox grant C:\build\out`,
-			`wuserbox grant C:\reference\docs --ro`,
-			`wuserbox grant /c/tools --dir C:\projects\app`,
+			`wuserbox --grant C:\build\out`,
+			`wuserbox --grant C:\reference\docs --ro`,
+			`wuserbox --grant /c/tools --dir C:\projects\app`,
 		},
 	},
 	{
 		Name:       "revoke",
 		Summary:    "take an allowance back",
-		Call:       "revoke <dir> [--dir project]",
+		Call:       "--revoke <dir> [--dir project]",
 		Privileged: true,
 		Detail: `Removes the sandbox's permission on a directory and forgets it. The
 directory itself is untouched; only the permission entry for the
 project's group goes away.
 
 A directory listed in the rules file comes back on the next run. Use
-"remove-dir" to forget it there as well.`,
+"--remove-dir" to forget it there as well.`,
 		Options: []Option{
 			{"--dry-run", "show what would change, change nothing"},
 			{"--json", "print the result as JSON instead of lines"},
@@ -133,16 +136,16 @@ A directory listed in the rules file comes back on the next run. Use
 			{"--dir <d>", "project whose sandbox is meant (default: the current directory)"},
 		},
 		Examples: []string{
-			`wuserbox revoke C:\build\out`,
-			`wuserbox revoke ~/scratch --dir C:\projects\app`,
+			`wuserbox --revoke C:\build\out`,
+			`wuserbox --revoke ~/scratch --dir C:\projects\app`,
 		},
 	},
 	{
 		Name:       "add-dir",
 		Summary:    "allow a directory and remember it in the rules",
-		Call:       "add-dir <dir> [--ro] [--dir project]",
+		Call:       "--add-dir <dir> [--ro] [--dir project]",
 		Privileged: true,
-		Detail: `Does what "grant" does, and writes the directory into the rules file at
+		Detail: `Does what "--grant" does, and writes the directory into the rules file at
 %USERPROFILE%\.wuserbox.ktav so every later run of this project gets it
 again, even after the sandbox is removed and rebuilt.
 
@@ -156,15 +159,15 @@ write was refused and the directory is one it should have.`,
 			{"--dir <d>", "project the rule belongs to (default: the current directory)"},
 		},
 		Examples: []string{
-			`wuserbox add-dir C:\projects\pc\tools`,
-			`wuserbox add-dir C:\projects\pc\logs`,
-			`wuserbox add-dir C:\reference --ro`,
+			`wuserbox --add-dir C:\projects\pc\tools`,
+			`wuserbox --add-dir C:\projects\pc\logs`,
+			`wuserbox --add-dir C:\reference --ro`,
 		},
 	},
 	{
 		Name:       "remove-dir",
 		Summary:    "forget a directory and take it back",
-		Call:       "remove-dir <dir> [--dir project]",
+		Call:       "--remove-dir <dir> [--dir project]",
 		Privileged: true,
 		Detail: `Deletes the directory from the rules file and, if the sandbox currently
 holds it, revokes the permission too.`,
@@ -175,13 +178,13 @@ holds it, revokes the permission too.`,
 			{"--dir <d>", "project the rule belongs to (default: the current directory)"},
 		},
 		Examples: []string{
-			`wuserbox remove-dir C:\projects\pc\logs`,
+			`wuserbox --remove-dir C:\projects\pc\logs`,
 		},
 	},
 	{
 		Name:    "name",
 		Summary: "show the group name for a directory",
-		Call:    "name [dir]",
+		Call:    "--name [dir]",
 		Detail: `Prints the group a directory maps to, and the directory the name was
 derived from, separated by a tab.
 
@@ -189,40 +192,40 @@ The name is the folder plus a hash of the full path, so two projects
 called "app" in different places never collide, and the same directory
 always gives the same name.`,
 		Examples: []string{
-			`wuserbox name`,
-			`wuserbox name C:\projects\app`,
+			`wuserbox --name`,
+			`wuserbox --name C:\projects\app`,
 		},
 	},
 	{
 		Name:    "path",
 		Summary: "show the directory behind a group",
-		Call:    "path <group>",
+		Call:    "--path <group>",
 		Detail: `Prints the project directory a sandbox group belongs to. The directory
 is stored in the group's own comment, so this works without any file on
 disk and survives a reinstall.`,
 		Examples: []string{
-			`wuserbox path wub-app-d6e9a21f`,
+			`wuserbox --path wub-app-d6e9a21f`,
 		},
 	},
 	{
 		Name:    "list",
 		Summary: "list the sandboxes on this machine",
-		Call:    "list [--json]",
+		Call:    "--list [--json]",
 		Detail: `Prints every sandbox group and the directory it belongs to, one per
 line. Useful for finding sandboxes left behind by a project that was
-renamed or deleted; remove one with "rm --dir <directory>".`,
+renamed or deleted; remove one with "--rm --dir <directory>".`,
 		Options: []Option{
 			{"--json", "print the list as JSON instead of lines"},
 		},
 		Examples: []string{
-			`wuserbox list`,
-			`wuserbox list --json`,
+			`wuserbox --list`,
+			`wuserbox --list --json`,
 		},
 	},
 	{
 		Name:       "rm",
 		Summary:    "delete the sandbox of a project",
-		Call:       "rm [--dir project]",
+		Call:       "--rm [--dir project]",
 		Elevates:   true,
 		Privileged: true,
 		Detail: `Takes back every permission the sandbox was given, deletes its
@@ -242,14 +245,14 @@ what a second run needs to finish the removal.`,
 			{"--dir <d>", "project to remove (default: the current directory)"},
 		},
 		Examples: []string{
-			`wuserbox rm`,
-			`wuserbox rm --dir C:\projects\old`,
+			`wuserbox --rm`,
+			`wuserbox --rm --dir C:\projects\old`,
 		},
 	},
 	{
 		Name:    "audit",
 		Summary: "list directories writable by Everyone",
-		Call:    "audit [depth]",
+		Call:    "--audit [depth]",
 		Detail: `Walks the fixed drives and prints the directories that Everyone may
 write to. Those stay writable inside a sandbox as well, because Everyone
 has to be one of the restricting identifiers for programs to start at
@@ -258,14 +261,14 @@ all, so this is the list of places the boundary does not cover.
 The depth is how many levels below each drive root to look; two by
 default. A larger number takes longer.`,
 		Examples: []string{
-			`wuserbox audit`,
-			`wuserbox audit 3`,
+			`wuserbox --audit`,
+			`wuserbox --audit 3`,
 		},
 	},
 	{
 		Name:    "explain",
 		Summary: "show what this sandbox may touch, and why",
-		Call:    "explain [--dir project] [--json]",
+		Call:    "--explain [--dir project] [--json]",
 		Detail: `Prints the sandbox of a project: its group, its temporary directory,
 every path it holds, the access it has on each, and where that came
 from. The source is the useful part: a directory the rules file asks
@@ -276,22 +279,22 @@ Each permission is then checked against Windows rather than trusted, in
 both directions. Less access than recorded means a permission was lost.
 More access than recorded matters even more: a directory written down
 as readable that the sandbox can write to is the situation this tool
-exists to prevent. Either way "wuserbox init" puts the permissions back
-as they were meant to be.`,
+exists to prevent. Either way "wuserbox --init" puts the permissions
+back as they were meant to be.`,
 		Options: []Option{
 			{"--dir <d>", "project to explain (default: the current directory)"},
 			{"--json", "print the report as JSON instead of lines"},
 		},
 		Examples: []string{
-			`wuserbox explain`,
-			`wuserbox explain --json`,
-			`wuserbox explain --dir C:\projects\app`,
+			`wuserbox --explain`,
+			`wuserbox --explain --json`,
+			`wuserbox --explain --dir C:\projects\app`,
 		},
 	},
 	{
 		Name:    "check",
 		Summary: "ask whether one thing would be allowed",
-		Call:    "check <path> [--operation read|write|create|delete] [--dir project] [--json]",
+		Call:    "--check <path> [--operation read|write|create|delete] [--dir project] [--json]",
 		Detail: `Asks Windows whether the sandbox could do something to a path, using
 the same restricted token a run would get. Nothing is opened for
 writing and nothing is created, so asking costs nothing and leaves no
@@ -308,15 +311,15 @@ refused, 1 the question could not be asked.`,
 			{"--json", "print the answer as JSON instead of lines"},
 		},
 		Examples: []string{
-			`wuserbox check C:\build\out --operation create`,
-			`wuserbox check .\notes.md --operation write`,
-			`wuserbox check C:\Windows\System32 --operation write --json`,
+			`wuserbox --check C:\build\out --operation create`,
+			`wuserbox --check .\notes.md --operation write`,
+			`wuserbox --check C:\Windows\System32 --operation write --json`,
 		},
 	},
 	{
 		Name:    "config",
 		Summary: "read the rules file",
-		Call:    "config show|path|validate [--dir project] [--json]",
+		Call:    "--config show|path|validate [--dir project] [--json]",
 		Detail: `Reads %USERPROFILE%\.wuserbox.ktav without opening an editor.
 
   show      print the rules, or only the rule for one project
@@ -340,21 +343,21 @@ validate, rather than passing for having nothing to check.`,
 			{"--json", "print the result as JSON instead of lines"},
 		},
 		Examples: []string{
-			`wuserbox config show`,
-			`wuserbox config path`,
-			`wuserbox config validate --json`,
-			`wuserbox config validate --dir .`,
+			`wuserbox --config show`,
+			`wuserbox --config path`,
+			`wuserbox --config validate --json`,
+			`wuserbox --config validate --dir .`,
 		},
 	},
 	{
 		Name:    "version",
 		Summary: "show the release this build came from",
-		Call:    "version",
+		Call:    "--version",
 		Detail: `Prints the release, the architecture it was built for and the Go
 version that built it. A build made from a checkout rather than a
 release reports "dev".`,
 		Examples: []string{
-			`wuserbox version`,
+			`wuserbox --version`,
 		},
 	},
 }

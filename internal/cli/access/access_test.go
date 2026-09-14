@@ -71,11 +71,15 @@ func TestParseTargetNeedsExactlyOneDirectory(t *testing.T) {
 	}
 }
 
+// TestTargetArgumentsRoundTrip is also the regression guard for a rebuilt
+// command line that named the command but not as one: without the dash,
+// Elevate's re-exec would read "grant" as a program to run rather than as the
+// grant command.
 func TestTargetArgumentsRoundTrip(t *testing.T) {
 	original := target{path: `C:\tools`, project: `C:\project`, kind: grant.RO}
 	args := original.args("grant")
-	if args[0] != "grant" {
-		t.Fatalf("rebuilt arguments start with %q", args[0])
+	if args[0] != "--grant" {
+		t.Fatalf("rebuilt arguments start with %q, want \"--grant\"", args[0])
 	}
 	rebuilt, err := parseTarget("grant", args[1:])
 	if err != nil {

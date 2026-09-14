@@ -7,8 +7,14 @@ import (
 
 func TestEveryCommandIsInTheOverview(t *testing.T) {
 	for _, command := range Commands {
-		if !strings.Contains(Text, "wuserbox "+command.Name) {
-			t.Errorf("the overview does not mention %q", command.Name)
+		// Commands are shown with the dash that tells them from a program.
+		// The default command has no name to show at all.
+		shown := "wuserbox --" + command.Name
+		if command.Default {
+			shown = "wuserbox [options]"
+		}
+		if !strings.Contains(Text, shown) {
+			t.Errorf("the overview does not mention %q", shown)
 		}
 		if !strings.Contains(Text, command.Summary) {
 			t.Errorf("the overview does not carry the summary of %q", command.Name)
@@ -22,7 +28,7 @@ func TestOverviewTellsAnAgentWhatToAskFor(t *testing.T) {
 	// lift it.
 	for _, phrase := range []string{
 		"Access is denied",
-		"wuserbox add-dir",
+		"wuserbox --add-dir",
 		"NOT inside the",
 		"WUSERBOX_DIR",
 		"refuse to run from inside a",
@@ -81,7 +87,7 @@ func TestEveryEntryIsComplete(t *testing.T) {
 		}
 		// The default command is the exception, and says so: it is reached by
 		// typing no command at all, so its call and examples carry no name.
-		if !command.Default && !strings.HasPrefix(command.Call, command.Name) {
+		if !command.Default && !strings.HasPrefix(command.Call, "--"+command.Name) {
 			t.Errorf("the call of %q starts with %q", command.Name, command.Call)
 		}
 		for _, example := range command.Examples {
@@ -92,7 +98,7 @@ func TestEveryEntryIsComplete(t *testing.T) {
 				}
 				continue
 			}
-			if !strings.HasPrefix(example, "wuserbox "+command.Name) {
+			if !strings.HasPrefix(example, "wuserbox --"+command.Name) {
 				t.Errorf("%q has an example for another command: %q", command.Name, example)
 			}
 		}
@@ -130,10 +136,10 @@ func TestDetailRendersTheWholeEntry(t *testing.T) {
 	if !strings.Contains(rendered, "wuserbox [options] <program> [arguments...]") {
 		t.Errorf("the entry for run does not show how to call it:\n%s", rendered)
 	}
-	// The longer form still has to be findable, for a program named like a
-	// command and for anyone who learned it that way.
-	if !strings.Contains(rendered, "wuserbox run -- list") {
-		t.Errorf("the entry for run does not show the longer form:\n%s", rendered)
+	// The explicit, dashed form still has to be findable, for anyone who
+	// wants run spelled out or the -- separator shown.
+	if !strings.Contains(rendered, "wuserbox --run -- list") {
+		t.Errorf("the entry for run does not show the explicit form:\n%s", rendered)
 	}
 }
 

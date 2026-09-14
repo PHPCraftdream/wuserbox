@@ -65,7 +65,7 @@ func cli(t *testing.T, cwd string, args ...string) (string, int) {
 
 func TestCLINameMatchesTheLibrary(t *testing.T) {
 	dir := t.TempDir()
-	out, code := cli(t, dir, "name")
+	out, code := cli(t, dir, "--name")
 	if code != 0 {
 		t.Fatalf("exit code %d: %s", code, out)
 	}
@@ -89,21 +89,21 @@ func TestCLIRejectsUnknownCommands(t *testing.T) {
 }
 
 func TestCLIRunNeedsACommand(t *testing.T) {
-	out, code := cli(t, t.TempDir(), "run")
+	out, code := cli(t, t.TempDir(), "--run")
 	if code == 0 || !strings.Contains(out, "no command given") {
 		t.Errorf("exit %d, output %q", code, out)
 	}
 }
 
 func TestCLIPathReportsUnknownGroup(t *testing.T) {
-	out, code := cli(t, t.TempDir(), "path", "wub-does-not-exist-00000000")
+	out, code := cli(t, t.TempDir(), "--path", "wub-does-not-exist-00000000")
 	if code == 0 || !strings.Contains(out, "does not exist") {
 		t.Errorf("exit %d, output %q", code, out)
 	}
 }
 
 func TestCLIListSucceeds(t *testing.T) {
-	if _, code := cli(t, t.TempDir(), "list"); code != 0 {
+	if _, code := cli(t, t.TempDir(), "--list"); code != 0 {
 		t.Errorf("exit code %d", code)
 	}
 }
@@ -113,7 +113,7 @@ func TestCLIAddDirRecordsTheRule(t *testing.T) {
 	tools := t.TempDir()
 	cfgPath := filepath.Join(t.TempDir(), "rules.ktav")
 
-	cmd := exec.Command(binary(t), "add-dir", tools)
+	cmd := exec.Command(binary(t), "--add-dir", tools)
 	cmd.Dir = project
 	cmd.Env = append(os.Environ(), config.EnvPath+"="+cfgPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -134,7 +134,7 @@ func TestCLIAddDirRecordsTheRule(t *testing.T) {
 	}
 
 	// Removing it again leaves the project rule empty.
-	cmd = exec.Command(binary(t), "remove-dir", tools)
+	cmd = exec.Command(binary(t), "--remove-dir", tools)
 	cmd.Dir = project
 	cmd.Env = append(os.Environ(), config.EnvPath+"="+cfgPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -183,15 +183,15 @@ func TestCLIFullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { run("rm") })
+	t.Cleanup(func() { run("--rm") })
 
-	if out, code := run("init", "--no-ai"); code != 0 {
+	if out, code := run("--init", "--no-ai"); code != 0 {
 		t.Fatalf("init failed: %s", out)
 	}
-	if out, code := run("path", name); code != 0 || !strings.Contains(out, norm) {
+	if out, code := run("--path", name); code != 0 || !strings.Contains(out, norm) {
 		t.Errorf("path lookup returned %q (exit %d)", out, code)
 	}
-	if out, code := run("list"); code != 0 || !strings.Contains(out, name) {
+	if out, code := run("--list"); code != 0 || !strings.Contains(out, name) {
 		t.Errorf("list did not mention the new sandbox: %q", out)
 	}
 
@@ -211,7 +211,7 @@ func TestCLIFullLifecycle(t *testing.T) {
 	}
 
 	// A directory added to the config becomes writable on the next run.
-	if out, code := run("add-dir", extra); code != 0 {
+	if out, code := run("--add-dir", extra); code != 0 {
 		t.Fatalf("add-dir failed: %s", out)
 	}
 	allowed := filepath.Join(extra, "written.txt")
@@ -226,13 +226,13 @@ func TestCLIFullLifecycle(t *testing.T) {
 		t.Errorf("configuring on a run was not refused: %q (exit %d)", out, code)
 	}
 
-	if out, code := run("rm"); code != 0 {
+	if out, code := run("--rm"); code != 0 {
 		t.Fatalf("rm failed: %s", out)
 	}
 	if s, err := state.Load(name); err != nil || s != nil {
 		t.Errorf("state survived removal: %+v (%v)", s, err)
 	}
-	if _, code := run("path", name); code == 0 {
+	if _, code := run("--path", name); code == 0 {
 		t.Error("the group survived removal")
 	}
 }
@@ -280,13 +280,13 @@ func TestCLIReportsAFailureAsJSONWhenAsked(t *testing.T) {
 func TestCLIKeepsJSONWhenAFlagIsWrong(t *testing.T) {
 	command := binary(t)
 	for _, args := range [][]string{
-		{"check", "--json", "--nonsense"},
-		{"explain", "--json", "--nonsense"},
-		{"list", "--json", "--nonsense"},
-		{"rm", "--json", "--nonsense"},
-		{"config", "show", "--json", "--nonsense"},
-		{"grant", `C:\tools`, "--json", "--nonsense"},
-		{"run", "--json", "--nonsense", "--", "cmd.exe"},
+		{"--check", "--json", "--nonsense"},
+		{"--explain", "--json", "--nonsense"},
+		{"--list", "--json", "--nonsense"},
+		{"--rm", "--json", "--nonsense"},
+		{"--config", "show", "--json", "--nonsense"},
+		{"--grant", `C:\tools`, "--json", "--nonsense"},
+		{"--run", "--json", "--nonsense", "--", "cmd.exe"},
 	} {
 		output, err := exec.Command(command, args...).CombinedOutput()
 		if err == nil {
@@ -315,7 +315,7 @@ func TestCLIKeepsJSONWhenAFlagIsWrong(t *testing.T) {
 func TestCLIKeepsJSONWhileWorking(t *testing.T) {
 	command := binary(t)
 	project := t.TempDir()
-	run := exec.Command(command, "run", "--dir", project, "--json", "--non-interactive",
+	run := exec.Command(command, "--run", "--dir", project, "--json", "--non-interactive",
 		"--", "cmd.exe", "/c", "echo hello")
 	var out bytes.Buffer
 	run.Stderr = &out

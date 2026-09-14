@@ -23,8 +23,11 @@ USAGE
   belong to wuserbox and come before the program; everything from the program
   onwards belongs to the program.
 
-  A program whose name is also a command needs the longer form:
-  "wuserbox run -- list".
+  Commands carry a dash, and that is what tells them from a program:
+  "wuserbox --list" asks wuserbox, "wuserbox list" starts a program called
+  list. Nothing without a dash is a command, so a program is never shadowed
+  by one. The exception is "help", which is answered whichever way it is
+  written.
 
 WHAT THIS MEANS FOR A PROGRAM RUNNING INSIDE
 
@@ -70,13 +73,13 @@ RUNNING AND CONFIGURING ARE SEPARATE
   Starting a program takes the sandbox as it stands and changes nothing, so
   a run has no options that decide what may be written. Those belong to:
 
-    wuserbox add-dir <dir> [--ro]   allow a directory, now and from now on
-    wuserbox grant <dir> [--ro]     allow it for this project, unrecorded
-    wuserbox init --no-ai           build the sandbox without agent directories
-    wuserbox init --home-writes     let it create files in the profile root
+    wuserbox --add-dir <dir> [--ro]   allow a directory, now and from now on
+    wuserbox --grant <dir> [--ro]     allow it for this project, unrecorded
+    wuserbox --init --no-ai           build the sandbox without agent directories
+    wuserbox --init --home-writes     let it create files in the profile root
 
   A directory allowed this way stays in force for later runs, until
-  "wuserbox revoke" takes it back or "wuserbox rm" removes the sandbox.
+  "wuserbox --revoke" takes it back or "wuserbox --rm" removes the sandbox.
 
   What a sandbox may write is therefore decided in one place and readable
   afterwards with "wuserbox explain", instead of depending on which command
@@ -100,7 +103,7 @@ EXIT CODES
   5  the rules file does not parse or contradicts itself
   6  what was named does not exist
 
-  One exception: "run" returns whatever the command inside returned, so the
+  One exception: a run returns whatever the program inside returned, so the
   code you read after it is the sandboxed program's own.
 
   With --json a failure is reported as JSON too, on the error stream:

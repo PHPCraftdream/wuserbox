@@ -4,6 +4,7 @@ package cli
 import (
 	"io"
 	"os"
+	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/cli/access"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/diagnose"
@@ -38,10 +39,30 @@ var commands = map[string]command{
 	"config":     {run: diagnose.Config},
 }
 
-// aliases accept the spellings people reach for out of habit.
+// aliases accept the spellings people reach for out of habit. They carry the
+// dash too: without one, a word is a program.
 var aliases = map[string]string{
-	"add_dir": "add-dir", "--add-dir": "add-dir", "--add_dir": "add-dir",
-	"remove_dir": "remove-dir", "--remove-dir": "remove-dir", "--remove_dir": "remove-dir",
+	"--add_dir": "add-dir", "--remove_dir": "remove-dir",
+}
+
+// commandFor reads one word as a command, and says whether it is one.
+//
+// The dash is what tells a command from a program: "wuserbox --list" asks
+// wuserbox, "wuserbox list" starts a program called list. Nothing without a
+// dash is a command, so a program is never shadowed by one, and a new command
+// can be added without changing what an existing command line means.
+func commandFor(word string) (string, bool) {
+	if canonical, known := aliases[word]; known {
+		return canonical, true
+	}
+	name, dashed := strings.CutPrefix(word, "--")
+	if !dashed {
+		return "", false
+	}
+	if _, known := commands[name]; known {
+		return name, true
+	}
+	return "", false
 }
 
 // Execute dispatches one command. Arguments exclude the program name.
@@ -50,13 +71,13 @@ func Execute(args []string) error {
 		_, _ = io.WriteString(os.Stderr, usage.Text)
 		return exit.Errorf(exit.Usage, "no command given")
 	}
-	name := resolve(args[0])
-	switch name {
+	switch args[0] {
 	case "help", "-h", "--help":
 		return help(args[1:])
 	}
-	cmd, known := commands[name]
-	if !known {
+	name, isCommand := commandFor(args[0])
+	cmd := commands[name]
+	if !isCommand {
 		// Anything that is not a command is a program to run in the sandbox
 		// of the current directory, so `wuserbox notepad.exe` is all it takes.
 		// Options are told apart by their leading dash and come first;
@@ -83,7 +104,10 @@ func help(args []string) error {
 		_, _ = io.WriteString(os.Stdout, usage.Text)
 		return nil
 	case 1:
-		name := resolve(args[0])
+		name, isCommand := commandFor(args[0])
+		if !isCommand {
+			name = args[0]
+		}
 		detail, known := usage.Detail(name)
 		if !known {
 			return exit.Errorf(exit.NotFound, "no command named %q (try `wuserbox help` for the list)", args[0])
@@ -93,14 +117,6 @@ func help(args []string) error {
 	default:
 		return exit.Errorf(exit.Usage, "usage: wuserbox help [command]")
 	}
-}
-
-// resolve maps an alias to the command it stands for.
-func resolve(name string) string {
-	if canonical, ok := aliases[name]; ok {
-		return canonical
-	}
-	return name
 }
 
 // asksForHelp reports whether the arguments contain a request for help. Only

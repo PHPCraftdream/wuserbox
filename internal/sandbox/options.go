@@ -27,7 +27,7 @@ type Options struct {
 // Args rebuilds these options as an `init` command line, for re-running with
 // administrator rights.
 func (o Options) Args() []string {
-	args := []string{"init", "--dir", o.Dir}
+	args := []string{"--init", "--dir", o.Dir}
 	for _, d := range o.RW {
 		args = append(args, "--rw", d)
 	}

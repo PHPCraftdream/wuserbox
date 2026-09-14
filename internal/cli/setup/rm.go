@@ -58,7 +58,7 @@ func Rm(args []string) error {
 		return previewRemoval(name, *asJSON)
 	}
 	if !token.IsAdmin() {
-		return Elevate([]string{"rm", "--dir", project})
+		return Elevate([]string{"--rm", "--dir", project})
 	}
 	return removeSandbox(name, *asJSON)
 }

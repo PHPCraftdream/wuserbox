@@ -93,7 +93,7 @@ func TestHelpForOneCommandSucceeds(t *testing.T) {
 }
 
 func TestHelpResolvesAliases(t *testing.T) {
-	if err := Execute([]string{"help", "add_dir"}); err != nil {
+	if err := Execute([]string{"help", "--add_dir"}); err != nil {
 		t.Errorf("an alias was not resolved: %v", err)
 	}
 }
@@ -112,10 +112,10 @@ func TestAFlagAsksForTheCommandsOwnEntry(t *testing.T) {
 	// Asking a command for help must not run it, and must not be treated as a
 	// permission change, so it works inside a sandbox too.
 	for _, args := range [][]string{
-		{"grant", "--help"},
-		{"grant", "-h"},
-		{"rm", "--help"},
-		{"run", "-h"},
+		{"--grant", "--help"},
+		{"--grant", "-h"},
+		{"--rm", "--help"},
+		{"--run", "-h"},
 	} {
 		if err := Execute(args); err != nil {
 			t.Errorf("%v: %v", args, err)
@@ -171,7 +171,49 @@ func TestHelpForACommandIsStillReachable(t *testing.T) {
 	if err := Execute([]string{"help", "add-dir"}); err != nil {
 		t.Errorf("`wuserbox help add-dir` failed: %v", err)
 	}
-	if err := Execute([]string{"add-dir", "--help"}); err != nil {
-		t.Errorf("`wuserbox add-dir --help` failed: %v", err)
+	if err := Execute([]string{"--add-dir", "--help"}); err != nil {
+		t.Errorf("`wuserbox --add-dir --help` failed: %v", err)
+	}
+}
+
+// TestBareCommandWordsAreNeverCommands is the contract a dash exists to give:
+// a program is never shadowed by a wuserbox command that happens to share its
+// name, because nothing without a dash is read as a command at all.
+func TestBareCommandWordsAreNeverCommands(t *testing.T) {
+	for name := range commands {
+		if _, isCommand := commandFor(name); isCommand {
+			t.Errorf("the bare word %q was read as a command", name)
+		}
+		if _, isCommand := commandFor("--" + name); !isCommand {
+			t.Errorf("the dashed word %q was not read as a command", "--"+name)
+		}
+	}
+}
+
+// TestARunWithNoCommandFallsThroughToTheProgram covers the other side of the
+// same contract by going through the whole dispatcher: a bare word that
+// matches no command is a program, so trying to run it reports a missing
+// program rather than dispatching to anything wuserbox understands.
+func TestARunWithNoCommandFallsThroughToTheProgram(t *testing.T) {
+	err := Execute([]string{"grant"})
+	if err == nil || !strings.Contains(err.Error(), "unknown command") {
+		t.Errorf("the bare word \"grant\" should have been read as a program: %v", err)
+	}
+}
+
+// TestExplicitDashedRunReachesTheProgramAfterTheSeparator is the regression
+// guard for the one spelling meant to disambiguate a program that shares a
+// name with a command. "wuserbox run -- list" (bare "run") was documented as
+// working and did not: the bare word was never a command, so it was read as
+// the name of the program to run, with "list" folded in as its own argument.
+// "wuserbox --run -- list" is the spelling that actually works, because the
+// dash is what puts "run" through the dispatcher at all.
+func TestExplicitDashedRunReachesTheProgramAfterTheSeparator(t *testing.T) {
+	err := Execute([]string{"--run", "--", "no-such-program-wuserbox-xyz"})
+	if err == nil || !strings.Contains(err.Error(), "no-such-program-wuserbox-xyz") {
+		t.Errorf("the program after -- was not what failed: %v", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "\"--run\"") {
+		t.Errorf("--run itself was treated as the missing program: %v", err)
 	}
 }

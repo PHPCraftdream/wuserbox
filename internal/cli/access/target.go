@@ -78,8 +78,12 @@ func parseTarget(name string, args []string) (target, error) {
 // Every flag that decides what the answer looks like travels with it. Dropping
 // --json here meant add-dir handed the work to grant, which then wrote prose
 // where the caller had asked for one JSON document.
+//
+// command is given bare ("grant", "revoke"); the dash that tells a command
+// from a program is added here, once, so a caller that re-executes this line
+// through elevation is never left running it as a program by that name.
 func (t target) args(command string) []string {
-	out := []string{command, t.path, "--dir", t.project}
+	out := []string{"--" + command, t.path, "--dir", t.project}
 	if t.kind == grant.RO {
 		out = append(out, "--ro")
 	}

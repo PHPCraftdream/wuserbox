@@ -70,36 +70,40 @@ else.
 | Command | Effect |
 | --- | --- |
 | `wuserbox [options] <program> [args...]` | run a program sandboxed for the current directory |
-| `wuserbox init` | create the group and apply permissions |
-| `wuserbox grant <dir> [--ro]` | allow one more directory |
-| `wuserbox revoke <dir>` | take an allowance back |
-| `wuserbox add-dir <dir> [--ro]` | remember a directory in the rules and grant it |
-| `wuserbox remove-dir <dir>` | forget a directory and revoke it |
-| `wuserbox name [dir]` | show the group for a directory |
-| `wuserbox path <group>` | show the directory behind a group |
-| `wuserbox list` | list sandboxes |
-| `wuserbox rm` | delete group, permissions and temp directory |
-| `wuserbox explain` | what this sandbox may touch, and why |
-| `wuserbox check <path> --operation write` | ask whether one thing would be allowed |
-| `wuserbox config show\|path\|validate` | read and check the rules file |
-| `wuserbox audit [depth]` | list directories writable by Everyone |
-| `wuserbox version` | show the release this build came from |
+| `wuserbox --init` | create the group and apply permissions |
+| `wuserbox --grant <dir> [--ro]` | allow one more directory |
+| `wuserbox --revoke <dir>` | take an allowance back |
+| `wuserbox --add-dir <dir> [--ro]` | remember a directory in the rules and grant it |
+| `wuserbox --remove-dir <dir>` | forget a directory and revoke it |
+| `wuserbox --name [dir]` | show the group for a directory |
+| `wuserbox --path <group>` | show the directory behind a group |
+| `wuserbox --list` | list sandboxes |
+| `wuserbox --rm` | delete group, permissions and temp directory |
+| `wuserbox --explain` | what this sandbox may touch, and why |
+| `wuserbox --check <path> --operation write` | ask whether one thing would be allowed |
+| `wuserbox --config show\|path\|validate` | read and check the rules file |
+| `wuserbox --audit [depth]` | list directories writable by Everyone |
+| `wuserbox --version` | show the release this build came from |
 | `wuserbox help [command]` | the overview, or the full entry for one command |
+
+A command carries a dash, and that is what tells it from a program:
+`wuserbox --list` asks wuserbox, `wuserbox list` starts a program called list.
+Nothing without a dash is a command, so a program is never shadowed by one.
 
 Every command carries its own entry: `wuserbox help grant` prints what it
 does, which options it reads, whether it asks for administrator rights and a
-few examples. `wuserbox grant --help` prints the same thing. The overview is
+few examples. `wuserbox --grant --help` prints the same thing. The overview is
 written for a coding agent that has just been refused a write: it says where
 the boundary is and which command to ask the user for.
 
 Running and configuring are separate. Starting a program takes the sandbox as
 it stands and changes nothing, so a run has no options that decide what may be
 written: `--dir <d>` picks the project and that is all. What a sandbox may
-write is decided by `init`, `grant` and `add-dir` — `--rw <d>`, `--ro <d>`,
-`--no-ai` and `--home-writes` belong to `init`, and to the rules file the other
-two write. The answer is therefore in one place, readable afterwards with
-`wuserbox explain`, rather than depending on which command line happened to
-start the program.
+write is decided by `--init`, `--grant` and `--add-dir` — `--rw <d>`, `--ro
+<d>`, `--no-ai` and `--home-writes` belong to `--init`, and to the rules file
+the other two write. The answer is therefore in one place, readable
+afterwards with `wuserbox --explain`, rather than depending on which command
+line happened to start the program.
 
 `--dry-run` shows what a command would change without changing it, taking both
 the rules file and the permissions the sandbox holds into account, `--json`
@@ -109,14 +113,14 @@ gives the diagnostic commands machine-readable output — a failure under
 of raising a consent prompt, so a script never stops at a dialog nobody can
 click.
 
-A directory handed over with `grant`, `add-dir` or `init --rw` stays available
-on later runs too, until `wuserbox revoke` takes it back. Nothing is given up when the
-process ends: a permission that vanished whenever a run was interrupted would
-be a promise the tool could not keep.
+A directory handed over with `--grant`, `--add-dir` or `--init --rw` stays
+available on later runs too, until `wuserbox --revoke` takes it back. Nothing
+is given up when the process ends: a permission that vanished whenever a run
+was interrupted would be a promise the tool could not keep.
 
 What you ask for outranks the agent preset. Narrowing one of the directories
-the preset hands over, say `wuserbox grant ~/.claude --ro`, stays narrow: later
-runs apply the preset again and leave that decision alone.
+the preset hands over, say `wuserbox --grant ~/.claude --ro`, stays narrow:
+later runs apply the preset again and leave that decision alone.
 
 Directory names are taken as written when they name something that exists, so
 a project called `build$STAGE` is that project and not `build`.
@@ -129,9 +133,9 @@ C:\tools    c:/tools    /c/tools    /mnt/c/tools    /cygdrive/c/tools
 ~/tools     %USERPROFILE%\tools     $HOME/tools     ..\tools
 ```
 
-Creating or deleting a group needs administrator rights, so `init` and `rm`
-raise a consent prompt once. A run does not, unless the sandbox does not exist
-yet.
+Creating or deleting a group needs administrator rights, so `--init` and
+`--rm` raise a consent prompt once. A run does not, unless the sandbox does
+not exist yet.
 
 ## What is writable by default
 
@@ -146,7 +150,7 @@ yet.
 The profile root itself is **read-only**. Handing it over would make every
 dotfile already in it writable, because Windows pushes an inherited permission
 down to the files that are already there. Agents that rewrite a dotfile in the
-profile root through a temporary file and a rename need `wuserbox init
+profile root through a temporary file and a rename need `wuserbox --init
 --home-writes`; with that flag every sensitive file there is refused one by
 one.
 
@@ -160,10 +164,10 @@ Code running in the sandbox must not be able to widen its own permissions:
 * The shell startup files and credential directories in the profile root get
   the same treatment: `.bashrc`, `.profile`, `.gitconfig`, `.npmrc`, `.netrc`,
   `.ssh`, `.gnupg`, `.aws` and their neighbours.
-* `init`, `rm`, `grant`, `revoke`, `add-dir` and `remove-dir` refuse to run
-  from inside a sandbox, and wuserbox never asks for administrator rights from
-  there. The check reads the kernel's restricted-token flag, which sandboxed
-  code cannot clear.
+* `--init`, `--rm`, `--grant`, `--revoke`, `--add-dir` and `--remove-dir`
+  refuse to run from inside a sandbox, and wuserbox never asks for
+  administrator rights from there. The check reads the kernel's
+  restricted-token flag, which sandboxed code cannot clear.
 * Sensitive entries that do not exist yet are taken as empty placeholders under
   the same locked permissions before the profile root is handed over, so a
   sandbox cannot claim one of those names first. A name is taken as whatever it
@@ -190,8 +194,8 @@ projects: [
 ]
 ```
 
-Edit it with `wuserbox add-dir <dir>` and `wuserbox remove-dir <dir>`, or by
-hand. Paths are stored with forward slashes, because ktav reads a backslash as
+Edit it with `wuserbox --add-dir <dir>` and `wuserbox --remove-dir <dir>`, or
+by hand. Paths are stored with forward slashes, because ktav reads a backslash as
 an escape, but every spelling above is accepted when the file is read, in the
 `dir` key as well as in the lists.
 
@@ -218,7 +222,7 @@ returned, so the code you read after it is the sandboxed program's own.
 * **The network is not restricted.**
 * **Directories writable by Everyone stay writable**, because `Everyone` has to
   be one of the restricting identifiers for programs to start at all.
-  `wuserbox audit` lists them; there are usually a handful under
+  `wuserbox --audit` lists them; there are usually a handful under
   `C:\ProgramData`.
 * **`HKEY_CURRENT_USER` is read-only.** Command-line tools rarely care;
   anything that saves settings in the registry will fail to.
@@ -231,10 +235,10 @@ returned, so the code you read after it is the sandboxed program's own.
 * **The agent directories are shared.** Every sandbox may write `~/.config`,
   `~/.claude` and their neighbours, so a poisoned hook or setting there would
   run with full rights the next time you start a tool outside wuserbox. Use
-  `--no-ai` if that matters, or narrow one of them: `wuserbox grant ~/.config
-  --ro` outranks the preset and stays.
+  `--no-ai` if that matters, or narrow one of them: `wuserbox --grant
+  ~/.config --ro` outranks the preset and stays.
 * **Renaming the project directory** changes the group, leaving the old sandbox
-  behind. `wuserbox list` shows it, `wuserbox rm --dir <old>` removes it.
+  behind. `wuserbox --list` shows it, `wuserbox --rm --dir <old>` removes it.
 
 ## Layout
 
