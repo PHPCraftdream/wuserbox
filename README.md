@@ -361,6 +361,12 @@ returned, so the code you read after it is the sandboxed program's own.
   "reads everything you can read" is the promise this tool opens with. Closing
   the shared-writable hole that way makes a different, narrower tool, so it is
   not a change to make quietly on top of this one.
+* **Revoking does not reach a file that is already open.** Windows checks
+  permissions when a file is opened and not again afterwards, so a sandbox that
+  already had something open keeps writing through that handle until it closes
+  it. `wuserbox --revoke` and `wuserbox --rm` succeed against open files and
+  refuse every new attempt straight away, but they are not a way to stop a
+  program that is already running. Stop it first.
 * **`HKEY_CURRENT_USER` is read-only.** Command-line tools rarely care;
   anything that saves settings in the registry will fail to.
 * **Interface isolation is weak.** A sandboxed process shares your desktop and

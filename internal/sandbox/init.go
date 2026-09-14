@@ -32,7 +32,13 @@ func Init(o Options) (*state.State, error) {
 	// the profile reads that depended on it are missing, the same as any
 	// other grant an unprivileged run could not finish.
 	if err := grants.EnsureReadGroup(); err != nil {
-		note(o, "could not set up profile reads for every sandbox: %v", err)
+		// Said in full, because the sandbox that comes out of this works and
+		// is quietly less useful than the one that was asked for: reads under
+		// the profile fail, and the program inside will report those as
+		// permission errors with nothing pointing back at this line.
+		note(o, "the sandbox will not be able to read anything under %s: setting up %s failed (%v).\n"+
+			"  Everything else is in place. Run `wuserbox --init` again as an administrator to finish it.",
+			paths.Home(), group.ReadGroup, err)
 	}
 	var built *state.State
 	// Everything from reading the record to writing it back is one operation.

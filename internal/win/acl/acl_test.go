@@ -413,3 +413,88 @@ func TestAGrantThatCannotFinishGrantsNothing(t *testing.T) {
 		t.Error("the grant failed, and the directory was handed over anyway")
 	}
 }
+
+// TestASweepDoesNotCostTheOwnerTheirOwnWrite is the regression guard for the
+// rule the granted directory already followed, one level down.
+//
+// Narrowing what Everyone and BUILTIN\Users hold hands whatever it took to the
+// owner by name, because those two are not who is being kept out and a grant
+// must not cost somebody the directory they were granting. The sweep over what
+// is inside left that out, so a directory inside a granted tree that had
+// stopped inheriting — one pinned for another sandbox, or one anybody
+// protected — whose only write path was Users went read-only to its owner the
+// moment the tree above it was handed over.
+func TestASweepDoesNotCostTheOwnerTheirOwnWrite(t *testing.T) {
+	root := t.TempDir()
+	inner := filepath.Join(root, "inner")
+	if err := os.Mkdir(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Protected, so nothing above reaches it, and Users is the only writer.
+	setSDDL(t, inner, `D:P(A;OICI;0x1301BF;;;BU)(A;OICI;0x1200A9;;;`+owner+`)`)
+	t.Cleanup(func() { setSDDL(t, inner, `D:P(A;OICI;FA;;;`+owner+`)`) })
+
+	probe := filepath.Join(inner, "owner.txt")
+	if err := os.WriteFile(probe, []byte("x"), 0o644); err != nil {
+		t.Fatalf("the owner could not write there to begin with, so this proves nothing: %v", err)
+	}
+	if err := os.Remove(probe); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Isolate(root, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(probe, []byte("x"), 0o644); err != nil {
+		t.Errorf("handing over the tree above cost the owner their own write: %v", err)
+	}
+	// And the reason for narrowing at all still holds.
+	if UsersWritable(inner) {
+		t.Error("BUILTIN\\Users still writes inside the granted tree")
+	}
+}
+
+// TestAGrantDoesNotReachThroughAJunction pins what keeps a grant inside the
+// tree it was given.
+//
+// A junction is an ordinary-looking directory that stands for somewhere else,
+// and unlike a symbolic link the walk does not report it as one, so it is not
+// skipped for that reason. What makes it safe is measured rather than assumed:
+// the walk does not descend into it, because it is not reported as a
+// directory either, and reading or writing a permission list by that path
+// reaches the junction itself rather than what it points at. Were either to
+// change, a grant would quietly rewrite permissions outside everything it was
+// handed.
+func TestAGrantDoesNotReachThroughAJunction(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	writable := []ACE{{Access: AccessModify, Inheritance: InheritObjects | InheritContainers}}
+	if err := Set(outside, sid.Users, writable); err != nil {
+		t.Fatal(err)
+	}
+	if err := Set(outside, unusedAccount, writable); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, outside).CombinedOutput(); err != nil {
+		t.Skipf("this machine would not make a junction: %v\n%s", err, out)
+	}
+	t.Cleanup(func() { _ = os.Remove(link) })
+
+	if err := Isolate(root, unusedAccount, writable, InheritObjects|InheritContainers); err != nil {
+		t.Fatal(err)
+	}
+	if !UsersWritable(outside) {
+		t.Error("granting a tree narrowed BUILTIN\\Users somewhere outside it, through a junction")
+	}
+	if !heldBy(outside, unusedAccount, AccessModify) {
+		t.Error("granting a tree rewrote an entry somewhere outside it, through a junction")
+	}
+}

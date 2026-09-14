@@ -155,7 +155,7 @@ func Isolate(path, account string, entries []ACE, reach uint32) error {
 	// Both halves narrow rather than widen, so stopping between them can only
 	// take Everyone's and Users' write access off what is inside, which is
 	// what the grant was going to do anyway.
-	if err := sweep(path, everyone, users); err != nil {
+	if err := sweep(path, everyone, users, holder); err != nil {
 		return err
 	}
 	return publish(path, list, true)
@@ -174,7 +174,7 @@ func Isolate(path, account string, entries []ACE, reach uint32) error {
 // What is below is not pinned the way the top is. Its own entries are
 // narrowed and the rest keeps arriving from the top, which is what lets
 // taking the grant away reach it later.
-func sweep(root string, everyone, users uintptr) error {
+func sweep(root string, everyone, users, holder uintptr) error {
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		switch {
 		case err != nil:
@@ -186,14 +186,23 @@ func sweep(root string, everyone, users uintptr) error {
 		case entry.Type()&os.ModeSymlink != 0:
 			return nil // a name for somewhere else, whose permissions are its own
 		}
-		return narrowOwn(path, everyone, users)
+		return narrowOwn(path, everyone, users, holder)
 	})
 }
 
 // narrowOwn takes the changing rights of Everyone and BUILTIN\Users out of
 // the entries one object holds itself, leaving what it is handed from above
-// alone.
-func narrowOwn(path string, everyone, users uintptr) error {
+// alone, and hands whatever it took to the owner by name.
+//
+// The handback is not a courtesy, it is the same rule the granted directory
+// itself follows: those two are not who is being kept out, and a grant must
+// not cost the person granting it the directory they were granting. One level
+// down it was left out, and a directory inside a granted tree that had stopped
+// inheriting -- one wuserbox pinned for another sandbox, or one anybody
+// protected -- whose only write path was Users went read-only to its owner the
+// moment the tree above it was handed over. Measured, by writing a file there
+// before and after.
+func narrowOwn(path string, everyone, users, holder uintptr) error {
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
@@ -207,7 +216,7 @@ func narrowOwn(path string, everyone, users uintptr) error {
 	if err != nil {
 		return fmt.Errorf("reading the permissions of %s: %w", path, err)
 	}
-	var update []explicitAccess
+	var update, handback []explicitAccess
 	for _, who := range []uintptr{everyone, users} {
 		var kept []explicitAccess
 		narrowed := false
@@ -218,6 +227,11 @@ func narrowOwn(path string, everyone, users uintptr) error {
 			access := one.access
 			if access.mode == grantAccess && access.permissions&changing != 0 {
 				narrowed = true
+				// Handed back with the reach the entry it came from had, so
+				// the owner keeps exactly what the crowd was holding here and
+				// nothing further.
+				handback = append(handback,
+					entry(holder, access.permissions&changing, access.inheritance, grantAccess))
 				access.permissions &^= changing
 				if access.permissions == 0 {
 					continue
@@ -236,7 +250,7 @@ func narrowOwn(path string, everyone, users uintptr) error {
 	if len(update) == 0 {
 		return nil
 	}
-	return apply(path, update, false)
+	return apply(path, append(update, handback...), false)
 }
 
 // allEntries walks an access control list entry by entry and returns what it

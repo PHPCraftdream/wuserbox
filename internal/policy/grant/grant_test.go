@@ -6,10 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/PHPCraftdream/wuserbox/internal/lock"
+	"github.com/PHPCraftdream/wuserbox/internal/win/access"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
@@ -221,4 +223,78 @@ func hold(name string) (func(), error) {
 			<-released
 		})
 	}, nil
+}
+
+// TestPruneIsNotHeldUpByAnOpenFile answers what taking a grant back does while
+// the sandbox is still running with files open.
+//
+// Rewriting a permission list needs the right to rewrite it, not exclusive use
+// of the object, so a file somebody is holding open does not stand in the way —
+// unlike deleting it, which is what makes --rm report a temp directory it could
+// not remove. Every new attempt is refused straight away.
+//
+// What no permission change can do is reach a handle that is already open:
+// Windows checks access when a file is opened and not again afterwards, so a
+// process that already had it open keeps writing through that handle until it
+// closes it. That is a property of Windows, not something revoking gets wrong,
+// and it is why revoking a grant is not a way to stop a program already running.
+func TestPruneIsNotHeldUpByAnOpenFile(t *testing.T) {
+	const account = "S-1-5-21-1111111111-2222222222-3333333333-606060"
+	root := t.TempDir()
+	inner := filepath.Join(root, "inner")
+	if err := os.Mkdir(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	busy := filepath.Join(inner, "busy.log")
+	if err := os.WriteFile(busy, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(account, root, RW); err != nil {
+		t.Fatal(err)
+	}
+	// Granting the inner one is what pins it, so only Prune can reach it.
+	if err := Apply(account, inner, RW); err != nil {
+		t.Fatal(err)
+	}
+
+	name, err := syscall.UTF16PtrFromString(busy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := syscall.CreateFile(name, syscall.GENERIC_WRITE, syscall.FILE_SHARE_READ,
+		nil, syscall.OPEN_EXISTING, syscall.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.CloseHandle(handle)
+
+	allowed := func(path string, operation access.Operation) bool {
+		t.Helper()
+		result, err := access.Check(account, path, operation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.Allowed
+	}
+	if !allowed(busy, access.Write) || !allowed(inner, access.Create) {
+		t.Fatal("the account could not reach the file to begin with, so this proves nothing")
+	}
+
+	if err := Prune(account, root, nil); err != nil {
+		t.Fatalf("a file held open stopped the grant from being taken back: %v", err)
+	}
+
+	for _, c := range []struct {
+		path      string
+		operation access.Operation
+	}{
+		{busy, access.Write},
+		{busy, access.Delete},
+		{inner, access.Create},
+	} {
+		if allowed(c.path, c.operation) {
+			t.Errorf("%s on %s is still allowed after the grant was taken back",
+				c.operation, filepath.Base(c.path))
+		}
+	}
 }
