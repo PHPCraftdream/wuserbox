@@ -27,4 +27,8 @@ const (
 	FromRules Source = "rules"
 	// FromFlags is --rw or --ro on this command line.
 	FromFlags Source = "flags"
+	// FromState is a directory an existing sandbox's own record already
+	// holds, for a reason none of the sources above account for — a --grant
+	// given once, unrecorded anywhere else.
+	FromState Source = "existing"
 )

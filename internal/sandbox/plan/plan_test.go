@@ -153,6 +153,55 @@ func TestForSkipsTheProfileRootUnlessAsked(t *testing.T) {
 	}
 }
 
+// TestForSurfacesAnExistingGrantNothingElseExplains is the regression guard
+// for --dry-run on an already-built sandbox. A directory handed over once
+// with --grant lives only in the sandbox's own record, never in the rules
+// file, so a plan built solely from this command line's flags left it out
+// entirely.
+func TestForSurfacesAnExistingGrantNothingElseExplains(t *testing.T) {
+	emptyProfile(t)
+	grantedOnce := tempDir(t)
+	prepared, err := For(Input{
+		Group: "wub-test", Dir: tempDir(t), Temp: tempDir(t),
+		Existing: []grant.Spec{{Path: grantedOnce, Kind: grant.RW}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range prepared.Entries {
+		if strings.EqualFold(entry.Path, grantedOnce) {
+			if entry.Source != FromState {
+				t.Errorf("the entry is explained as %q, want %q", entry.Source, FromState)
+			}
+			return
+		}
+	}
+	t.Error("a directory only the existing record knows about is missing from the plan")
+}
+
+// TestForLetsAFreshSourceOverrideAnExistingOne keeps an existing entry from
+// shadowing a source that would still apply if the sandbox were built again
+// now.
+func TestForLetsAFreshSourceOverrideAnExistingOne(t *testing.T) {
+	emptyProfile(t)
+	project := tempDir(t)
+	prepared, err := For(Input{
+		Group: "wub-test", Dir: project, Temp: tempDir(t),
+		Existing: []grant.Spec{{Path: project, Kind: grant.RO}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range prepared.Entries {
+		if strings.EqualFold(entry.Path, project) {
+			if entry.Source != FromProject || entry.Kind != grant.RW {
+				t.Errorf("the project entry is %q/%q, want %q/%q",
+					entry.Kind, entry.Source, grant.RW, FromProject)
+			}
+		}
+	}
+}
+
 func TestWritableLeavesOutReadOnlyEntries(t *testing.T) {
 	p := Plan{Entries: []Entry{
 		{Path: `C:\a`, Kind: grant.RW},

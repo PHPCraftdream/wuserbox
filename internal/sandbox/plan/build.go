@@ -18,6 +18,12 @@ type Input struct {
 	RW, RO     []string
 	NoAI       bool
 	HomeWrites bool
+	// Existing is what an already-built sandbox's own record holds. Seeding
+	// the plan with it first is what lets a directory recorded nowhere else —
+	// a --grant given once, never written to the rules file — still show up:
+	// everything below that would apply on top of a fresh build still
+	// overrides it by path, so this only ever adds what nothing else explains.
+	Existing []grant.Spec
 }
 
 // For works out what the sandbox would hold, in the order the permissions
@@ -25,6 +31,9 @@ type Input struct {
 // changed, so this is safe to call before a sandbox exists.
 func For(in Input) (Plan, error) {
 	p := Plan{Group: in.Group, Dir: in.Dir, Temp: in.Temp}
+	for _, held := range in.Existing {
+		p.add(held.Path, held.Kind, FromState)
+	}
 	p.add(in.Temp, grant.RW, FromTemp)
 	p.add(in.Dir, grant.RW, FromProject)
 

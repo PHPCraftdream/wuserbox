@@ -170,6 +170,25 @@ func report(options sandbox.Options, format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "wuserbox: "+format+"\n", args...)
 }
 
+// previewInput is what Preview works its plan out from. A sandbox that
+// already exists decides its own NoAI and carries grants — a --grant given
+// once, say — that nothing else on this command line would reproduce. Built
+// only from this invocation's flags, a preview would show the agent preset a
+// saved --no-ai withheld, and leave out what --grant recorded nowhere else.
+func previewInput(options sandbox.Options, group, dir string, existing *state.State) plan.Input {
+	in := plan.Input{
+		Group: group, Dir: dir, Temp: filepath.Join(paths.StateDir(), "tmp", group),
+		RW: options.RW, RO: options.RO,
+		NoAI: options.NoAI, HomeWrites: options.HomeWrites,
+	}
+	if existing != nil {
+		in.Temp = existing.Temp
+		in.NoAI = existing.NoAI
+		in.Existing = existing.Grants
+	}
+	return in
+}
+
 // Preview prints what a sandbox would be given, and changes nothing. It is
 // what --dry-run reaches for on init and run.
 func Preview(options sandbox.Options) error {
@@ -177,15 +196,8 @@ func Preview(options sandbox.Options) error {
 	if err != nil {
 		return err
 	}
-	temp := filepath.Join(paths.StateDir(), "tmp", group)
-	if existing, err := state.Load(group); err == nil && existing != nil {
-		temp = existing.Temp
-	}
-	prepared, err := plan.For(plan.Input{
-		Group: group, Dir: dir, Temp: temp,
-		RW: options.RW, RO: options.RO,
-		NoAI: options.NoAI, HomeWrites: options.HomeWrites,
-	})
+	existing, _ := state.Load(group)
+	prepared, err := plan.For(previewInput(options, group, dir, existing))
 	if err != nil {
 		return err
 	}

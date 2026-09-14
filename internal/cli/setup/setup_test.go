@@ -429,6 +429,45 @@ func TestReconcilePresetHonoursTheSandboxsOwnDecision(t *testing.T) {
 	}
 }
 
+// TestPreviewInputReflectsWhatAnExistingSandboxActuallyHolds is the
+// regression guard for a --dry-run that showed a hypothetical sandbox rather
+// than the real one. Preview used to build its plan from this invocation's
+// own flags alone: a plain run's options.NoAI is always false, so a sandbox
+// saved with --no-ai still showed the agent preset; and a directory handed
+// over once with --grant lives only in the record, so it never appeared at
+// all.
+func TestPreviewInputReflectsWhatAnExistingSandboxActuallyHolds(t *testing.T) {
+	grantedOnce := `C:\granted-once`
+	existing := &state.State{
+		Dir: `C:\project`, Temp: `C:\temp`, NoAI: true,
+		Grants: []grant.Spec{{Path: grantedOnce, Kind: grant.RW}},
+	}
+	plainRun := sandbox.Options{Dir: existing.Dir}
+
+	in := previewInput(plainRun, "wub-test", existing.Dir, existing)
+	if !in.NoAI {
+		t.Error("a saved --no-ai was not carried into the preview")
+	}
+	found := false
+	for _, spec := range in.Existing {
+		if spec.Path == grantedOnce {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a directory granted once is missing from the preview's input")
+	}
+
+	// And a sandbox that does not exist yet still gets a sensible plan.
+	fresh := previewInput(plainRun, "wub-test", existing.Dir, nil)
+	if fresh.NoAI {
+		t.Error("a sandbox with no record should not start out as --no-ai")
+	}
+	if len(fresh.Existing) != 0 {
+		t.Error("a sandbox with no record has nothing existing to show")
+	}
+}
+
 // TestRebuildOptionsCarriesForwardAPersistedNoAIDecision is the regression
 // guard for the other place --no-ai can lapse. A run cannot carry the flag
 // either, and when the sandbox has to be rebuilt from scratch — the group is
