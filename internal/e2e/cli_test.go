@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -222,5 +223,40 @@ func TestCLIFullLifecycle(t *testing.T) {
 	}
 	if _, code := run("path", name); code == 0 {
 		t.Error("the group survived removal")
+	}
+}
+
+// TestCLIReportsAFailureAsJSONWhenAsked covers the whole path, because the
+// shape of a failure is decided in main rather than in the command that
+// failed. A script calling wuserbox with --json has to meet one shape whether
+// the command worked or not.
+func TestCLIReportsAFailureAsJSONWhenAsked(t *testing.T) {
+	command := binary(t)
+	output, err := exec.Command(command, "nonsense", "--json").CombinedOutput()
+	if err == nil {
+		t.Fatal("an unknown command should fail")
+	}
+	var reported struct {
+		Error  string `json:"error"`
+		Code   int    `json:"code"`
+		Status string `json:"status"`
+	}
+	if jsonErr := json.Unmarshal(output, &reported); jsonErr != nil {
+		t.Fatalf("the failure is not JSON: %v (%q)", jsonErr, output)
+	}
+	if reported.Code != 2 || reported.Status != "usage" {
+		t.Errorf("the failure came back as %d/%q", reported.Code, reported.Status)
+	}
+	if !strings.Contains(reported.Error, "nonsense") {
+		t.Errorf("the message does not say what was wrong: %q", reported.Error)
+	}
+
+	// Without the flag it stays a line of prose, as it always was.
+	plain, err := exec.Command(command, "nonsense").CombinedOutput()
+	if err == nil {
+		t.Fatal("an unknown command should fail")
+	}
+	if !strings.HasPrefix(string(plain), "wuserbox: ") {
+		t.Errorf("the plain failure changed shape: %q", plain)
 	}
 }

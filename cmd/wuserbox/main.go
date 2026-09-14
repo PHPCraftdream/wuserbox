@@ -4,7 +4,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/PHPCraftdream/wuserbox/internal/cli"
@@ -13,8 +12,11 @@ import (
 
 func main() {
 	useBundledLibrary()
-	if err := cli.Execute(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "wuserbox:", err)
+	args := os.Args[1:]
+	if err := cli.Execute(args); err != nil {
+		// Reported the way it was asked for: a command called with --json
+		// answers in JSON whether it worked or not.
+		exit.Report(os.Stderr, err, exit.JSONAsked(args))
 		os.Exit(int(exit.Of(err)))
 	}
 }

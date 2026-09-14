@@ -257,3 +257,16 @@ func TestRemoveSandboxFinishesWhenAGrantedDirectoryIsGone(t *testing.T) {
 		t.Errorf("the record survived a successful removal: %v", err)
 	}
 }
+
+// TestRmRefusesADirectoryGivenAsAnArgument is the regression guard for a
+// command given a directory as an argument: it ignored the path and removed
+// the sandbox of the current directory instead.
+func TestRmRefusesADirectoryGivenAsAnArgument(t *testing.T) {
+	err := Rm([]string{t.TempDir(), "--dry-run"})
+	if got := exit.Of(err); got != exit.Usage {
+		t.Fatalf("exit code is %v, want %v (error: %v)", got, exit.Usage, err)
+	}
+	if !strings.Contains(err.Error(), "--dir") {
+		t.Errorf("the message does not say how to name a project: %v", err)
+	}
+}

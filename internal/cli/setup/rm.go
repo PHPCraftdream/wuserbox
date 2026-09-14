@@ -31,6 +31,14 @@ func Rm(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return exit.Errorf(exit.Usage, "%v", err)
 	}
+	// The project is named with --dir, never as a plain argument. Taking one
+	// silently would remove the sandbox of the current directory while the
+	// command line says another, and this command deletes things.
+	if flags.NArg() > 0 {
+		return exit.Errorf(exit.Usage,
+			"wuserbox rm takes no directory as an argument; "+
+				"name the project with --dir %s", flags.Arg(0))
+	}
 	if *nonInteractive {
 		_ = os.Setenv(EnvNonInteractive, "1")
 	}
