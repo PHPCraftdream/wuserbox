@@ -103,6 +103,13 @@ too, until `wuserbox revoke` takes it back. Nothing is given up when the
 process ends: a permission that vanished whenever a run was interrupted would
 be a promise the tool could not keep.
 
+What you ask for outranks the agent preset. Narrowing one of the directories
+the preset hands over, say `wuserbox grant ~/.claude --ro`, stays narrow: later
+runs apply the preset again and leave that decision alone.
+
+Directory names are taken as written when they name something that exists, so
+a project called `build$STAGE` is that project and not `build`.
+
 Directories may be written in any usual form, and the option order does not
 matter:
 

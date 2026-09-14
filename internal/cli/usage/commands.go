@@ -88,7 +88,11 @@ to the rules file, so it does not follow the project to another machine;
 use "add-dir" for that.
 
 Administrator rights are asked for only if you do not own the target
-directory.`,
+directory.
+
+What you ask for here outranks the agent preset. Narrowing one of the
+directories the preset hands over, say "grant ~/.claude --ro", stays
+narrow: later runs apply the preset again and leave your decision alone.`,
 		Options: []Option{
 			{"--ro", "read access only, no writing"},
 			{"--dry-run", "show what would change, change nothing"},
@@ -216,7 +220,12 @@ renamed or deleted; remove one with "rm --dir <directory>".`,
 temporary directory and its bookkeeping, and removes the group.
 
 Your files stay where they are. The rules file keeps its entries, so
-starting the project again rebuilds the same sandbox.`,
+starting the project again rebuilds the same sandbox.
+
+If something will not go, usually a temporary directory another program
+still has open, the command says so and fails with exit code 1. The
+bookkeeping and the group are left alone in that case, because they are
+what a second run needs to finish the removal.`,
 		Options: []Option{
 			{"--dry-run", "show what would change, change nothing"},
 			{"--json", "print the result as JSON instead of lines"},
@@ -311,7 +320,12 @@ quietly costs write access, a project written out more than once, where
 only the first rule is ever applied, and directories that no longer
 exist. The
 last is reported apart from the rest, because a directory going away is
-not a mistake in the file. A real problem ends with exit code 5.`,
+not a mistake in the file. A real problem ends with exit code 5.
+
+With --dir the whole file is still read and only the answer is narrowed,
+so a project written out twice is still reported against that project.
+A project with no rule at all ends with exit code 6, in both show and
+validate, rather than passing for having nothing to check.`,
 		Options: []Option{
 			{"--dir <d>", "show or check one project's rule only"},
 			{"--json", "print the result as JSON instead of lines"},
@@ -320,6 +334,7 @@ not a mistake in the file. A real problem ends with exit code 5.`,
 			`wuserbox config show`,
 			`wuserbox config path`,
 			`wuserbox config validate --json`,
+			`wuserbox config validate --dir .`,
 		},
 	},
 	{
