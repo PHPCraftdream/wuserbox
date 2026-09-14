@@ -195,15 +195,17 @@ func TestCLIFullLifecycle(t *testing.T) {
 		t.Errorf("list did not mention the new sandbox: %q", out)
 	}
 
+	// The sandbox was built with --no-ai above, and a run takes it as it
+	// stands: the flags that say what a sandbox is belong to init.
 	inside := filepath.Join(project, "written.txt")
-	if out, code := run("run", "--no-ai", "--", "cmd.exe", "/c", "echo ok>"+inside); code != 0 {
+	if out, code := run("cmd.exe", "/c", "echo ok>"+inside); code != 0 {
 		t.Errorf("writing inside the project failed: %s", out)
 	}
 	if _, err := os.Stat(inside); err != nil {
 		t.Errorf("file was not created: %v", err)
 	}
 	blocked := filepath.Join(outside, "escaped.txt")
-	if _, code := run("run", "--no-ai", "--", "cmd.exe", "/c", "echo ok>"+blocked); code == 0 {
+	if _, code := run("cmd.exe", "/c", "echo ok>"+blocked); code == 0 {
 		t.Error("writing outside the sandbox succeeded")
 		os.Remove(blocked)
 	}
@@ -213,8 +215,15 @@ func TestCLIFullLifecycle(t *testing.T) {
 		t.Fatalf("add-dir failed: %s", out)
 	}
 	allowed := filepath.Join(extra, "written.txt")
-	if out, code := run("run", "--no-ai", "--", "cmd.exe", "/c", "echo ok>"+allowed); code != 0 {
+	if out, code := run("cmd.exe", "/c", "echo ok>"+allowed); code != 0 {
 		t.Errorf("writing to the added directory failed: %s", out)
+	}
+
+	// And the flags that configure are refused on a run, with the command to
+	// use instead.
+	if out, code := run("--no-ai", "cmd.exe", "/c", "echo hi"); code == 0 ||
+		!strings.Contains(out, "init --no-ai") {
+		t.Errorf("configuring on a run was not refused: %q (exit %d)", out, code)
 	}
 
 	if out, code := run("rm"); code != 0 {
