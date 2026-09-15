@@ -23,7 +23,12 @@ func ProtectSettings(s *state.State) error {
 	if err := ensureRules(); err != nil {
 		return err
 	}
-	targets := append([]string{config.Path(), state.Path(s.Group)}, preset.Sensitive()...)
+	// The copy kept behind the record says the same things about the same
+	// directories, so it is protected on the same terms: a sandbox that could
+	// rewrite it could describe itself as holding whatever it liked to the one
+	// command that reads it.
+	own := []string{config.Path(), state.Path(s.Group), state.PreviousPath(s.Group)}
+	targets := append(own, preset.Sensitive()...)
 	var failures []string
 	for _, path := range targets {
 		if _, err := os.Stat(path); err != nil {

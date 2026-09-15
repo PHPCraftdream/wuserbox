@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -85,7 +86,7 @@ func removeSandbox(name string, asJSON bool) error {
 }
 
 func remove(name string, asJSON bool) error {
-	s, err := state.Load(name)
+	s, damaged, err := recordFor(name, asJSON)
 	if err != nil {
 		return err
 	}
@@ -99,7 +100,9 @@ func remove(name string, asJSON bool) error {
 				"%s was not fully removed and is left in place so `wuserbox --rm` can finish it: %s",
 				name, strings.Join(left, ", "))
 		}
-		if err := os.Remove(state.Path(name)); err != nil && !os.IsNotExist(err) {
+	}
+	if s != nil || damaged {
+		if err := discardRecord(name); err != nil {
 			return exit.Errorf(exit.Failed,
 				"the permissions of %s are revoked, but its record at %s remains: %v",
 				name, state.Path(name), err)
@@ -112,22 +115,62 @@ func remove(name string, asJSON bool) error {
 	if !exists {
 		return nil
 	}
-	if s == nil {
-		// The record is gone and the group is not, so nothing here knows what
-		// the sandbox was ever given. Deleting the group anyway left every
-		// entry naming it behind, on paths nothing can name afterwards: the
-		// identifier those entries hold is about to stop resolving, and no
+	if s == nil || damaged {
+		// The record is gone, or it was damaged and the copy behind it is a
+		// save short, and the group is not gone. Deleting the group anyway left
+		// every entry naming it behind, on paths nothing can name afterwards:
+		// the identifier those entries hold is about to stop resolving, and no
 		// later command could find them by it.
 		//
 		// The group itself remembers one thing -- the directory it belongs to,
 		// in its own comment -- so that much can still be cleared. Anything
 		// handed over outside that directory cannot be, and the caller is told
 		// so rather than left with a success that means less than it looks.
+		// Doing it after a recovered record costs nothing and covers the one
+		// grant most likely to be missing from it, since taking back what is
+		// not there is not an error.
 		if err := clearOrphans(name, dir, asJSON); err != nil {
 			return err
 		}
 	}
 	return group.Delete(name)
+}
+
+// recordFor reads the record for removal, and says whether what came back is
+// all there was.
+//
+// Every other command stops on a record it cannot read, and should: acting on
+// a sandbox whose permissions are unknown is how permissions get left behind.
+// Removal is the one command that must go on anyway, because leaving them
+// behind is exactly what it is there to prevent, and refusing made the sandbox
+// impossible to remove at all.
+func recordFor(name string, asJSON bool) (*state.State, bool, error) {
+	s, err := state.Load(name)
+	var unreadable *state.Damaged
+	if !errors.As(err, &unreadable) {
+		return s, false, err
+	}
+	if !asJSON {
+		recovered := "nothing is left naming what it was handed"
+		if unreadable.Previous != nil {
+			recovered = "going on with the copy from before the last save, " +
+				"which may be one grant short"
+		}
+		fmt.Fprintf(os.Stderr, "wuserbox: %v; %s\n", unreadable, recovered)
+	}
+	return unreadable.Previous, true, nil
+}
+
+// discardRecord deletes the record and the copy kept beside it. A copy left
+// behind outlives the sandbox it describes and keeps naming directories that
+// no longer answer to it.
+func discardRecord(name string) error {
+	for _, path := range []string{state.Path(name), state.PreviousPath(name)} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // clearOrphans takes a sandbox's entries off the directory its group belongs

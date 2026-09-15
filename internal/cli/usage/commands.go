@@ -252,7 +252,14 @@ starting the project again rebuilds the same sandbox.
 If something will not go, usually a temporary directory another program
 still has open, the command says so and fails with exit code 1. The
 bookkeeping and the group are left alone in that case, because they are
-what a second run needs to finish the removal.`,
+what a second run needs to finish the removal.
+
+If the bookkeeping itself cannot be read, this is the one command that
+carries on anyway, because leaving permissions behind is what it is here
+to prevent. It says so, works from the copy kept behind the record, and
+clears the project directory as well. Anything handed over elsewhere
+after that copy was made cannot be found by anything, and the command
+says that too rather than reporting a clean removal.`,
 		Options: []Option{
 			{"--dry-run", "show what would change, change nothing"},
 			{"--json", "print the result as JSON instead of lines"},

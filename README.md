@@ -400,6 +400,23 @@ returned, so the code you read after it is the sandboxed program's own.
   ~/.config --ro` outranks the preset and stays.
 * **Renaming the project directory** changes the group, leaving the old sandbox
   behind. `wuserbox --list` shows it, `wuserbox --rm --dir <old>` removes it.
+* **A record that cannot be read is not a sandbox that never was.** What a
+  sandbox holds is written in one file per sandbox, and the entries it names
+  sit on directories all over the disk with nothing else pointing at them. A
+  copy of that file from before the last save is kept beside it, so a record
+  that stops parsing still has something behind it naming those directories,
+  and `wuserbox --rm` says what happened and finishes with the copy instead of
+  refusing to run. Every other command stops there on purpose: acting on a
+  sandbox whose permissions are unknown is how permissions get left behind.
+  If both the record and the copy are gone, only the project directory can
+  still be cleared — the group's own comment remembers that much — and removal
+  says so rather than reporting a success that means less than it looks.
+* **Handing over a directory reads all of it.** Every object under it is looked
+  at before anything is changed, and the ones that answer to nobody above are
+  written, so the cost grows with the number of objects in the tree and not
+  with its depth. On an ordinary project it is not noticeable. What it costs on
+  a tree of hundreds of thousands of files has not been measured, only reasoned
+  about, so that is said here rather than turned into a number nobody took.
 
 ## Layout
 

@@ -914,3 +914,74 @@ func TestOfferManyNarrowsOneAtATime(t *testing.T) {
 		t.Errorf("the directory inside is still writable: %s", answer.Reason)
 	}
 }
+
+// TestADamagedRecordIsToldApartFromNoRecordAtAll is the difference the callers
+// depend on. No record means no sandbox, and starting a fresh one is right. A
+// record that will not parse means a sandbox exists with permissions in force
+// on directories only that file names, and treating it as absent hands out a
+// new one and abandons them.
+func TestADamagedRecordIsToldApartFromNoRecordAtAll(t *testing.T) {
+	s := newState(t)
+	if absent, err := Load(s.Group); absent != nil || err != nil {
+		t.Fatalf("a sandbox that was never there gave (%v, %v)", absent, err)
+	}
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(Path(s.Group), []byte("{ not a record"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(s.Group)
+	var damaged *Damaged
+	if !errors.As(err, &damaged) {
+		t.Fatalf("a record that will not parse gave (%v, %v)", loaded, err)
+	}
+	if loaded != nil {
+		t.Error("a damaged record came back as a record as well as an error")
+	}
+	if !strings.Contains(damaged.Error(), Path(s.Group)) {
+		t.Errorf("the error does not say which file it is: %q", damaged.Error())
+	}
+}
+
+// TestTheCopyBehindARecordNamesWhatTheRecordNoLongerCan is what makes a
+// damaged record recoverable: the directories a sandbox holds are named in
+// that file and nowhere else, so a copy from before the last save is the only
+// thing standing between a damaged record and permissions nothing can find.
+func TestTheCopyBehindARecordNamesWhatTheRecordNoLongerCan(t *testing.T) {
+	s := newState(t)
+	held := t.TempDir()
+	s.Grants = []grant.Spec{{Path: held, Kind: grant.RW, Explicit: true}}
+	// One save writes the record; the second is what leaves a copy behind it.
+	for i := 0; i < 2; i++ {
+		if err := s.Save(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(Path(s.Group), []byte("{ not a record"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var damaged *Damaged
+	if _, err := Load(s.Group); !errors.As(err, &damaged) {
+		t.Fatalf("expected a damaged record, got %v", err)
+	}
+	if damaged.Previous == nil {
+		t.Fatal("nothing was kept behind the record, so the grants in it are unreachable")
+	}
+	if len(damaged.Previous.Grants) != 1 || !strings.EqualFold(damaged.Previous.Grants[0].Path, held) {
+		t.Errorf("the copy remembers %v, not %s", damaged.Previous.Grants, held)
+	}
+
+	// A copy that is damaged too is not a half-answer: the caller is told there
+	// is nothing behind the record rather than being handed a broken one.
+	if err := os.WriteFile(PreviousPath(s.Group), []byte("{ also not a record"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(s.Group); !errors.As(err, &damaged) {
+		t.Fatalf("expected a damaged record, got %v", err)
+	}
+	if damaged.Previous != nil {
+		t.Error("a copy that will not parse came back as one that would")
+	}
+}
