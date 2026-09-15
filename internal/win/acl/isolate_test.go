@@ -513,3 +513,40 @@ func TestAllowLinksHandsTheTreeOverAnyway(t *testing.T) {
 		t.Error("the grant was not written even though links were allowed")
 	}
 }
+
+// TestAGrantAllowsALinkThatStaysInsideTheTree is the other side of the guard
+// above, and the reason it asks where the other name is rather than how many
+// there are.
+//
+// Refusing on any second name refused the ordinary case. Package managers
+// deduplicate inside one directory -- two agents under ~/.config sharing one
+// copy of a library, one agent's file history sharing a version between
+// sessions -- and that is thousands of files in the very directories the
+// preset hands over, none of them reaching outside. Measured on a real
+// profile, after the strict form made `--init` fail on it.
+func TestAGrantAllowsALinkThatStaysInsideTheTree(t *testing.T) {
+	granted := t.TempDir()
+	first := filepath.Join(granted, "one", "shared.txt")
+	if err := os.MkdirAll(filepath.Dir(first), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(first, []byte("shared"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := filepath.Join(granted, "two", "shared.txt")
+	if err := os.MkdirAll(filepath.Dir(second), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("cmd", "/c", "mklink", "/H", second, first).CombinedOutput(); err != nil {
+		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
+	}
+
+	if err := Isolate(granted, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers); err != nil {
+		t.Fatalf("a tree whose links all stay inside it was refused: %v", err)
+	}
+	if !holds(t, granted, unusedAccount, "(M)") {
+		t.Error("the grant was not written")
+	}
+}

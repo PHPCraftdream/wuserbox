@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -52,6 +53,12 @@ func sweep(root string, everyone, users, holder uintptr) error {
 	})
 }
 
+var (
+	procFindFirstFileName = w32.Kernel32.NewProc("FindFirstFileNameW")
+	procFindNextFileName  = w32.Kernel32.NewProc("FindNextFileNameW")
+	procFindClose         = w32.Kernel32.NewProc("FindClose")
+)
+
 // EnvAllowLinks hands the tree over even where a file in it answers to another
 // name as well. It is read for the whole process, the way the switch for
 // prompts is, so that it survives wuserbox starting itself again with
@@ -77,7 +84,7 @@ func inspect(root string) error {
 		if err != nil {
 			return fmt.Errorf("looking at %s: %w", root, err)
 		}
-		if err := oneName(root, info.IsDir()); err != nil {
+		if err := insideOnly(root, root, info.IsDir()); err != nil {
 			return err
 		}
 	}
@@ -88,7 +95,7 @@ func inspect(root string) error {
 		if !counting {
 			return nil
 		}
-		return oneName(path, entry.IsDir())
+		return insideOnly(root, path, entry.IsDir())
 	})
 }
 
@@ -145,25 +152,31 @@ func workers() int {
 	return most
 }
 
-// oneName refuses a file that answers to more than one name.
+// insideOnly refuses a file that answers to a name outside the tree being
+// handed over.
 //
 // A hard link is not a second file. It is a second name for the same one, and
 // a permission list belongs to the file rather than to the name, so handing a
-// directory over hands over every name the files in it have -- including the
-// ones outside the directory, which is the whole of the boundary. Windows
-// propagates the inheritable entry into the file itself, and the outside name
-// then leads to a list that says the sandbox may write and delete. Measured,
-// with icacls on the outside name.
+// directory over hands over every name the files in it have. Windows
+// propagates the inheritable entry into the file itself, and a name outside
+// the tree then leads to a list that says the sandbox may write and delete
+// there. Measured, with icacls on the outside name.
+//
+// Where the other names are all inside the same tree, nothing reaches further
+// than the grant already does, and this passes. That distinction is not a
+// refinement: refusing on any second name turned out to refuse the ordinary
+// case. Package managers deduplicate inside one directory -- two agents under
+// ~/.config sharing one copy of a library, one agent's file history sharing a
+// version between sessions -- which is thousands of files in the very
+// directories the preset hands over, and not one of them reaches outside.
+// Measured, on a real profile, after the strict form made `--init` fail.
 //
 // The sandbox cannot make such a link itself against anything it may not
 // already write, so this is not a way out that a sandbox takes: it is a grant
-// reaching further than it says. Ordinary tools leave them behind -- a local
-// `git clone` links the objects it copies, pnpm links its store into
-// node_modules -- and in both of those the other name lies outside the
-// project, which is exactly the case that matters.
+// reaching further than it says.
 //
 // Directories are passed over because NTFS does not give one a second name.
-func oneName(path string, isDir bool) error {
+func insideOnly(root, path string, isDir bool) error {
 	if isDir {
 		return nil
 	}
@@ -171,14 +184,78 @@ func oneName(path string, isDir bool) error {
 	if err != nil {
 		return err
 	}
-	if names > 1 {
+	if names == 1 {
+		return nil
+	}
+	others, err := otherNames(path)
+	if err != nil {
+		// The count says there is another name and asking which went wrong,
+		// so nothing here can say where it is. That is the one case where the
+		// count alone has to decide, and it decides against handing over.
 		return fmt.Errorf(
-			"%s is one of %d names for the same file, and handing this directory over "+
-				"would hand over all of them, wherever they are; move it aside, "+
+			"%s is one of %d names for the same file and the others could not be read (%w); "+
+				"handing this directory over may hand over a file outside it, "+
+				"so it is refused; pass --allow-links to hand it over regardless",
+			path, names, err)
+	}
+	for _, other := range others {
+		if within(root, other) {
+			continue
+		}
+		return fmt.Errorf(
+			"%s is also named %s, which is outside %s, and handing this directory over "+
+				"would hand that one over too; move it aside, "+
 				"or pass --allow-links to hand the directory over regardless",
-			path, names)
+			path, other, root)
 	}
 	return nil
+}
+
+// within reports whether path is root or lies under it.
+func within(root, path string) bool {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	if strings.EqualFold(root, path) {
+		return true
+	}
+	prefix := root
+	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+		prefix += string(filepath.Separator)
+	}
+	return strings.HasPrefix(strings.ToLower(path), strings.ToLower(prefix))
+}
+
+// otherNames lists every name the file at path answers to, as full paths.
+//
+// Windows gives them relative to the volume root, and a hard link cannot cross
+// volumes, so the volume of the path that was asked about is the volume of
+// them all.
+func otherNames(path string) ([]string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	volume := filepath.VolumeName(absolute)
+
+	buffer := make([]uint16, syscall.MAX_LONG_PATH)
+	length := uint32(len(buffer))
+	handle, _, callErr := procFindFirstFileName.Call(
+		uintptr(unsafe.Pointer(w32.UTF16(absolute))), 0,
+		uintptr(unsafe.Pointer(&length)), uintptr(unsafe.Pointer(&buffer[0])))
+	if handle == uintptr(syscall.InvalidHandle) {
+		return nil, fmt.Errorf("listing the names of %s: %w", absolute, callErr)
+	}
+	defer procFindClose.Call(handle)
+
+	var found []string
+	for {
+		found = append(found, volume+syscall.UTF16ToString(buffer))
+		length = uint32(len(buffer))
+		if r, _, _ := procFindNextFileName.Call(handle,
+			uintptr(unsafe.Pointer(&length)), uintptr(unsafe.Pointer(&buffer[0]))); r == 0 {
+			return found, nil
+		}
+	}
 }
 
 // namesOf is how many names the file at path answers to.
