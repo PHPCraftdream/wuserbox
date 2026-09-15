@@ -68,18 +68,46 @@ limit, not this investigation.
   execute, and that identity is in the restricting list. `bash.exe` starts far
   enough to print its own error.
 
-## The leading hypothesis, not yet tested
+## The mechanism
 
-The probe above created its pipe with Win32 `CreateNamedPipeW`, which opens by
-full path. Cygwin does it differently: it opens the NPFS **root directory**,
-`\Device\NamedPipe\`, once with `NtOpenFile`, caches that handle, and creates
-each pipe with `NtCreateNamedPipeFile` relative to it. Opening that root as a
-directory is an access the probe never performed, and a restricted token is
-checked against it twice like everything else.
+An earlier note here guessed that Cygwin opens the NPFS root directory,
+`\Device\NamedPipe\`, and creates its pipes relative to that handle, and that
+opening the root was what got denied. **That guess was wrong**, and it is
+recorded rather than deleted because it is the kind of guess worth not making
+twice: it was plausible, it explained the symptom, and it was not what was
+happening.
 
-If that is the mechanism, the question becomes which identity
-`\Device\NamedPipe` grants, and whether one of them can join the restricting
-list without opening the file boundary.
+What actually happens is simpler and worse. The MSYS runtime creates its signal
+pipe with `CreateNamedPipe`, passing a security descriptor **it builds itself**
+naming the user, `SYSTEM` and `Administrators` — and no other identity. It then
+opens the other end of its own pipe with `CreateFile`. Creating succeeds;
+opening is a fresh access check, the restricted token is checked twice as
+always, and the second check finds nothing in that descriptor that the
+restricting list carries. Access denied, and the runtime dies before `main`.
+
+The token's default DACL, which wuserbox sets so that objects a sandbox creates
+are reachable, does not help: it applies only where a program passes no
+descriptor of its own, and this one does.
+
+Measured directly, in a probe under a live sandbox, which creates a pipe and
+then opens its own other end:
+
+| Permission list on the pipe | Result |
+| --- | --- |
+| the user alone | created; **opening its own end denied** |
+| `Everyone` | created; opened |
+| the user and the sandbox group | created; opened |
+
+Outside a sandbox all three succeed. The `CreateFileMapping` failure is the
+same story one object earlier: the runtime names its shared section after the
+user's SID, so an ordinary run meets a section an unsandboxed MSYS process
+already made, with a descriptor of the same shape.
+
+The last row matters: the object becomes reachable the moment the sandbox's own
+identity appears in the list. A process under a restricted token can read that
+identity out of its own token — `GetTokenInformation(TokenRestrictedSids)`
+returned it in the probe — so a program that wanted to cooperate could. The MSYS
+runtime does not, and cannot be told to.
 
 ## Why the obvious fixes are not fixes
 
@@ -96,8 +124,49 @@ list without opening the file boundary.
   a second time, so a sandbox could delete wherever the user's own account
   already may.
 
+- **Adding `SYSTEM` or `Administrators`**, the two other identities the MSYS
+  descriptor names, is worse than it looks. The files wuserbox protects — the
+  rules file, the bookkeeping, the credentials in the profile root — are
+  written with a list that gives both of those Full Control, on purpose,
+  so that the machine's owner can still repair them. Putting either in the
+  restricting list hands the sandbox the very files the boundary exists to
+  keep it away from.
+
 Narrow identities — `INTERACTIVE`, the logon session, something per-sandbox —
-are the direction worth measuring.
+are the direction worth measuring, but none of them appears in the descriptor
+the runtime writes, so none of them can help with this particular object.
+
+## Two directions, and what rules one of them out
+
+**Patch the runtime.** Ship an MSYS runtime that reads the sandbox identity out
+of its own token and adds it to the descriptors of the objects it makes. It
+would work, and it costs a fork of `msys-2.0.dll` to carry forever, a matching
+set of MSYS binaries, and a way to make every MSYS program load that copy
+rather than the one Git for Windows installed. Selecting it through one coding
+agent's own setting would be quicker and is not acceptable: wuserbox must not
+be tied to a particular agent, and a fix that works only for the shell one
+product happens to spawn is not a fix for the tool.
+
+**Give the sandbox an identity of its own.** Run the program as a local account
+per project rather than as the user under a restricted token. Then the runtime
+builds its descriptors around an identity that really is the process's own, and
+every one of these failures disappears at the source — MSYS, the registry,
+anything else that reasons about "the user". Reading is not lost with it:
+`wub-read`, the machine-wide group with no members that the profile already
+grants read to, becomes an ordinary membership instead of a restricting
+identity.
+
+What that costs has to be worked out before it is chosen: a local account per
+project and its password, files created under a different owner, a separate
+`HKEY_CURRENT_USER`, and the user's stored credentials no longer reachable from
+inside. The last is the one to think hardest about, because an agent that
+cannot use the credentials you use is a different tool from the one described
+at the top of the README.
+
+## Status
+
+The mechanism is settled and measured. The direction is not. Nothing in the
+program has been changed for it.
 
 ## What a fix has to keep
 
