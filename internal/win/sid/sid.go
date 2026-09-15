@@ -3,6 +3,7 @@ package sid
 
 import (
 	"fmt"
+	"syscall"
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
@@ -10,6 +11,7 @@ import (
 
 var (
 	procLookupAccountName     = w32.Advapi32.NewProc("LookupAccountNameW")
+	procLookupAccountSid      = w32.Advapi32.NewProc("LookupAccountSidW")
 	procConvertSidToStringSid = w32.Advapi32.NewProc("ConvertSidToStringSidW")
 )
 
@@ -41,6 +43,35 @@ func (v Value) String() string {
 		return ""
 	}
 	return format(uintptr(unsafe.Pointer(&v[0])))
+}
+
+// Name resolves a SID pointer back to the bare account name, without the
+// domain or computer name Windows spells in front of it.
+//
+// It takes a raw pointer rather than a Value, because both of this
+// package's own forms of SID -- the bytes Lookup fills in, and the memory
+// Windows itself hands back from Parse -- already are one: a Value's is
+// &v[0], Parse's is the pointer Parse returns.
+//
+// A caller needs this rather than a hard-coded name because a well-known
+// alias is only ever spelled "Users" or "Administrators" on an
+// English-language install; account.BuiltinUsersName is why this exists.
+func Name(pointer uintptr) (string, error) {
+	var nameLen, domainLen, use uint32
+	procLookupAccountSid.Call(0, pointer, 0, uintptr(unsafe.Pointer(&nameLen)),
+		0, uintptr(unsafe.Pointer(&domainLen)), uintptr(unsafe.Pointer(&use)))
+	if nameLen == 0 {
+		return "", fmt.Errorf("resolving the account name: not found")
+	}
+	name := make([]uint16, nameLen)
+	domain := make([]uint16, domainLen+1)
+	r, _, err := procLookupAccountSid.Call(0, pointer, uintptr(unsafe.Pointer(&name[0])),
+		uintptr(unsafe.Pointer(&nameLen)), uintptr(unsafe.Pointer(&domain[0])),
+		uintptr(unsafe.Pointer(&domainLen)), uintptr(unsafe.Pointer(&use)))
+	if r == 0 {
+		return "", fmt.Errorf("resolving the account name: %w", err)
+	}
+	return syscall.UTF16ToString(name), nil
 }
 
 // format renders a SID that Windows owns.

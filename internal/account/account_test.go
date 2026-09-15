@@ -1,0 +1,225 @@
+package account
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/PHPCraftdream/wuserbox/internal/win/group"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
+	"github.com/PHPCraftdream/wuserbox/internal/win/token"
+)
+
+// testGroup and testName name the local group and account this test may
+// create and delete. Unmistakable on purpose, the way group's own selftest
+// name is: nothing else on a real machine should ever be named either of
+// these.
+const (
+	testGroup = group.Prefix + "acct-selftest-0000dead"
+	testName  = Prefix + "slftstdead" // 10 characters after "wub-": well under 20
+)
+
+func requireAdmin(t *testing.T) {
+	t.Helper()
+	if !token.IsAdmin() {
+		t.Skip("creating a local account needs administrator rights")
+	}
+}
+
+func TestNameForKeepsOnlyTheTrailingHash(t *testing.T) {
+	groupName := group.Prefix + "my-great-project-a1b2c3d4"
+	got := NameFor(groupName)
+	if len(got) > 20 {
+		t.Errorf("NameFor(%q) = %q, %d characters: NetUserAdd caps a name at 20", groupName, got, len(got))
+	}
+	if !strings.HasSuffix(got, "a1b2c3d4") {
+		t.Errorf("NameFor(%q) = %q, lost the hash that keeps two projects apart", groupName, got)
+	}
+	if got == groupName {
+		t.Errorf("NameFor(%q) returned the group's own name: an account cannot share it", groupName)
+	}
+}
+
+func TestNameForNeverCollidesWithItsGroup(t *testing.T) {
+	// Every real group name carries a slug and a separating hyphen before
+	// the hash -- slug() falls back to "root" rather than leaving it empty
+	// -- so an account name, which drops the slug entirely, is always
+	// shorter than any group name sandbox.Name actually produces.
+	for _, groupName := range []string{
+		group.Prefix + "root-deadbeef",
+		group.Prefix + "a-deadbeef",
+	} {
+		if NameFor(groupName) == groupName {
+			t.Errorf("NameFor(%q) collided with its own group name", groupName)
+		}
+	}
+	// A name with nothing but the hash after the prefix -- shorter than any
+	// group name can be, and shorter than or equal to hashLen -- takes the
+	// fallback branch and is returned unchanged with the prefix repeated,
+	// which is fine: sandbox.Name never produces anything this short.
+	if got := NameFor(group.Prefix + "dead"); got != group.Prefix+group.Prefix+"dead" {
+		t.Errorf("NameFor of a too-short name changed shape unexpectedly: got %q", got)
+	}
+}
+
+func TestGeneratePasswordMeetsWindowsComplexity(t *testing.T) {
+	password, err := GeneratePassword()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(password) < 14 {
+		t.Errorf("password is %d characters, shorter than a common minimum policy", len(password))
+	}
+	var hasUpper, hasLower, hasDigit, hasSymbol bool
+	for _, r := range password {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			hasUpper = true
+		case r >= 'a' && r <= 'z':
+			hasLower = true
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		default:
+			hasSymbol = true
+		}
+	}
+	if !hasUpper || !hasLower || !hasDigit || !hasSymbol {
+		t.Errorf("password %q does not carry all four character classes", password)
+	}
+}
+
+func TestGeneratePasswordDoesNotRepeatItself(t *testing.T) {
+	first, err := GeneratePassword()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := GeneratePassword()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Error("two generated passwords were identical")
+	}
+}
+
+func TestProtectAndUnprotectRoundTrips(t *testing.T) {
+	const password = `tr0ub4dor&3!QUICK`
+	sealed, err := Protect(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sealed == password {
+		t.Error("the sealed value is the plain password")
+	}
+	opened, err := Unprotect(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened != password {
+		t.Errorf("got %q back, want %q", opened, password)
+	}
+}
+
+func TestUnprotectRejectsGarbage(t *testing.T) {
+	if _, err := Unprotect("not-valid-base64-!!!"); err == nil {
+		t.Error("expected an error decoding nonsense")
+	}
+	if _, err := Unprotect("dGhpcyBpcyBub3QgYSBzZWFsZWQgYmxvYg=="); err == nil {
+		t.Error("expected an error unsealing bytes DPAPI never sealed")
+	}
+}
+
+func TestAddNeedsAdministratorRights(t *testing.T) {
+	if token.IsAdmin() {
+		t.Skip("this check is about the unprivileged case")
+	}
+	err := Add(testName, `C:\nowhere`, "wH4tever-Pwd1")
+	if err == nil {
+		_ = Delete(testName)
+		t.Fatal("a local account was created without administrator rights")
+	}
+	if !strings.Contains(err.Error(), "administrator") {
+		t.Errorf("unhelpful message: %v", err)
+	}
+}
+
+func TestLifecycle(t *testing.T) {
+	requireAdmin(t)
+	const dir = `C:\projects\selftest`
+
+	if err := group.Add(testGroup, dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = group.Delete(testGroup) })
+
+	password, err := GeneratePassword()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Add(testName, dir, password); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = Delete(testName) })
+
+	if _, err := sid.Lookup(testName); err != nil {
+		t.Fatalf("the new account was not found: %v", err)
+	}
+
+	builtinUsers, err := BuiltinUsersName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureMembership(testName, testGroup, builtinUsers); err != nil {
+		t.Fatal(err)
+	}
+	// Idempotent: running it again over memberships already held must not
+	// be reported as a failure.
+	if err := EnsureMembership(testName, testGroup, builtinUsers); err != nil {
+		t.Fatalf("re-asserting the same memberships failed: %v", err)
+	}
+
+	members, err := Members(testGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, m := range members {
+		if strings.EqualFold(m, testName) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the account is not listed among %s's members: %v", testGroup, members)
+	}
+
+	if err := HideFromSignIn(testName); err != nil {
+		t.Fatal(err)
+	}
+	if err := UnhideFromSignIn(testName); err != nil {
+		t.Fatal(err)
+	}
+	// A value that was never there is not an error either.
+	if err := UnhideFromSignIn(testName); err != nil {
+		t.Errorf("un-hiding an already-unhidden account failed: %v", err)
+	}
+
+	if err := DenyRemoteLogon(testName); err != nil {
+		t.Fatal(err)
+	}
+
+	// This account never logged on, so it has no profile: DeleteProfile
+	// must say so by doing nothing, not by failing.
+	value, err := sid.Lookup(testName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteProfile(value.String()); err != nil {
+		t.Errorf("deleting a profile that was never made: %v", err)
+	}
+
+	if err := Delete(testName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sid.Lookup(testName); err == nil {
+		t.Error("the account survived deletion")
+	}
+}

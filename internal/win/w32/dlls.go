@@ -11,4 +11,6 @@ var (
 	Shell32  = syscall.NewLazyDLL("shell32.dll")
 	Netapi32 = syscall.NewLazyDLL("netapi32.dll")
 	User32   = syscall.NewLazyDLL("user32.dll")
+	Crypt32  = syscall.NewLazyDLL("crypt32.dll")
+	Userenv  = syscall.NewLazyDLL("userenv.dll")
 )

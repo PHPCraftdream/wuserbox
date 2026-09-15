@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
+	acct "github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
@@ -70,14 +71,18 @@ func prepare(options sandbox.Options) (*state.State, error) {
 }
 
 // missing reports whether the sandbox has to be created before anything can be
-// adjusted: either nothing was ever recorded, or the group the record names is
-// no longer there. Neither is an error to pass on; both are a reason to build
-// it again with administrator rights.
+// adjusted: either nothing was ever recorded, the group the record names is
+// no longer there, or its account is gone while the group survived. None of
+// these is an error to pass on; all three are a reason to build it again
+// with administrator rights.
 func missing(name string, s *state.State) bool {
 	if s == nil {
 		return true
 	}
-	_, err := sid.Lookup(name)
+	if _, err := sid.Lookup(name); err != nil {
+		return true
+	}
+	_, err := sid.Lookup(acct.NameFor(name))
 	return err != nil
 }
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	acct "github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
@@ -137,7 +138,53 @@ func remove(name string, asJSON bool) error {
 			return err
 		}
 	}
+	if err := removeAccount(name, asJSON); err != nil {
+		return err
+	}
 	return group.Delete(name)
+}
+
+// removeAccount takes the sandbox's own local account away: its profile
+// directory first, while its SID still resolves, so a failure part-way
+// through leaves something a retry can still find; then the sign-in screen
+// entry and the account itself. It works from the group's name alone,
+// deriving the account's name the same way ensureAccount does, so a missing
+// or damaged record never stands between removal and an account it can
+// still find.
+//
+// The account never existing -- a sandbox this old, or one whose account a
+// previous attempt already removed -- is not a failure.
+func removeAccount(groupName string, asJSON bool) error {
+	name := acct.NameFor(groupName)
+	if !accountExists(name) {
+		return nil // never made, or already taken by an earlier attempt
+	}
+	value, err := sid.Lookup(name)
+	if err != nil {
+		return err
+	}
+	var left []string
+	complain := func(part string, err error) {
+		if !asJSON {
+			fmt.Fprintln(os.Stderr, "wuserbox:", err)
+		}
+		left = append(left, part)
+	}
+	if err := acct.DeleteProfile(value.String()); err != nil {
+		complain("its profile directory", err)
+	}
+	if err := acct.UnhideFromSignIn(name); err != nil {
+		complain("its sign-in screen entry", err)
+	}
+	if err := acct.Delete(name); err != nil {
+		complain("the account itself", err)
+	}
+	if len(left) > 0 {
+		return exit.Errorf(exit.Failed,
+			"%s was not fully removed and is left in place so `wuserbox --rm` can finish it: %s",
+			name, strings.Join(left, ", "))
+	}
+	return nil
 }
 
 // recordFor reads the record for removal, and says whether what came back is
@@ -207,6 +254,13 @@ func clearOrphans(name, dir string, asJSON bool) error {
 		return err
 	}
 	return grant.Prune(account, dir, nil)
+}
+
+// accountExists reports whether a name resolves to a real account, the same
+// way a group's existence is checked before acting on it elsewhere here.
+func accountExists(name string) bool {
+	_, err := sid.Lookup(name)
+	return err == nil
 }
 
 // identifierOf returns the identifier a group name stands for, and whether it
@@ -299,6 +353,9 @@ func previewRemoval(name string, asJSON bool) error {
 	}
 	if _, exists, err := group.Comment(name); err == nil && exists {
 		actions = append(actions, plan.Action{Does: "delete", What: name, Detail: "local group"})
+	}
+	if accountName := acct.NameFor(name); accountExists(accountName) {
+		actions = append(actions, plan.Action{Does: "delete", What: accountName, Detail: "local account"})
 	}
 	text, err := plan.RenderActions(actions, asJSON)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	acct "github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
@@ -87,6 +88,10 @@ func build(name, dir string, o Options) (*state.State, error) {
 		return nil, err
 	}
 
+	if err := ensureAccount(s, name, dir); err != nil {
+		return nil, err
+	}
+
 	if err := os.MkdirAll(s.Temp, 0o755); err != nil {
 		return nil, err
 	}
@@ -116,6 +121,63 @@ func build(name, dir string, o Options) (*state.State, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// ensureAccount creates the sandbox's own local account when it is missing,
+// generating and sealing its password at the same time so the two are never
+// out of step, and makes sure it holds exactly the memberships that let it
+// run at all: its own group, BUILTIN\Users -- measured to cover
+// C:\Windows and C:\Program Files -- and group.ReadGroup, the machine-wide
+// group the user's own profile grants read to. Requires administrator
+// rights, the same as creating the group itself.
+//
+// The record is saved right after the account is created, before anything
+// else here or later in build can fail: NetUserAdd has already committed
+// that password to the account by then, and nothing regenerates it, so a
+// later failure must not cost the only place it survives. Losing the
+// record after this point still leaves an account whose password nobody
+// remembers, but it is one this same run just made and is still in the
+// middle of finishing, not one a save already promised was ready to use.
+func ensureAccount(s *state.State, groupName, dir string) error {
+	name := acct.NameFor(groupName)
+	if _, err := sid.Lookup(name); err != nil {
+		password, err := acct.GeneratePassword()
+		if err != nil {
+			return err
+		}
+		if err := acct.Add(name, dir, password); err != nil {
+			return err
+		}
+		sealed, err := acct.Protect(password)
+		if err != nil {
+			return err
+		}
+		s.Account = name
+		s.Secret = sealed
+		if err := s.Save(); err != nil {
+			return err
+		}
+	}
+	builtinUsers, err := acct.BuiltinUsersName()
+	if err != nil {
+		return err
+	}
+	wanted := []string{groupName, builtinUsers}
+	// A sandbox built before EnsureReadGroup ever ran, or on a run where it
+	// failed, simply runs without this membership -- the same tolerance
+	// EnsureReadGroup's own caller already extends, since the alternative is
+	// refusing to build the sandbox at all over one grant that was always
+	// allowed to be missing.
+	if _, err := sid.Lookup(group.ReadGroup); err == nil {
+		wanted = append(wanted, group.ReadGroup)
+	}
+	if err := acct.EnsureMembership(name, wanted...); err != nil {
+		return err
+	}
+	if err := acct.HideFromSignIn(name); err != nil {
+		return err
+	}
+	return acct.DenyRemoteLogon(name)
 }
 
 // note says what is happening, unless the caller asked for quiet or for one
