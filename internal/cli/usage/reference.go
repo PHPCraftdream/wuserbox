@@ -50,20 +50,27 @@ THE RULES FILE
   the user's own profile into a sandbox's own thin one before a run:
 
     profile: [
-        .claude
-        .codex
-        AppData/Local/claude-cli-nodejs
+        .claude.json
+        .claude/.credentials.json
+        .codex/auth.json
     ]
 
   Each entry is a path relative to the profile root, copied to the same
   relative place under the sandbox's; there is no rw or ro here, because
   copying only ever reads from the user's profile and never writes back to
-  it. It is pre-filled when this file is first created, with the state
-  directories of the agents found on this machine and nothing else -- no
-  .ssh, .netrc, .npmrc or .gitconfig, which are exactly what wuserbox
-  protects, and which a default that copied them would hand to every sandbox
-  at once. Add what you need by hand. A name missing on this machine is
-  simply not copied.
+  it. It is pre-filled when this file is first created, with the credential
+  and settings files of the agents found on this machine -- files, not the
+  directories holding them. Histories, logs, caches and databases are left
+  behind on purpose: naming the directories instead measured 72,320 files
+  and 19 GB copied into every sandbox on every run, almost none of it
+  credentials, where the files themselves come to a few hundred kilobytes.
+  A sandbox therefore starts logged in and configured, with a blank history.
+
+  Nothing on the protected list is in that default and nothing inside one
+  either -- no .ssh, .netrc, .npmrc or .gitconfig, which are exactly what
+  wuserbox protects from sandboxes. Add what you need by hand, including a
+  whole directory if that is what you want. A name missing on this machine
+  is simply not copied.
 
 ENVIRONMENT
 

@@ -77,12 +77,25 @@ a directory wuserbox builds, holding an empty registry hive and three folders,
 handed to the program as its `USERPROFILE`, `HOME`, `APPDATA`, `LOCALAPPDATA`
 and `TEMP`. It costs about two and a half megabytes.
 
-The files and directories named in the `profile:` section of the rules file
-are **copied in** from your profile before each run — that is where an
-agent's credentials and settings come from — and the list is pre-filled with
-the common agents' state directories when the rules file is created. Nothing
-on the sensitive list — `~/.ssh`, `~/.netrc`, `~/.npmrc`, `~/.gitconfig` — is
-in that default, and you can add what you need.
+The files named in the `profile:` section of the rules file are **copied in**
+from your profile before each run — that is where an agent's credentials and
+settings come from. The list is pre-filled when the rules file is created
+with the credential and settings **files** of the agents found on the
+machine: `~/.claude.json`, `~/.claude/.credentials.json`, `~/.codex/auth.json`
+and their neighbours. On the machine this was written on that comes to 17
+entries and 254 KB.
+
+Histories, logs, caches and databases are deliberately left behind. The
+default named whole state directories once, and that was 72,320 files and
+19 GB per sandbox per run, almost none of it credentials. So a sandbox starts
+logged in and configured, with a blank history — which is also the better
+answer: one project's transcripts have no business inside another project's
+sandbox.
+
+Nothing on the sensitive list — `~/.ssh`, `~/.netrc`, `~/.npmrc`,
+`~/.gitconfig` — is in that default, and neither is anything inside those
+directories. Add what you need by hand; that is you choosing, which is the
+whole difference.
 
 The real directories themselves are never handed over: a sandbox reaches
 `~/.claude` only through the copy in its own profile, and a legacy grant left
@@ -190,12 +203,13 @@ which case it is built first.
 ## What is writable by default
 
 * the project directory;
-* a private temp directory, which `TEMP` and `TMP` point at;
-* the whole of `~/.config`, where many tools keep their settings;
-* the state directories of AI agents found on the machine: `~/.claude`,
-  `~/.codex`, `~/.crush`, `~/.rush`, `~/.gemini`, `~/.grok`, `~/.qwen`,
-  `~/.factory`, `~/.continue`, opencode, Goose and others, plus
-  `~/.claude.json` as a single file.
+* the sandbox's own thin profile, which `HOME`, `APPDATA`, `TEMP` and `TMP`
+  point inside.
+
+That is the whole list. Your real `~/.config`, `~/.claude` and the other
+agent directories are **not** handed over: what an agent needs from them is
+copied into the sandbox's own profile instead, and a grant an older wuserbox
+left on the real ones is taken back the first time a sandbox is reconciled.
 
 The profile root itself is **read-only**. Handing it over would make every
 dotfile already in it writable, because Windows pushes an inherited permission
