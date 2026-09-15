@@ -136,6 +136,50 @@ Narrow identities — `INTERACTIVE`, the logon session, something per-sandbox �
 are the direction worth measuring, but none of them appears in the descriptor
 the runtime writes, so none of them can help with this particular object.
 
+## Every identity that could be added to the restricting list, measured
+
+Running `bash --version` under a token built the way wuserbox builds it, with
+one identity added at a time. "Starts" means the shell printed its version.
+
+| added to the restricting list | bash starts |
+| --- | --- |
+| nothing — the list as it stands | no |
+| `INTERACTIVE`, `This Organization`, `Local account`, `CONSOLE LOGON`, `LOCAL`, `RESTRICTED` | no |
+| `Authenticated Users` | no |
+| `BUILTIN\Administrators` | **yes** |
+| `SYSTEM` | **yes** |
+| the user's own SID, as a reference point | yes |
+| no restricting list at all | yes |
+| `WRITE_RESTRICTED` instead of full restriction | no |
+
+Only the three identities the runtime writes into its own descriptor let it
+through, which is the whole of the answer: there is no fourth one to find.
+`WRITE_RESTRICTED` does not even start it — the client end of the pipe is
+opened for writing — and it gives back the delete boundary as well, so it loses
+twice.
+
+What the two that work cost, measured with an access check over 5 912 real
+objects across the profile, `ProgramData`, `C:\`, `Program Files`, `Windows`
+and a second drive:
+
+| added identity | newly writable | newly deletable |
+| --- | --- | --- |
+| the narrow identities above | 0 | 0 |
+| `Authenticated Users` | 74 | 72 |
+| `BUILTIN\Administrators` | 3 892 | **3 727**, including the whole user profile |
+| `SYSTEM` | 3 883 | 3 718, the same tree |
+| the user's own SID | 3 874 | 3 656 |
+
+`Administrators` is the user's own SID by another name, because every file with
+a default list in the profile grants exactly the three identities the runtime's
+descriptor does. No check based on those lists can tell the runtime's pipe from
+`C:\Users\<you>\anything`.
+
+There is a second consequence even if the pipe were solved: the runtime also
+rewrites **its own process token's default DACL** to that same three-identity
+list, so every object the first MSYS process in a sandbox creates is unreadable
+to the second one.
+
 ## Two directions, and what rules one of them out
 
 **Patch the runtime.** Ship an MSYS runtime that reads the sandbox identity out
@@ -163,10 +207,30 @@ inside. The last is the one to think hardest about, because an agent that
 cannot use the credentials you use is a different tool from the one described
 at the top of the README.
 
+## Two more mechanisms, measured and discarded
+
+**AppContainer.** Dead on its own terms: an AppContainer may create named pipes
+only under its own object path, and the runtime asks for `\\.\pipe\cygwin-…`.
+It dies earlier still, creating its object directory.
+
+**A low integrity level with no restricting list.** This one runs the shell,
+and keeps the outside boundary: the protected file, a file in the profile and
+deleting through a directory's own right were all refused. It fails on the
+other half. Two sandboxes are then both low and both run as the user, so each
+can write the other's project — which is exactly why this approach was
+abandoned once already, and
+`TestOneSandboxCannotDeleteAnothersFiles` cannot pass under it. A few dozen
+objects on an ordinary machine already carry a low label and become writable
+with it.
+
 ## Status
 
-The mechanism is settled and measured. The direction is not. Nothing in the
+The mechanism is settled and measured, and so is the fact that no change to
+the restricting list can fix it. The direction is not settled. Nothing in the
 program has been changed for it.
+
+Of the measurements above, the permission list on the pipe and the sweep of
+identities that let the shell start were made twice, independently, and agree.
 
 ## What a fix has to keep
 
