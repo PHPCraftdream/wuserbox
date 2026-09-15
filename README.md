@@ -456,6 +456,39 @@ returned, so the code you read after it is the sandboxed program's own.
   everything under it, so a subdirectory somebody left open to `Everyone` or
   `Users` is narrowed along with the rest.
 
+  **What it is worth, in practice.** Measured on an ordinary desk: 44 such
+  directories, all but three of them under `C:\ProgramData`. The root itself
+  is stock Windows — every account may create entries there, by design, and
+  that is not a machine in poor shape. The rest are vendor directories an
+  installer left open to `Users`, which is an industry habit rather than
+  anything wuserbox did or can undo.
+
+  As damage this is small. None of it is your files, another sandbox's files,
+  or anything named to an owner. An agent that runs something reckless in a
+  sandbox does it to the project or to a home directory, and both are covered.
+  The worst case here is a sandbox spoiling some application's shared state,
+  which a reinstall puts back.
+
+  As a way *out* of the sandbox it is worth a look, and not because of
+  wuserbox: several of those vendor directories belong to products whose
+  services run as `SYSTEM`. Where such a service reads a configuration file or
+  loads a library from a directory any account may write to, anything running
+  as any account on that machine can aim at it — sandboxed or not. wuserbox
+  neither creates that nor closes it.
+
+  Which is the shape of the whole limitation: **wuserbox never makes this
+  worse.** Without it an agent runs as you, and may change those 44 directories
+  *and* everything of yours. With it, only those 44. The exposure is strictly
+  smaller; it is not zero.
+
+  Narrowing them is a one-time job with `icacls`, it helps every program on
+  the machine rather than only sandboxes, and it is deliberately not something
+  wuserbox does for you: rewriting permissions on shared system directories
+  reaches other people's software and other accounts on the machine, and some
+  applications genuinely need an ordinary user to write there. Taking that
+  decision away from whoever owns the machine is not this tool's to make, so
+  `--audit` shows and does not touch.
+
   Only those two. A directory writable by some other identity — `Authenticated
   Users`, which several machines grant on a second drive, or `INTERACTIVE`,
   which Windows itself puts on the shared public profile — is out of a
