@@ -16,15 +16,17 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/plan"
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
 // target is the "<dir> [--ro] [--dir project]" shape these commands share.
 type target struct {
-	path    string
-	project string
-	kind    grant.Kind
-	dryRun  bool
-	asJSON  bool
+	path       string
+	project    string
+	kind       grant.Kind
+	dryRun     bool
+	asJSON     bool
+	allowLinks bool
 }
 
 // readOnlyApplies reports whether a command does anything with --ro. Handing a
@@ -36,6 +38,15 @@ type target struct {
 // which is how it went unnoticed.
 func readOnlyApplies(command string) bool { return command == "grant" || command == "add-dir" }
 
+// handsOver reports whether a command gives a directory to a sandbox, rather
+// than taking one back. Only those sweep the tree, so only those have anything
+// to say about the files in it answering to more than one name.
+//
+// It happens to name the same two commands as readOnlyApplies and is kept
+// apart from it on purpose: the two answer different questions, and a command
+// added later could belong to one and not the other.
+func handsOver(command string) bool { return command == "grant" || command == "add-dir" }
+
 // targetOptions are the flags the directory commands read.
 type targetOptions struct {
 	readOnly       bool
@@ -43,6 +54,7 @@ type targetOptions struct {
 	dryRun         bool
 	asJSON         bool
 	nonInteractive bool
+	allowLinks     bool
 }
 
 // targetFlags builds the flag set for one of them.
@@ -57,6 +69,10 @@ func targetFlags(name string) (*flag.FlagSet, *targetOptions) {
 	o := &targetOptions{}
 	if readOnlyApplies(name) {
 		flags.BoolVar(&o.readOnly, "ro", false, "read-only")
+	}
+	if handsOver(name) {
+		flags.BoolVar(&o.allowLinks, "allow-links", false,
+			"hand the directory over even where a file in it has another name elsewhere")
 	}
 	flags.StringVar(&o.dir, "dir", "", "project directory")
 	flags.BoolVar(&o.dryRun, "dry-run", false, "show what would change, change nothing")
@@ -101,11 +117,17 @@ func parseTarget(name string, args []string) (target, error) {
 	if o.nonInteractive {
 		_ = os.Setenv(setup.EnvNonInteractive, "1")
 	}
+	if o.allowLinks {
+		_ = os.Setenv(acl.EnvAllowLinks, "1")
+	}
 	kind := grant.RW
 	if o.readOnly {
 		kind = grant.RO
 	}
-	return target{path: path, project: project, kind: kind, dryRun: o.dryRun, asJSON: o.asJSON}, nil
+	return target{
+		path: path, project: project, kind: kind,
+		dryRun: o.dryRun, asJSON: o.asJSON, allowLinks: o.allowLinks,
+	}, nil
 }
 
 // args rebuilds the command line, for a second attempt with more rights or for
@@ -125,6 +147,12 @@ func (t target) args(command string) []string {
 	// second attempt would fail for a reason nobody could see.
 	if t.kind == grant.RO && readOnlyApplies(command) {
 		out = append(out, "--ro")
+	}
+	// The same reasoning, for the same reason: asking for administrator rights
+	// starts wuserbox again from this line, and an elevated process does not
+	// inherit what the first one put in its environment.
+	if t.allowLinks && handsOver(command) {
+		out = append(out, "--allow-links")
 	}
 	if t.asJSON {
 		out = append(out, "--json")

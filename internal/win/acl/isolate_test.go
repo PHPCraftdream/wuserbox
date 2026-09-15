@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
@@ -445,5 +446,70 @@ func TestGrantingADirectoryWithNoListKeepsItsOwner(t *testing.T) {
 	}
 	if !holds(t, root, "Everyone", "(RX)") {
 		t.Error("Everyone lost its reading instead of being narrowed to it")
+	}
+}
+
+// TestAGrantRefusesAFileWithASecondNameOutside is the regression guard for the
+// one way a grant reached past the tree it named.
+//
+// A hard link is not a second file, it is a second name for the same one, and
+// a permission list belongs to the file rather than to the name. Windows
+// propagates the inheritable entry into the file itself, so the name outside
+// the granted tree led to a list saying the sandbox may write and delete
+// there. Nothing in the sweep asked how many names a file had.
+//
+// The refusal happens in the reading pass, before anything is written, so a
+// tree turned down this way is left exactly as it was found.
+func TestAGrantRefusesAFileWithASecondNameOutside(t *testing.T) {
+	granted, outside := t.TempDir(), t.TempDir()
+	target := filepath.Join(outside, "notes.txt")
+	if err := os.WriteFile(target, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(granted, "link.txt")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/H", link, target).CombinedOutput(); err != nil {
+		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
+	}
+
+	err := Isolate(granted, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers)
+	if err == nil {
+		t.Fatal("handed over a tree holding a second name for a file outside it")
+	}
+	if !strings.Contains(err.Error(), "--allow-links") {
+		t.Errorf("the refusal does not say how to go ahead anyway: %v", err)
+	}
+
+	if holds(t, target, unusedAccount, "") {
+		t.Error("the file outside the tree was reached despite the refusal")
+	}
+	if holds(t, granted, unusedAccount, "") {
+		t.Error("the grant was written despite the refusal, so the tree was left changed")
+	}
+}
+
+// TestAllowLinksHandsTheTreeOverAnyway is the other half: the refusal above is
+// a default and not a wall. Somebody who knows what the links in their tree
+// are -- a local git clone, a pnpm store -- says so and the grant goes ahead.
+func TestAllowLinksHandsTheTreeOverAnyway(t *testing.T) {
+	t.Setenv(EnvAllowLinks, "1")
+	granted, outside := t.TempDir(), t.TempDir()
+	target := filepath.Join(outside, "notes.txt")
+	if err := os.WriteFile(target, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(granted, "link.txt")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/H", link, target).CombinedOutput(); err != nil {
+		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
+	}
+
+	if err := Isolate(granted, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers); err != nil {
+		t.Fatalf("--allow-links did not let the grant through: %v", err)
+	}
+	if !holds(t, granted, unusedAccount, "(M)") {
+		t.Error("the grant was not written even though links were allowed")
 	}
 }

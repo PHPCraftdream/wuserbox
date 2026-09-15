@@ -14,6 +14,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
+	"syscall"
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
@@ -41,19 +44,164 @@ func sweep(root string, everyone, users, holder uintptr) error {
 	// can change underneath between the passes -- but it turns the ordinary
 	// reason for stopping, an entry of a kind that cannot be carried over,
 	// into a refusal before anything has moved.
-	if err := walkTree(root, func(path string) error {
-		_, err := readable(path)
-		return err
-	}); err != nil {
+	if err := inspect(root); err != nil {
 		return err
 	}
-	return walkTree(root, func(path string) error {
+	return walkTree(root, func(path string, _ fs.DirEntry) error {
 		return narrowOwn(path, everyone, users, holder)
 	})
 }
 
+// EnvAllowLinks hands the tree over even where a file in it answers to another
+// name as well. It is read for the whole process, the way the switch for
+// prompts is, so that it survives wuserbox starting itself again with
+// administrator rights.
+const EnvAllowLinks = "WUSERBOX_ALLOW_LINKS"
+
+// inspect is the reading pass: it asks of every object whether its permissions
+// can be carried over, and whether it is the only name for what it points at.
+//
+// It runs on several goroutines because both questions are answered by the
+// disk rather than by this program, and one of them costs an open handle per
+// file. Whichever answer comes back wrong first stops the rest: nothing has
+// been written at that point, so stopping early costs only the reading that
+// was already under way.
+func inspect(root string) error {
+	counting := os.Getenv(EnvAllowLinks) == ""
+	if counting {
+		// The root is asked about here rather than in the walk, which passes
+		// over it. Its own entry is written directly rather than inherited,
+		// but a file granted by name is still one name among however many the
+		// file has, and the others would receive that entry too.
+		info, err := os.Lstat(root)
+		if err != nil {
+			return fmt.Errorf("looking at %s: %w", root, err)
+		}
+		if err := oneName(root, info.IsDir()); err != nil {
+			return err
+		}
+	}
+	return together(root, func(path string, entry fs.DirEntry) error {
+		if _, err := readable(path); err != nil {
+			return err
+		}
+		if !counting {
+			return nil
+		}
+		return oneName(path, entry.IsDir())
+	})
+}
+
+// together runs check over everything under root, on several goroutines, and
+// returns the first answer that was an error.
+func together(root string, check func(string, fs.DirEntry) error) error {
+	type object struct {
+		path  string
+		entry fs.DirEntry
+	}
+	objects := make(chan object, 128)
+	stop := make(chan struct{})
+	var said sync.Once
+	var failure error
+	var hands sync.WaitGroup
+	for i := 0; i < workers(); i++ {
+		hands.Add(1)
+		go func() {
+			defer hands.Done()
+			for one := range objects {
+				if err := check(one.path, one.entry); err != nil {
+					// Whoever is first owns the answer, and closing stop is
+					// what lets the walk stop feeding the others.
+					said.Do(func() { failure = err; close(stop) })
+					return
+				}
+			}
+		}()
+	}
+	walked := walkTree(root, func(path string, entry fs.DirEntry) error {
+		select {
+		case objects <- object{path, entry}:
+			return nil
+		case <-stop:
+			return filepath.SkipAll
+		}
+	})
+	close(objects)
+	hands.Wait()
+	if failure != nil {
+		return failure
+	}
+	return walked
+}
+
+// workers is how many of these run at once. The work is waiting on the disk
+// rather than thinking, so it is worth more than one, and a bound keeps a tree
+// on a slow disk from asking the machine for a thousand open handles at once.
+func workers() int {
+	const most = 8
+	if hands := runtime.NumCPU(); hands < most {
+		return hands
+	}
+	return most
+}
+
+// oneName refuses a file that answers to more than one name.
+//
+// A hard link is not a second file. It is a second name for the same one, and
+// a permission list belongs to the file rather than to the name, so handing a
+// directory over hands over every name the files in it have -- including the
+// ones outside the directory, which is the whole of the boundary. Windows
+// propagates the inheritable entry into the file itself, and the outside name
+// then leads to a list that says the sandbox may write and delete. Measured,
+// with icacls on the outside name.
+//
+// The sandbox cannot make such a link itself against anything it may not
+// already write, so this is not a way out that a sandbox takes: it is a grant
+// reaching further than it says. Ordinary tools leave them behind -- a local
+// `git clone` links the objects it copies, pnpm links its store into
+// node_modules -- and in both of those the other name lies outside the
+// project, which is exactly the case that matters.
+//
+// Directories are passed over because NTFS does not give one a second name.
+func oneName(path string, isDir bool) error {
+	if isDir {
+		return nil
+	}
+	names, err := namesOf(path)
+	if err != nil {
+		return err
+	}
+	if names > 1 {
+		return fmt.Errorf(
+			"%s is one of %d names for the same file, and handing this directory over "+
+				"would hand over all of them, wherever they are; move it aside, "+
+				"or pass --allow-links to hand the directory over regardless",
+			path, names)
+	}
+	return nil
+}
+
+// namesOf is how many names the file at path answers to.
+func namesOf(path string) (uint32, error) {
+	const readAttributes = 0x80
+	const openReparsePoint = 0x00200000
+	handle, err := syscall.CreateFile(w32.UTF16(path), readAttributes,
+		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE, nil,
+		syscall.OPEN_EXISTING, syscall.FILE_FLAG_BACKUP_SEMANTICS|openReparsePoint, 0)
+	if err != nil {
+		return 0, fmt.Errorf("opening %s to count its names: %w", path, err)
+	}
+	defer func() { _ = syscall.CloseHandle(handle) }()
+
+	var info syscall.ByHandleFileInformation
+	if err := syscall.GetFileInformationByHandle(handle, &info); err != nil {
+		return 0, fmt.Errorf("asking how many names %s has: %w", path, err)
+	}
+	return info.NumberOfLinks, nil
+}
+
 // walkTree visits everything under root that a sweep is allowed to touch.
-func walkTree(root string, visit func(string) error) error {
+func walkTree(root string, visit func(string, fs.DirEntry) error) error {
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		switch {
 		case err != nil:
@@ -65,7 +213,7 @@ func walkTree(root string, visit func(string) error) error {
 		case entry.Type()&os.ModeSymlink != 0:
 			return nil // a name for somewhere else, whose permissions are its own
 		}
-		return visit(path)
+		return visit(path, entry)
 	})
 }
 

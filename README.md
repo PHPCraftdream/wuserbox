@@ -400,6 +400,19 @@ returned, so the code you read after it is the sandboxed program's own.
   ~/.config --ro` outranks the preset and stays.
 * **Renaming the project directory** changes the group, leaving the old sandbox
   behind. `wuserbox --list` shows it, `wuserbox --rm --dir <old>` removes it.
+* **A file with a second name elsewhere stops a grant.** A hard link is not a
+  second file, it is a second name for the same one, and a permission list
+  belongs to the file rather than to the name. Handing a directory over
+  therefore hands over every name the files in it have, wherever those names
+  are — measured, with the sandbox's own entry turning up on a file outside the
+  tree. So a grant counts the names first and refuses rather than reach that
+  far. Ordinary tools leave such links behind: a local `git clone` links the
+  objects it copies, pnpm links its store into `node_modules`, and in both of
+  those the other name lies outside the project, which is exactly the case that
+  matters. If you know what the links in your tree are, `--allow-links` hands it
+  over regardless. The sandbox cannot make such a link itself against anything
+  it may not already write, so this is a grant reaching further than it says
+  rather than a way out that a sandbox takes.
 * **A record that cannot be read is not a sandbox that never was.** What a
   sandbox holds is written in one file per sandbox, and the entries it names
   sit on directories all over the disk with nothing else pointing at them. A

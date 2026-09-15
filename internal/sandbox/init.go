@@ -196,6 +196,13 @@ type Options struct {
 	// Off by default, because the same permission reaches every file already
 	// there. When it is on, the sensitive files are refused one by one.
 	HomeWrites bool
+	// AllowLinks hands a directory over even where a file in it answers to
+	// another name as well. Handing one over hands over every name its files
+	// have, wherever those names are, so this is refused by default. It
+	// travels in the options rather than in the environment because asking
+	// for administrator rights starts wuserbox again from these arguments,
+	// and an elevated process does not inherit what was set here.
+	AllowLinks bool
 }
 
 // Args rebuilds these options as an `init` command line, for re-running with
@@ -213,6 +220,9 @@ func (o Options) Args() []string {
 	}
 	if o.HomeWrites {
 		args = append(args, "--home-writes")
+	}
+	if o.AllowLinks {
+		args = append(args, "--allow-links")
 	}
 	return args
 }

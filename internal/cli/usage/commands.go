@@ -37,6 +37,7 @@ by "--init", "--grant" and "--add-dir", and is the same whichever
 command line starts the program.`,
 		Options: []Option{
 			{"--dir <d>", "project directory (default: the current one)"},
+			{"--allow-links", "hand a directory over even where a file in it has another name elsewhere"},
 			{"--dry-run", "show what the sandbox holds and start nothing"},
 			{"--json", "print the plan as JSON instead of lines"},
 			{"--quiet", "no progress messages, errors only"},
@@ -75,6 +76,7 @@ record, so an entry removed by hand comes back.`,
 			{"--ro <d>", "hand over another directory for reading, repeatable"},
 			{"--no-ai", "do not hand over the AI agent directories"},
 			{"--home-writes", "let the sandbox create files in the profile root"},
+			{"--allow-links", "hand a directory over even where a file in it has another name elsewhere"},
 			{"--dry-run", "show what would be handed over, hand over nothing"},
 			{"--json", "print the plan as JSON instead of lines"},
 			{"--quiet", "no progress messages, errors only"},
@@ -115,6 +117,7 @@ directories the preset hands over, say "--grant ~/.claude --ro", stays
 narrow: later runs apply the preset again and leave your decision alone.`,
 		Options: []Option{
 			{"--ro", "read access only, no writing"},
+			{"--allow-links", "hand a directory over even where a file in it has another name elsewhere"},
 			{"--dry-run", "show what would change, change nothing"},
 			{"--json", "print the result as JSON instead of lines"},
 			{"--non-interactive", "fail instead of asking for administrator rights"},
@@ -168,6 +171,7 @@ This is the command to ask for when a sandboxed program reports that a
 write was refused and the directory is one it should have.`,
 		Options: []Option{
 			{"--ro", "read access only, no writing"},
+			{"--allow-links", "hand a directory over even where a file in it has another name elsewhere"},
 			{"--dry-run", "show what would change, change nothing"},
 			{"--json", "print the result as JSON instead of lines"},
 			{"--non-interactive", "fail instead of asking for administrator rights"},

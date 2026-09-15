@@ -10,6 +10,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
 // repeated collects a flag that may appear more than once.
@@ -44,10 +45,13 @@ func ParseOptions(name string, args []string) (sandbox.Options, []string, error)
 	if o.nonInteractive {
 		_ = os.Setenv(EnvNonInteractive, "1")
 	}
+	if o.allowLinks {
+		_ = os.Setenv(acl.EnvAllowLinks, "1")
+	}
 	options := sandbox.Options{
 		Dir: o.dir, RW: o.rw, RO: o.ro,
 		NoAI: o.noAI, HomeWrites: o.homeWrites, Quiet: o.quiet,
-		DryRun: o.dryRun, JSON: o.asJSON,
+		DryRun: o.dryRun, JSON: o.asJSON, AllowLinks: o.allowLinks,
 	}
 	return options, flags.Args(), nil
 }
@@ -58,6 +62,7 @@ type shared struct {
 	dir                            string
 	noAI, homeWrites, quiet        bool
 	nonInteractive, dryRun, asJSON bool
+	allowLinks                     bool
 }
 
 // sharedFlags builds that set. It stands apart from the parsing so a test can
@@ -73,6 +78,8 @@ func sharedFlags(name string) (*flag.FlagSet, *shared) {
 	flags.BoolVar(&o.nonInteractive, "non-interactive", false, "fail instead of asking for administrator rights")
 	flags.BoolVar(&o.dryRun, "dry-run", false, "show what would change, change nothing")
 	flags.BoolVar(&o.asJSON, "json", false, "print the result as JSON")
+	flags.BoolVar(&o.allowLinks, "allow-links", false,
+		"hand a directory over even where a file in it has another name elsewhere")
 	flags.Var(&o.rw, "rw", "extra writable directory")
 	flags.Var(&o.ro, "ro", "extra readable directory")
 	return flags, o
