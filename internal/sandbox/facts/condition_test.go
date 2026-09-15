@@ -31,6 +31,7 @@ func TestEveryTroubleNamesTheCommandThatFixesIt(t *testing.T) {
 	const dir = `C:\projects\app`
 	for _, wrong := range []Trouble{
 		GroupGone, RecordUnreadable, RecordMissing, NoAccount, PasswordLost, ProjectGone,
+		SharesTheOldReadGroup,
 	} {
 		fix := wrong.Fix(dir)
 		if fix == "" {
@@ -59,6 +60,7 @@ func TestEveryTroubleNamesTheCommandThatFixesIt(t *testing.T) {
 func TestEveryTroubleReadsAsSomethingSaidAboutASandbox(t *testing.T) {
 	for _, wrong := range []Trouble{
 		GroupGone, RecordUnreadable, RecordMissing, NoAccount, PasswordLost, ProjectGone,
+		SharesTheOldReadGroup,
 	} {
 		text := string(wrong)
 		if text == "" {

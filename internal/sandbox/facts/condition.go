@@ -3,9 +3,11 @@ package facts
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
@@ -41,6 +43,11 @@ const (
 	// ProjectGone: the directory this sandbox belongs to is not there any
 	// more, renamed or deleted. The sandbox is not broken, it is orphaned.
 	ProjectGone Trouble = "the project directory it belongs to is gone"
+	// SharesTheOldReadGroup: its account is still in the one read group
+	// every sandbox on the machine used to share. On a machine with two
+	// people that is a sandbox able to read the other person's profile,
+	// because their profile grants that group until they run init too.
+	SharesTheOldReadGroup Trouble = "its account can still read other people's profiles"
 )
 
 // Fix is the command that puts this right, or "" where none does.
@@ -77,10 +84,30 @@ func Judge(name, dir string, s *state.State, readErr error) Trouble {
 		return NoAccount
 	case s.Secret == "":
 		return PasswordLost
+	case stillSharesTheOldReadGroup(account.NameFor(name)):
+		return SharesTheOldReadGroup
 	case dir != "" && !isDirectory(dir):
 		return ProjectGone
 	}
 	return Whole
+}
+
+// stillSharesTheOldReadGroup asks whether this sandbox's account is left in
+// the read group that used to be one for the whole machine.
+//
+// Costs one failed lookup on a machine that never had it, which is every
+// fresh installation and every machine where init has run since the split.
+func stillSharesTheOldReadGroup(accountName string) bool {
+	members, err := account.Members(group.LegacyReadGroup)
+	if err != nil {
+		return false // no such group here, or nothing readable about it
+	}
+	for _, member := range members {
+		if strings.EqualFold(member, accountName) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolves(name string) bool {

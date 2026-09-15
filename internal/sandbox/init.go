@@ -207,6 +207,9 @@ func ensureAccount(s *state.State, groupName, dir string) error {
 	if err := acct.EnsureMembership(name, wanted...); err != nil {
 		return err
 	}
+	if err := leaveLegacyReadGroup(name); err != nil {
+		return err
+	}
 	if err := acct.HideFromSignIn(name); err != nil {
 		return err
 	}
@@ -237,6 +240,26 @@ func replaceUnopenableAccount(s *state.State, name, groupName string) error {
 	}
 	s.Account = ""
 	return os.RemoveAll(ProfileDir(groupName))
+}
+
+// leaveLegacyReadGroup takes this sandbox's account out of the one read
+// group every sandbox on the machine used to share.
+//
+// Splitting that group per person, and taking its permission off the
+// profile it was run from, was only half of it: the membership outlived
+// both. A machine with two people on it has the other person's profile
+// still granting the old group until they run init themselves, and this
+// account still in it until now -- so this sandbox could read their files,
+// which is the whole thing the split was for.
+//
+// A failure here is not passed over the way a missing read group is. That
+// one costs the sandbox a read it never had; this one leaves somebody
+// else's profile open to it.
+func leaveLegacyReadGroup(name string) error {
+	if !resolves(group.LegacyReadGroup) {
+		return nil // never existed on this machine
+	}
+	return acct.RemoveMember(group.LegacyReadGroup, name)
 }
 
 // resolves says whether a group or account name is one this machine knows.
