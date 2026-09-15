@@ -161,6 +161,9 @@ func build(name, dir string, o Options) (*state.State, error) {
 // middle of finishing, not one a save already promised was ready to use.
 func ensureAccount(s *state.State, groupName, dir string) error {
 	name := acct.NameFor(groupName)
+	if err := replaceUnopenableAccount(s, name, groupName); err != nil {
+		return err
+	}
 	if _, err := sid.Lookup(name); err != nil {
 		password, err := acct.GeneratePassword()
 		if err != nil {
@@ -199,6 +202,38 @@ func ensureAccount(s *state.State, groupName, dir string) error {
 		return err
 	}
 	return acct.DenyRemoteLogon(name)
+}
+
+// replaceUnopenableAccount takes away an account nothing can log on as any
+// more and lets the rest of ensureAccount make a fresh one.
+//
+// That happens when the account exists and the record holding its sealed
+// password does not -- the record was deleted, or damaged past reading.
+// Nothing recovers the password: it was generated once, handed to Windows,
+// sealed into that record and never written anywhere else. Left alone, the
+// sandbox is a dead end that every later `--init` walks past, because the
+// account it looks for is right there.
+//
+// The thin profile goes with it. Its directory and its registry hive both
+// carry permissions naming the SID about to stop existing, and a hive the
+// new account cannot open is a sandbox that starts and then cannot write
+// its own settings. It is rebuilt from nothing a moment later by
+// ensureProfile, and holds only copies in the first place.
+func replaceUnopenableAccount(s *state.State, name, groupName string) error {
+	if s.Secret != "" || !resolves(name) {
+		return nil // the password to open it is kept, or there is no account
+	}
+	if err := acct.Delete(name); err != nil {
+		return err
+	}
+	s.Account = ""
+	return os.RemoveAll(ProfileDir(groupName))
+}
+
+// resolves says whether a group or account name is one this machine knows.
+func resolves(name string) bool {
+	_, err := sid.Lookup(name)
+	return err == nil
 }
 
 // ensureProfile builds the sandbox's own thin profile: the directory

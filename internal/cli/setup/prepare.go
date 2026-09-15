@@ -70,20 +70,41 @@ func prepare(options sandbox.Options) (*state.State, error) {
 	})
 }
 
-// missing reports whether the sandbox has to be created before anything can be
-// adjusted: either nothing was ever recorded, the group the record names is
-// no longer there, or its account is gone while the group survived. None of
-// these is an error to pass on; all three are a reason to build it again
-// with administrator rights.
-func missing(name string, s *state.State) bool {
-	if s == nil {
-		return true
+// missing says what has to be built with administrator rights before
+// anything can be adjusted, in the words to show whoever is watching, and an
+// empty string when nothing is. None of these is an error to pass on; all of
+// them are a reason to build the sandbox again.
+//
+// They are told apart rather than lumped together because they are not the
+// same event. One of them is a sandbox from before sandboxes had accounts of
+// their own being brought forward, and a line saying "creating sandbox" for
+// a sandbox that has existed for months, and keeps everything it was given,
+// tells the reader something untrue about what is about to happen.
+func missing(name string, s *state.State) string {
+	switch {
+	case s == nil:
+		return fmt.Sprintf("creating sandbox %s", name)
+	case !resolves(name):
+		return fmt.Sprintf("sandbox %s has lost its group; building it again", name)
+	case !resolves(acct.NameFor(name)):
+		return fmt.Sprintf("sandbox %s was made before a sandbox had an account of its own; "+
+			"giving it one, which needs administrator rights. Everything it was already "+
+			"given stays: its permissions name its group, and the account joins that group", name)
+	case s.Secret == "":
+		// The account is there and the only copy of the password that opens
+		// it is not: the record holding it was lost or damaged, and nothing
+		// anywhere can recover it. The account has to be replaced, which is
+		// what ensureAccount does when it sees this.
+		return fmt.Sprintf("sandbox %s has an account whose password went missing with its record; "+
+			"replacing the account", name)
 	}
-	if _, err := sid.Lookup(name); err != nil {
-		return true
-	}
-	_, err := sid.Lookup(acct.NameFor(name))
-	return err != nil
+	return ""
+}
+
+// resolves says whether a group or account name is one this machine knows.
+func resolves(name string) bool {
+	_, err := sid.Lookup(name)
+	return err == nil
 }
 
 // adjust brings an existing sandbox in line with the flags, with the record
@@ -93,8 +114,8 @@ func adjust(options sandbox.Options, name string) (adjustment, error) {
 	if err != nil {
 		return adjustment{}, err
 	}
-	if missing(name, s) {
-		report(options, "creating sandbox %s", name)
+	if lacking := missing(name, s); lacking != "" {
+		report(options, "%s", lacking)
 		return adjustment{rebuild: true}, nil
 	}
 	// A command that was stopped between writing a change down and applying it

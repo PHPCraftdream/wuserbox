@@ -149,3 +149,43 @@ func TestRebuildOptionsLeavesANewSandboxAlone(t *testing.T) {
 		t.Error("NoAI should stay false when the record agrees with the run")
 	}
 }
+
+// What has to be built again is not always the same event, and saying
+// "creating sandbox" for one that has existed for months -- and keeps every
+// permission it was ever given -- tells the reader the wrong thing about
+// what is happening to it.
+func TestWhatHasToBeBuiltAgainIsNamedForWhatItActuallyIs(t *testing.T) {
+	const name = "wub-nothing-by-this-name-00000000"
+
+	if said := missing(name, nil); !strings.Contains(said, "creating sandbox") {
+		t.Errorf("a sandbox that was never recorded was announced as %q", said)
+	}
+	// A record naming a group this machine does not know. That is a sandbox
+	// whose group went away, not a sandbox being made for the first time.
+	said := missing(name, &state.State{Group: name, Dir: t.TempDir(), Secret: "sealed"})
+	if !strings.Contains(said, "lost its group") {
+		t.Errorf("a sandbox whose group is gone was announced as %q", said)
+	}
+	if strings.Contains(said, "creating sandbox") {
+		t.Errorf("a sandbox that already existed was announced as new: %q", said)
+	}
+}
+
+// The run path must not fall back to the old mechanism without a word. It
+// starts ordinary programs, so the sandbox looks fine right up until a shell
+// fails to start, for reasons pointing nowhere near the missing account.
+func TestARunRefusesASandboxWithNoAccountAndSaysWhatFixesIt(t *testing.T) {
+	s := &state.State{Group: "wub-old-00000000", Dir: t.TempDir()}
+	if s.Account != "" {
+		t.Fatal("this test is about a record with no account")
+	}
+	err := refuseWithoutAccount(s)
+	if err == nil {
+		t.Fatal("a sandbox with no account of its own was allowed to run")
+	}
+	for _, want := range []string{"--init", s.Dir, s.Group} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q: %v", want, err)
+		}
+	}
+}

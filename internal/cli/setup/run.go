@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/exec"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/facts"
@@ -44,6 +45,9 @@ func Run(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := refuseWithoutAccount(s); err != nil {
+		return err
+	}
 	// Failing to write this is not a reason to refuse the run: it costs a
 	// listing one accurate moment, and the run itself is what was asked for.
 	if err := facts.MarkUsed(s.Group); err != nil {
@@ -55,6 +59,25 @@ func Run(args []string) error {
 	}
 	os.Exit(code)
 	return nil
+}
+
+// refuseWithoutAccount stops a run that would fall back to the mechanism the
+// account replaced.
+//
+// prepare gives an account to any sandbox that lacks one, so getting here
+// without it means that did not happen and nobody was told. Going ahead
+// anyway is the failure worth preventing: the old mechanism still starts
+// ordinary programs, so the sandbox looks fine right up until a shell -- or
+// anything built on one, which is most of what gets run in here -- fails to
+// start, for reasons that point nowhere near the missing account.
+func refuseWithoutAccount(s *state.State) error {
+	if s.Account != "" {
+		return nil
+	}
+	return exit.Errorf(exit.Failed,
+		"sandbox %s has no account of its own, and programs that need one -- a shell among them -- "+
+			"will not start in it; run `wuserbox --init --dir %s` to give it one",
+		s.Group, s.Dir)
 }
 
 // onlyRunning refuses the options that describe what a sandbox is, rather than
