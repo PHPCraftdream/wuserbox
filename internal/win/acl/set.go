@@ -202,16 +202,50 @@ func Protect(path string) error {
 	if err != nil {
 		return err
 	}
-	inheritance := ""
-	if info, err := os.Stat(path); err == nil && info.IsDir() {
-		inheritance = "OICI"
-	}
+	inheritance := inheritanceFor(path)
 	text := fmt.Sprintf("D:PAI(A;%s;GA;;;%s)(A;%s;GA;;;SY)(A;%s;GA;;;BA)",
 		inheritance, user, inheritance, inheritance)
 	if reader, err := sid.Lookup(group.ReadGroup); err == nil {
 		text += fmt.Sprintf("(A;%s;0x%x;;;%s)", inheritance, AccessReadExecute, reader.String())
 	}
+	return setProtectedSDDL(path, text)
+}
 
+// ProtectFull replaces the permissions of path with a fixed list granting
+// full control to the current user, the system, administrators and every
+// account named -- unlike Protect, every principal here may change the
+// object, not only read it. Built for a sandbox's own profile directory:
+// the sandbox account has to write into it as itself, and the machine
+// owner's own entry is what lets the directory be deleted later without an
+// elevated prompt, the same reasoning Protect's own owner entry rests on.
+func ProtectFull(path string, accounts ...string) error {
+	user, err := sid.CurrentUser()
+	if err != nil {
+		return err
+	}
+	inheritance := inheritanceFor(path)
+	text := fmt.Sprintf("D:PAI(A;%s;GA;;;%s)(A;%s;GA;;;SY)(A;%s;GA;;;BA)",
+		inheritance, user, inheritance, inheritance)
+	for _, account := range accounts {
+		text += fmt.Sprintf("(A;%s;GA;;;%s)", inheritance, account)
+	}
+	return setProtectedSDDL(path, text)
+}
+
+// inheritanceFor says whether entries built for path should propagate to
+// what is inside it -- only true for a directory, since a file has nothing
+// to propagate to.
+func inheritanceFor(path string) string {
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return "OICI"
+	}
+	return ""
+}
+
+// setProtectedSDDL builds the security descriptor text describes and writes
+// it as path's whole permission list, with inheritance from anything above
+// switched off.
+func setProtectedSDDL(path, text string) error {
 	var descriptor uintptr
 	if r, _, err := procStringToSecurityDescriptor.Call(uintptr(unsafe.Pointer(w32.UTF16(text))), 1,
 		uintptr(unsafe.Pointer(&descriptor)), 0); r == 0 {

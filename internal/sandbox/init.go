@@ -92,6 +92,10 @@ func build(name, dir string, o Options) (*state.State, error) {
 		return nil, err
 	}
 
+	if err := ensureProfile(s, name); err != nil {
+		return nil, err
+	}
+
 	if err := os.MkdirAll(s.Temp, 0o755); err != nil {
 		return nil, err
 	}
@@ -178,6 +182,25 @@ func ensureAccount(s *state.State, groupName, dir string) error {
 		return err
 	}
 	return acct.DenyRemoteLogon(name)
+}
+
+// ensureProfile builds the sandbox's own thin profile: the directory
+// Windows will load as this account's HKEY_CURRENT_USER on every run,
+// instead of the one it would build unattended in C:\Users the first time
+// the account logs on. Requires administrator rights, the same as
+// ensureAccount: tightening the hive's permissions needs SE_BACKUP_NAME
+// and SE_RESTORE_NAME, and telling Windows where the profile is lives
+// under HKEY_LOCAL_MACHINE.
+func ensureProfile(s *state.State, groupName string) error {
+	account, err := sid.Lookup(acct.NameFor(groupName))
+	if err != nil {
+		return err
+	}
+	s.Profile = ProfileDir(groupName)
+	if err := acct.MakeProfile(s.Profile, account); err != nil {
+		return err
+	}
+	return acct.RegisterProfile(account, s.Profile)
 }
 
 // note says what is happening, unless the caller asked for quiet or for one

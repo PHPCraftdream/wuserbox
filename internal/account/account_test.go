@@ -1,6 +1,8 @@
 package account
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -206,12 +208,40 @@ func TestLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// This account never logged on, so it has no profile: DeleteProfile
-	// must say so by doing nothing, not by failing.
 	value, err := sid.Lookup(testName)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	profileDir := filepath.Join(t.TempDir(), "profile")
+	if err := MakeProfile(profileDir, value); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(profileDir, "NTUSER.DAT")); err != nil {
+		t.Errorf("no hive was made under the profile: %v", err)
+	}
+	for _, sub := range []string{`AppData\Local`, `AppData\Roaming`, "Temp"} {
+		if info, err := os.Stat(filepath.Join(profileDir, sub)); err != nil || !info.IsDir() {
+			t.Errorf("%s was not made under the profile: %v", sub, err)
+		}
+	}
+	// Idempotent: a second call over the same profile must not fail or try
+	// to re-tighten a hive that is already tightened.
+	if err := MakeProfile(profileDir, value); err != nil {
+		t.Errorf("re-making an existing profile failed: %v", err)
+	}
+	if err := RegisterProfile(value, profileDir); err != nil {
+		t.Fatal(err)
+	}
+	// Clearing a reference the profile service never made, because the
+	// account this test built never actually logged on, is not an error.
+	if err := RemoveProfileServiceReference(value); err != nil {
+		t.Errorf("clearing a profile service reference that may never have existed: %v", err)
+	}
+
+	// This account never logged on, so it has no profile of Windows' own
+	// making: DeleteProfile must say so by doing nothing, not by failing.
+	// It still clears the ProfileList entry RegisterProfile just wrote.
 	if err := DeleteProfile(value.String()); err != nil {
 		t.Errorf("deleting a profile that was never made: %v", err)
 	}

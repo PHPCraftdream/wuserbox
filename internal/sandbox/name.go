@@ -29,6 +29,14 @@ func Name(dir string) (string, string, error) {
 	return name, norm, nil
 }
 
+// ProfileDir is where a sandbox's own thin profile lives, beside its temp
+// directory under the state directory. A pure function of the group name,
+// the same as Temp's own construction in build, so removal can compute it
+// even from a record that is missing or damaged.
+func ProfileDir(name string) string {
+	return filepath.Join(paths.StateDir(), "profile", name)
+}
+
 // slug keeps a folder name to characters that are safe in a group name.
 func slug(s string) string {
 	var b strings.Builder

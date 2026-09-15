@@ -170,8 +170,18 @@ func removeAccount(groupName string, asJSON bool) error {
 		}
 		left = append(left, part)
 	}
-	if err := acct.DeleteProfile(value.String()); err != nil {
+	// The thin profile directory goes first, unprivileged in principle --
+	// its own entry for the machine owner is what makes that true -- so a
+	// failure past this point still leaves something a retry can find and
+	// finish.
+	if err := os.RemoveAll(sandbox.ProfileDir(groupName)); err != nil {
 		complain("its profile directory", err)
+	}
+	if err := acct.DeleteProfile(value.String()); err != nil {
+		complain("its ProfileList entry", err)
+	}
+	if err := acct.RemoveProfileServiceReference(value); err != nil {
+		complain("its profile service reference", err)
 	}
 	if err := acct.UnhideFromSignIn(name); err != nil {
 		complain("its sign-in screen entry", err)
@@ -355,7 +365,9 @@ func previewRemoval(name string, asJSON bool) error {
 		actions = append(actions, plan.Action{Does: "delete", What: name, Detail: "local group"})
 	}
 	if accountName := acct.NameFor(name); accountExists(accountName) {
-		actions = append(actions, plan.Action{Does: "delete", What: accountName, Detail: "local account"})
+		actions = append(actions,
+			plan.Action{Does: "delete", What: sandbox.ProfileDir(name), Detail: "thin profile"},
+			plan.Action{Does: "delete", What: accountName, Detail: "local account"})
 	}
 	text, err := plan.RenderActions(actions, asJSON)
 	if err != nil {

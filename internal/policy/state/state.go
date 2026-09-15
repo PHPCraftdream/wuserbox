@@ -15,6 +15,12 @@ type State struct {
 	Dir    string       `json:"dir"`
 	Temp   string       `json:"temp"`
 	Grants []grant.Spec `json:"grants"`
+	// Profile is the sandbox's own thin profile directory: an empty
+	// registry hive and three folders a shell expects, made by --init and
+	// loaded as this account's HKEY_CURRENT_USER on every run. Kept here
+	// rather than recomputed from Group, the same reason Temp is: removal
+	// has to find it even from a record a naming change never touches.
+	Profile string `json:"profile,omitempty"`
 	// Marked says the grants below carry the mark that tells a permission
 	// somebody asked for apart from one the preset offered. A record written
 	// before that mark existed carries no such thing, and reading its entries
