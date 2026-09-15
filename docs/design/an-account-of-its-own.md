@@ -31,6 +31,57 @@ neighbours whole, so an agent reads and writes the real ones — every project's
 history, every tool's settings, all of it. With a thin profile it gets a copy
 of what is listed and nothing else.
 
+## How the profile is made
+
+Measured, because the obvious two shapes are both wrong. Starting the program
+without loading a profile leaves the account with no `HKEY_CURRENT_USER` at all
+— the hive does not exist and writing to it is refused — and letting Windows
+make one puts it in `C:\Users\<account>` with everything copied from the
+default profile, which is neither thin nor ours.
+
+There is a third way, and it works: **tell Windows the profile is already
+there, at our path.** Before the first run, `--init` writes under
+`HKLM\...\ProfileList\<sid>` three values — `ProfileImagePath`, `Sid` and
+`State` set to zero — and puts an empty `NTUSER.DAT` in the directory. Windows
+then honours the path and copies nothing, because there is already a hive to
+load. Seeding fewer values than that was measured to be ignored outright: the
+entry is rewritten and a full profile appears in `C:\Users` regardless.
+
+What Windows adds next to that hive is about 2.2 MB, nearly all of it six
+fixed-size registry transaction logs, plus `UsrClass.dat`, a DPAPI master key
+and a handful of empty directories under `AppData`. They can be deleted between
+runs and are made again; the tools do not care. So "thin" means about two and a
+half megabytes per sandbox rather than nothing, and that is the honest number.
+
+**The hive's own permissions are the part that matters.** A hive created with
+`RegLoadAppKey` comes out granting `Everyone` full control, and once the profile
+service loads it as that account's `HKEY_CURRENT_USER` the permission is
+enforced for real: measured, an ordinary user wrote into a sandbox's registry
+from outside, which means one sandbox could write another's. So `--init`
+tightens it — load it under a temporary name, set the list to the account,
+`SYSTEM` and the administrators, unload — before it is ever used. Doing it from
+inside on the first run also works and leaves a window open while it happens,
+which is a worse answer for the sake of one elevated call that is already
+being made.
+
+Everything a sandbox needs was measured to work against an empty hive: the MSYS
+shell, `git` including `config --global` and a commit, `node`, `npm`,
+PowerShell, and a coding agent. Known folders resolve from the environment
+rather than from the registry. What starts blank is anything that expected the
+default profile's own settings — locale and the like — which is inferred rather
+than measured.
+
+The cost in time is tens of milliseconds: about fifty to ninety for the very
+first run of a sandbox, twenty-five to a hundred to load the hive on a cold run
+afterwards, and a few milliseconds when it is already warm. Nothing pauses for
+seconds.
+
+Removal is three steps, one of them needing the elevated prompt that creation
+already needs: the directory can be deleted unprivileged because our own entry
+is on it, then `DeleteProfileW` clears the `ProfileList` entry and
+`NetUserDel` the account, and the reference the profile service keeps has to go
+with them.
+
 ## What is copied in
 
 Before each run, the files and directories named in the rules file are copied
