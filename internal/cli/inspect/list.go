@@ -31,6 +31,11 @@ type Sandbox struct {
 	Made    *time.Time  `json:"made,omitempty"`
 	Used    *time.Time  `json:"used,omitempty"`
 	Size    *SizeOnDisk `json:"size,omitempty"`
+	// Trouble says how this sandbox is not what it should be, in the same
+	// words the run path uses for the same state, and Fix names the command
+	// that puts it right. Both empty means nothing is wrong.
+	Trouble string `json:"trouble,omitempty"`
+	Fix     string `json:"fix,omitempty"`
 }
 
 // listFlags builds list's set, apart from the parsing, so a test can walk the

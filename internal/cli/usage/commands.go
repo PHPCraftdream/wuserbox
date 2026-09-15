@@ -246,6 +246,13 @@ it may write and the ones it may only read, and when it was made and
 last used. Anything this machine never recorded says so rather than
 being shown as zero, which is a different answer.
 
+A sandbox that is not what it should be says so on its own line, under
+the name, with the command that puts it right: a group that is gone, a
+record that will not read or is missing, a sandbox from before accounts
+existed, an account whose password went with its record, or a project
+directory that has been renamed or deleted. Those are the same words
+a run uses when it meets the same thing.
+
 The size is the last one measured, not one taken now -- walking a real
 profile takes seconds -- so it is always printed with the moment it was
 taken. "--init" measures afresh.

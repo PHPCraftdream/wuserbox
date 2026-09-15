@@ -45,7 +45,12 @@ func describe(entries []group.Entry) []Sandbox {
 
 func describeOne(entry group.Entry) Sandbox {
 	found := Sandbox{Group: entry.Name, Dir: entry.Dir}
-	if s, err := state.Load(entry.Name); err == nil && s != nil {
+	s, readErr := state.Load(entry.Name)
+	if wrong := facts.Judge(entry.Name, entry.Dir, s, readErr); wrong != facts.Whole {
+		found.Trouble = string(wrong)
+		found.Fix = wrong.Fix(entry.Dir)
+	}
+	if readErr == nil && s != nil {
 		found.Account = s.Account
 		found.Profile = s.Profile
 		found.Temp = s.Temp
@@ -87,7 +92,16 @@ func block(s Sandbox) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n", s.Group)
 	field(&b, "project", s.Dir)
-	field(&b, "account", orNot(s.Account, "none -- run `wuserbox --init` to give it one"))
+	// What is wrong comes second, right under the name, because it is what
+	// the rest of the block has to be read in the light of: empty fields
+	// below mean something different depending on it.
+	if s.Trouble != "" {
+		field(&b, "trouble", s.Trouble)
+		if s.Fix != "" {
+			field(&b, "to fix", s.Fix)
+		}
+	}
+	field(&b, "account", orNot(s.Account, "none"))
 	field(&b, "profile", orNot(s.Profile, "not recorded"))
 	field(&b, "on disk", describeSize(s.Size))
 	field(&b, "temp", orNot(s.Temp, "not recorded"))

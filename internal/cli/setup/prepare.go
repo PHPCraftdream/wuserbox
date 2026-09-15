@@ -16,6 +16,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox/facts"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/grants"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/plan"
 	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
@@ -81,24 +82,27 @@ func prepare(options sandbox.Options) (*state.State, error) {
 // a sandbox that has existed for months, and keeps everything it was given,
 // tells the reader something untrue about what is about to happen.
 func missing(name string, s *state.State) string {
-	switch {
-	case s == nil:
+	// Nothing recorded and no group either is the ordinary first run, not a
+	// sandbox in trouble, so it is said before asking what is wrong.
+	if s == nil && !resolves(name) {
 		return fmt.Sprintf("creating sandbox %s", name)
-	case !resolves(name):
-		return fmt.Sprintf("sandbox %s has lost its group; building it again", name)
-	case !resolves(acct.NameFor(name)):
-		return fmt.Sprintf("sandbox %s was made before a sandbox had an account of its own; "+
-			"giving it one, which needs administrator rights. Everything it was already "+
-			"given stays: its permissions name its group, and the account joins that group", name)
-	case s.Secret == "":
-		// The account is there and the only copy of the password that opens
-		// it is not: the record holding it was lost or damaged, and nothing
-		// anywhere can recover it. The account has to be replaced, which is
-		// what ensureAccount does when it sees this.
-		return fmt.Sprintf("sandbox %s has an account whose password went missing with its record; "+
-			"replacing the account", name)
 	}
-	return ""
+	// The project directory is deliberately not passed: a run happening in a
+	// directory is proof enough that it is there, and judging it here would
+	// only ever answer a question the listing asks.
+	switch wrong := facts.Judge(name, "", s, nil); wrong {
+	case facts.Whole:
+		return ""
+	case facts.NoAccount:
+		// Worth more than the one line the others get. This is every sandbox
+		// on a machine that had them before accounts existed, it happens once
+		// per sandbox, and what it does not do is as important as what it does.
+		return fmt.Sprintf("sandbox %s %s: giving it one, which needs administrator "+
+			"rights. Everything it already holds stays, because its permissions name "+
+			"its group and the account joins that group", name, wrong)
+	default:
+		return fmt.Sprintf("sandbox %s: %s; building it again", name, wrong)
+	}
 }
 
 // resolves says whether a group or account name is one this machine knows.

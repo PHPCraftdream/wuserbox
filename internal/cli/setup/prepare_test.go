@@ -14,6 +14,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox/facts"
 )
 
 func TestElevateRefusesWhenPromptsAreOff(t *testing.T) {
@@ -163,7 +164,7 @@ func TestWhatHasToBeBuiltAgainIsNamedForWhatItActuallyIs(t *testing.T) {
 	// A record naming a group this machine does not know. That is a sandbox
 	// whose group went away, not a sandbox being made for the first time.
 	said := missing(name, &state.State{Group: name, Dir: t.TempDir(), Secret: "sealed"})
-	if !strings.Contains(said, "lost its group") {
+	if !strings.Contains(said, string(facts.GroupGone)) {
 		t.Errorf("a sandbox whose group is gone was announced as %q", said)
 	}
 	if strings.Contains(said, "creating sandbox") {
@@ -187,5 +188,16 @@ func TestARunRefusesASandboxWithNoAccountAndSaysWhatFixesIt(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal does not mention %q: %v", want, err)
 		}
+	}
+}
+
+// The run path and the listing must call the same state the same thing. Two
+// vocabularies for one state would leave somebody reading "--list --long"
+// unable to tell it was describing what the last run complained about.
+func TestTheRunPathCallsAStateWhatTheListingCallsIt(t *testing.T) {
+	const name = "wub-nothing-by-this-name-00000000"
+	said := missing(name, &state.State{Group: name, Dir: t.TempDir(), Secret: "sealed"})
+	if !strings.Contains(said, string(facts.GroupGone)) {
+		t.Errorf("the run path says %q, where the listing would say %q", said, facts.GroupGone)
 	}
 }
