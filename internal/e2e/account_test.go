@@ -14,9 +14,14 @@
 // -- two groups, two accounts, two profiles -- it removes.
 //
 // This puts internal/e2e at eight entries where the layout rules ask for
-// about seven. Named rather than quietly picked, as CONTRIBUTING asks: the
-// alternative was folding it into a file about the old mechanism, and the
-// whole point of it is that it is not that.
+// about seven, and puts this file a little over the five hundred lines they
+// ask for as well. Named rather than quietly picked, as CONTRIBUTING asks.
+// Folding it into a file about the old mechanism was the first alternative,
+// and the whole point of it is that it is not that. Splitting it in two is
+// the second, and it would make the directory worse to pay for making the
+// file better -- these tests share one fixture, the real sandbox in
+// newRealBox, and every one of them is about what that fixture can and
+// cannot reach.
 
 package e2e
 
@@ -24,14 +29,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-	"syscall"
 	"testing"
 
 	acct "github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox/exec"
+	"github.com/PHPCraftdream/wuserbox/internal/win/access"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
@@ -156,12 +161,17 @@ func (b *realBox) hand(t *testing.T, dir string, kind grant.Kind) {
 // tries runs a command line as this sandbox's own account and says whether
 // it succeeded.
 func (b *realBox) tries(t *testing.T, commandLine, dir string) bool {
+	return b.ends(t, commandLine, dir) == 0
+}
+
+// ends is the same run, answered with the code the program ended on.
+func (b *realBox) ends(t *testing.T, commandLine, dir string) int {
 	t.Helper()
 	code, err := proc.RunAsAccount(b.account, b.password, commandLine, dir, os.Environ())
 	if err != nil {
 		t.Fatalf("starting %q as %s: %v", commandLine, b.account, err)
 	}
-	return code == 0
+	return code
 }
 
 // openToEveryone makes a directory readable the way Program Files is, so a
@@ -285,44 +295,22 @@ func TestAShellStartsInsideARealAccount(t *testing.T) {
 	}
 }
 
-// The stub: this same test binary, started as the sandbox account, which
-// restricts its own token and runs the real command under it. That is the
-// shape the product would take -- wuserbox.exe launching wuserbox.exe --
-// because a token can only be filtered by a process already running as the
-// account it belongs to.
-const (
-	stubFlag    = "-wuserbox-sandbox-stub"
-	noReadGroup = "-"
-)
-
+// The stub is the product's own, reached the way a run reaches it: a binary
+// started as the sandbox account, which restricts its own token and runs the
+// real command under that. Only the binary differs -- this test binary stands
+// in for wuserbox.exe, because building the real one for every test run would
+// buy nothing the copy below does not already prove.
 func TestMain(m *testing.M) {
-	if len(os.Args) > 4 && os.Args[1] == stubFlag {
-		os.Exit(stub(os.Args[2], os.Args[3], os.Args[4]))
+	if len(os.Args) > 1 && os.Args[1] == exec.StubFlag {
+		if err := exec.Stub(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "stub:", err)
+			os.Exit(90)
+		}
+		// Reached only where the stub was asked for a token and nothing more;
+		// with a program to run it ends on that program's own exit code.
+		os.Exit(0)
 	}
 	os.Exit(m.Run())
-}
-
-func stub(groupSID, readGroup, commandLine string) int {
-	if readGroup == noReadGroup {
-		readGroup = ""
-	}
-	restricted, err := token.AsSandbox(groupSID, readGroup)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "stub: restricting its own token:", err)
-		return 90
-	}
-	defer restricted.Close()
-	here, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "stub:", err)
-		return 91
-	}
-	code, err := proc.Run(restricted, commandLine, here)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "stub: starting the program:", err)
-		return 92
-	}
-	return code
 }
 
 // throughTheStub builds the command line that reaches the program by way of
@@ -330,17 +318,11 @@ func stub(groupSID, readGroup, commandLine string) int {
 // by the account's own restricted token.
 func (b *realBox) throughTheStub(t *testing.T, stubExe, commandLine string) string {
 	t.Helper()
-	owner, err := sid.CurrentUser()
+	line, err := exec.StubLine(stubExe, b.sid, commandLine)
 	if err != nil {
 		t.Fatal(err)
 	}
-	readGroup := noReadGroup
-	if name := group.ReadGroupFor(owner); resolvesHere(name) {
-		readGroup = name
-	}
-	return strings.Join([]string{
-		syscall.EscapeArg(stubExe), stubFlag, b.sid, readGroup, syscall.EscapeArg(commandLine),
-	}, " ")
+	return line
 }
 
 // stubBinary puts a copy of this test binary somewhere the sandbox account
@@ -370,11 +352,6 @@ func stubBinary(t *testing.T, root string) string {
 		t.Fatal(err)
 	}
 	return stub
-}
-
-func resolvesHere(name string) bool {
-	_, err := sid.Lookup(name)
-	return err == nil
 }
 
 // TestAShellStartsUnderTheAccountsOwnRestrictedToken is the one measurement
@@ -411,6 +388,94 @@ func TestAShellStartsUnderTheAccountsOwnRestrictedToken(t *testing.T) {
 	// And the sandbox can still write what it was actually given.
 	if !box.tries(t, box.throughTheStub(t, stub, writeInto(root)), root) {
 		t.Error("the sandbox could not write the directory it was granted")
+	}
+}
+
+// TestTheExitCodeComesBackFromInsideTheSandbox is the property everything
+// built on wuserbox depends on and nothing else here measures: `wuserbox go
+// test` has to fail when the tests fail.
+//
+// It is measured on the real chain rather than on the shape of it, because
+// the chain is where it could go wrong: the code is read and handed on twice,
+// once by the stub inside the account and once by the run out here, across a
+// logon boundary in between. 7, because 1 is what half the things that go
+// wrong on the way report by themselves.
+func TestTheExitCodeComesBackFromInsideTheSandbox(t *testing.T) {
+	requireAdministrator(t)
+	root, err := paths.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	openToEveryone(t, root)
+	stub := stubBinary(t, root)
+	box := newRealBox(t, firstSandbox, root)
+	box.hand(t, root, grant.RW)
+
+	if code := box.ends(t, box.throughTheStub(t, stub, `cmd.exe /c exit 7`), root); code != 7 {
+		t.Errorf("the run ended with %d, and the program inside ended with 7", code)
+	}
+}
+
+// TestCheckAnswersWithTheTokenARunGets is the divergence `--check` used to
+// carry, measured where it bites.
+//
+// The answer used to come from a restricted copy of the *caller's* token,
+// because building the sandbox's own needed a password. That token carries
+// the caller's memberships and never the sandbox account's own identifier, so
+// about anything whose permissions name that identifier -- the sandbox's own
+// profile above all, which is where its credentials and settings now live --
+// it said "refused" about a directory every run writes to.
+//
+// The pair is what gives it meaning. The first half proves the directory
+// really is the sandbox's to write, and the last proves the old answer really
+// did get it wrong here, so a passing test cannot be one that measured
+// nothing.
+func TestCheckAnswersWithTheTokenARunGets(t *testing.T) {
+	requireAdministrator(t)
+	root, err := paths.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	openToEveryone(t, root)
+	owned := filepath.Join(root, "owned")
+	if err := os.Mkdir(owned, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	box := newRealBox(t, firstSandbox, root)
+	box.hand(t, root, grant.RW)
+
+	// Named for the account and not the group, the way a thin profile is:
+	// account.MakeProfile writes the account's own identifier into it, because
+	// at that point the profile belongs to nobody else.
+	account, err := sid.Lookup(box.account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := acl.Set(owned, account.String(), []acl.ACE{
+		{Access: acl.AccessModify, Inheritance: acl.InheritObjects | acl.InheritContainers},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !box.tries(t, writeInto(owned), root) {
+		t.Fatal("a directory granted to the account was not writable by it, so nothing below means anything")
+	}
+
+	written := filepath.Join(owned, "written.txt")
+	answer, err := access.Check(access.Sandbox{
+		Group: box.sid, Account: box.account, Password: box.password,
+	}, written, access.Write)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !answer.Allowed {
+		t.Errorf("asking said no about a file the sandbox had just written: %s", answer.Reason)
+	}
+	old, err := access.Check(access.Sandbox{Group: box.sid}, written, access.Write)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.Allowed {
+		t.Fatal("the caller's own restricted token reaches this too, so the answer above proves nothing")
 	}
 }
 
