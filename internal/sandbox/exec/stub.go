@@ -61,6 +61,15 @@ func Stub(args []string) error {
 	if len(args) == 2 {
 		return nil
 	}
+	// Before the program exists, and not after. What is about to start is the
+	// same account as this process, holding a token restricted from this
+	// one's -- and a permission list cannot tell two processes apart by who
+	// they are when they are the same who. Measured: without this, the
+	// program opened this process with every access there is and duplicated
+	// its token, which is the whole boundary undone from inside.
+	if err := proc.Shield(); err != nil {
+		return err
+	}
 	here, err := os.Getwd()
 	if err != nil {
 		return err

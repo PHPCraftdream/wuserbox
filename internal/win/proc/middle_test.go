@@ -23,15 +23,27 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
+
+	"github.com/PHPCraftdream/wuserbox/internal/win/token"
+	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
 const (
 	sleeperFlag = "-wuserbox-sleeper"
 	middleFlag  = "-wuserbox-middle"
+	prowlerFlag = "-wuserbox-prowler"
+	stubbyFlag  = "-wuserbox-stubby"
+
+	// A group nothing on the machine is a member of. What matters below is
+	// the restricting list and the two tokens' relationship, never what the
+	// group itself reaches.
+	nobodysGroup = "S-1-5-21-1111111111-2222222222-3333333333-717171"
 )
 
 // TestMain lets `go test` re-exec this same binary as one of the processes
@@ -45,6 +57,12 @@ func TestMain(m *testing.M) {
 	}
 	if len(os.Args) > 2 && os.Args[1] == middleFlag {
 		os.Exit(middle(os.Args[2]))
+	}
+	if len(os.Args) > 2 && os.Args[1] == prowlerFlag {
+		os.Exit(prowl(os.Args[2]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == stubbyFlag {
+		os.Exit(stubby())
 	}
 	if os.Getenv(driverEnv) == "1" {
 		runDriver()
@@ -109,6 +127,196 @@ func middleLine(commandLine string) string {
 	return syscall.EscapeArg(exe) + " " + middleFlag + " " + syscall.EscapeArg(commandLine)
 }
 
+// The access rights a program under a restricted token must not get to the
+// process that restricted it. Any one of them is enough to undo the
+// restriction: two of them write into it, and the third reaches the one
+// object worth taking -- its unrestricted token, which can be duplicated and
+// then worn, for the same user, without any privilege at all.
+const (
+	processAllAccess        = 0x1FFFFF
+	processDupHandle        = 0x0040
+	processVMWrite          = 0x0020
+	processVMOperation      = 0x0008
+	processQueryInformation = 0x0400
+	tokenDuplicateAccess    = 0x0002
+)
+
+var procOpenProcess = w32.Kernel32.NewProc("OpenProcess")
+
+// The doors, one bit each, answered through the exit code and not through a
+// file. The first attempt at this wrote its findings to disk and reported
+// nothing at all, because a program under a restricted token could not write
+// them -- a measurement that a refusal elsewhere had quietly turned into
+// silence. An exit code is the one channel the thing under test cannot take
+// away.
+const (
+	reachedAllAccess = 1 << iota
+	reachedDupHandle
+	reachedVMWrite
+	reachedQuery
+	reachedToken
+	reachedThread
+	reachedBadPid
+	// The control, and the one bit that has to be set. Shutting a process to
+	// its own account could as easily have shut the program out of *itself*,
+	// and a great many programs open their own process by name. A run where
+	// that stopped working would be a boundary nobody could use.
+	openedItself
+)
+
+// The other door into a process, and the reason shutting the process alone
+// would not have settled this: a thread is an object of its own with a list
+// of its own, and one whose instructions can be redirected runs code inside
+// the process that owns it. Shield closes all three; this is what tries them.
+const (
+	threadSetContext    = 0x0010
+	threadSuspendResume = 0x0002
+)
+
+// aThreadOf finds one thread belonging to pid, so the prowler has something
+// to try the other door on. It borrows Shield's own way of listing them,
+// which is the point: the prowler looks for exactly what Shield claims to
+// have shut.
+func aThreadOf(pid int) (uint32, bool) {
+	snapshot, _, _ := procCreateToolhelp32Snapshot.Call(snapshotOfThreads, 0)
+	if snapshot == 0 || snapshot == invalidHandle {
+		return 0, false
+	}
+	defer syscall.CloseHandle(syscall.Handle(snapshot))
+
+	entry := make([]byte, sizeOfThreadEntry32)
+	*(*uint32)(unsafe.Pointer(&entry[0])) = sizeOfThreadEntry32
+	for step := procThread32First; ; step = procThread32Next {
+		if r, _, _ := step.Call(snapshot, uintptr(unsafe.Pointer(&entry[0]))); r == 0 {
+			return 0, false
+		}
+		if *(*uint32)(unsafe.Pointer(&entry[offsetOfOwnerProcess])) == uint32(pid) {
+			return *(*uint32)(unsafe.Pointer(&entry[offsetOfThreadID])), true
+		}
+	}
+}
+
+// prowl is the program at the end of the chain turning on the one that
+// started it. Running under the restricted token, as the same account, it
+// tries every door into that process worth trying and ends on what opened.
+func prowl(parentPid string) int {
+	pid, err := strconv.Atoi(parentPid)
+	if err != nil {
+		return reachedBadPid
+	}
+	reached := 0
+	opened := func(bit int, access uintptr) syscall.Handle {
+		h, _, _ := procOpenProcess.Call(access, 0, uintptr(pid))
+		if h == 0 {
+			return 0
+		}
+		reached |= bit
+		return syscall.Handle(h)
+	}
+	for _, door := range []struct {
+		bit    int
+		access uintptr
+	}{
+		{reachedAllAccess, processAllAccess},
+		{reachedDupHandle, processDupHandle},
+		{reachedVMWrite, processVMWrite | processVMOperation},
+	} {
+		if h := opened(door.bit, door.access); h != 0 {
+			syscall.CloseHandle(h)
+		}
+	}
+	// The one worth having: its token, which is the account's ordinary one.
+	if h := opened(reachedQuery, processQueryInformation); h != 0 {
+		var stolen syscall.Token
+		if err := syscall.OpenProcessToken(h, tokenDuplicateAccess, &stolen); err == nil {
+			reached |= reachedToken
+			stolen.Close()
+		}
+		syscall.CloseHandle(h)
+	}
+	// And the other door: one of its threads, which is a separate object with
+	// a list of its own and is not shut by shutting the process.
+	if tid, found := aThreadOf(pid); found {
+		if h, _, _ := procOpenThread.Call(threadSetContext|threadSuspendResume, 0, uintptr(tid)); h != 0 {
+			reached |= reachedThread
+			syscall.CloseHandle(syscall.Handle(h))
+		}
+	}
+	// Itself, by name and not through the handle every process has to itself,
+	// which is never checked against a list.
+	if h, _, _ := procOpenProcess.Call(processAllAccess, 0, uintptr(os.Getpid())); h != 0 {
+		reached |= openedItself
+		syscall.CloseHandle(syscall.Handle(h))
+	}
+	return reached
+}
+
+// stubby stands in for the stub as it really is, which the plain middle above
+// does not: it narrows its own token, shuts itself to the account both it and
+// the program run as, and only then starts the program under the narrow
+// token. It ends on whatever the program found, so the test outside reads one
+// number and never has to reach across the chain for a file.
+//
+// The order is the property. Shielding after the program has started would
+// leave exactly the window this exists to close.
+func stubby() int {
+	restricted, err := token.AsSandbox(nobodysGroup, "")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "stubby: restricting its own token:", err)
+		return 93
+	}
+	defer restricted.Close()
+	if err := Shield(); err != nil {
+		fmt.Fprintln(os.Stderr, "stubby: shutting itself to its own account:", err)
+		return 94
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "stubby:", err)
+		return 95
+	}
+	here, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "stubby:", err)
+		return 96
+	}
+	line := strings.Join([]string{
+		syscall.EscapeArg(exe), prowlerFlag, syscall.EscapeArg(fmt.Sprint(os.Getpid())),
+	}, " ")
+	code, err := Run(restricted, line, here)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "stubby: starting the program:", err)
+		return 97
+	}
+	return code
+}
+
+// doorsReached spells out an exit code from prowl.
+func doorsReached(code int) string {
+	named := []struct {
+		bit  int
+		what string
+	}{
+		{reachedAllAccess, "everything"},
+		{reachedDupHandle, "duplicating its handles"},
+		{reachedVMWrite, "writing its memory"},
+		{reachedQuery, "asking about it"},
+		{reachedToken, "duplicating its token"},
+		{reachedThread, "redirecting one of its threads"},
+		{reachedBadPid, "(it was not given a readable pid)"},
+	}
+	var got []string
+	for _, one := range named {
+		if code&one.bit != 0 {
+			got = append(got, one.what)
+		}
+	}
+	if len(got) == 0 {
+		return "nothing"
+	}
+	return strings.Join(got, ", ")
+}
+
 // middleDriver starts the driver with the middle in the chain. The mode still
 // says what the program at the end does and how the driver waits for it; this
 // says only that there is one more process in between.
@@ -139,6 +347,55 @@ func TestTheProgramsExitCodeComesBackThroughTheMiddle(t *testing.T) {
 	}
 	if code != 7 {
 		t.Errorf("the run ended with %d, and the program it ran ended with 7", code)
+	}
+}
+
+// TestTheProgramCannotTurnOnTheProcessThatConfinedIt is the question the
+// two-process chain raises and nothing else here answers.
+//
+// The stub and the program it starts are the same account. The stub holds
+// that account's ordinary token; the program holds the restricted one. If the
+// program can reach the stub's process object it can take the stub's token,
+// wear it -- impersonating a token of one's own user needs no privilege -- and
+// the second access check is gone. The file boundary would then be a
+// formality, undone from inside without touching a single file permission.
+//
+// Measured on the shape rather than on a real account, because the shape is
+// the whole of it: one process holding an unrestricted token, a second
+// holding a token restricted from it, both the same user, and that user's own
+// identifier among the restricting ones -- which is exactly what
+// token.AsSandbox arranges and what makes an MSYS program start at all.
+//
+// The stand-in in the middle is what does the restricting, so nothing here
+// touches the test binary's own token or its own permissions. That matters:
+// restricting this process's token and naming this process's own user is the
+// move token.AsSandbox's comment calls catastrophic in the other direction,
+// and it is right.
+func TestTheProgramCannotTurnOnTheProcessThatConfinedIt(t *testing.T) {
+	var own syscall.Token
+	if err := syscall.OpenProcessToken(syscall.Handle(^uintptr(0)), syscall.TOKEN_ALL_ACCESS, &own); err != nil {
+		t.Fatal(err)
+	}
+	defer own.Close()
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := Run(own, syscall.EscapeArg(exe)+" "+stubbyFlag, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code >= 93 && code <= 97 {
+		t.Fatalf("the stand-in for the stub failed before it could be turned on: exit %d", code)
+	}
+	if code&openedItself == 0 {
+		t.Fatal("the program could not open its own process, so the shutting went too far " +
+			"and what follows would pass for the wrong reason")
+	}
+	if reached := code &^ openedItself; reached != 0 {
+		t.Errorf("a program under the restricted token reached the process that restricted it: %s",
+			doorsReached(reached))
 	}
 }
 
