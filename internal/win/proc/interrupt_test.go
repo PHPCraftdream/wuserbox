@@ -43,7 +43,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -59,6 +58,7 @@ const (
 	driverMode   = "WUSERBOX_PROC_TEST_MODE"
 	driverDir    = "WUSERBOX_PROC_TEST_DIR"
 	driverResult = "WUSERBOX_PROC_TEST_RESULT"
+	driverMiddle = "WUSERBOX_PROC_TEST_MIDDLE"
 
 	ctrlBreakEvent = 1
 )
@@ -68,34 +68,6 @@ var (
 	procAllocConsole      = w32.Kernel32.NewProc("AllocConsole")
 	procGenerateCtrlEvent = w32.Kernel32.NewProc("GenerateConsoleCtrlEvent")
 )
-
-// TestMain lets `go test` re-exec this same binary as the driver process
-// these tests need. Everything below this check is that driver's own
-// program, not a test.
-const sleeperFlag = "-wuserbox-sleeper"
-
-// sleeper stands in for a program that handles Ctrl+C itself and carries on:
-// an agent stopping the turn it is in, a shell clearing its line. It is what
-// makes it possible to tell "the keypress reached the program" apart from
-// "the run was ended".
-func sleeper(pidFile string) {
-	heard := make(chan os.Signal, 4)
-	signal.Notify(heard, os.Interrupt)
-	_ = os.WriteFile(pidFile, []byte(fmt.Sprint(os.Getpid())), 0o600)
-	time.Sleep(30 * time.Second)
-}
-
-func TestMain(m *testing.M) {
-	if len(os.Args) > 2 && os.Args[1] == sleeperFlag {
-		sleeper(os.Args[2])
-		return
-	}
-	if os.Getenv(driverEnv) == "1" {
-		runDriver()
-		return
-	}
-	os.Exit(m.Run())
-}
 
 // runDriver plays the wuserbox-parent role: it starts the sandboxed
 // child+grandchild through Run, signals readiness, then either waits to be
@@ -136,6 +108,11 @@ func runDriver() {
 			return
 		}
 		commandLine = syscall.EscapeArg(exe) + " " + sleeperFlag + " " + syscall.EscapeArg(gcPidFile)
+	}
+	// Orthogonal to the mode, because the question it asks is: does any of the
+	// above still hold with one more process in the chain? See middle_test.go.
+	if os.Getenv(driverMiddle) == "1" {
+		commandLine = middleLine(commandLine)
 	}
 
 	type outcome struct {
