@@ -20,13 +20,17 @@ import (
 // code.
 //
 // A sandbox this version of wuserbox built has its own local account
-// (s.Account), and runs as it through CreateProcessWithLogonW rather than as
-// a restricted copy of the caller's own token: see
+// (s.Account), starts as it through CreateProcessWithLogonW, and then runs
+// under a token restricted to that account's own identities. The two are not
+// alternatives, though they were treated as such for a while: see
 // docs/design/an-account-of-its-own.md and
-// docs/investigations/msys-under-a-restricted-token.md for why the change --
-// in short, the objects an MSYS shell and a registry-writing program build
-// around "the current user" are then the sandbox's own, and stop refusing a
-// restricted token they never knew to cooperate with.
+// docs/investigations/msys-under-a-restricted-token.md. A restricted token
+// alone was what MSYS programs could not start under, because the objects an
+// MSYS runtime builds around "the current user" name a user the token was
+// forbidden to name -- its own process token among them. Under an account
+// they name the account, which the token may name, so the restriction costs
+// nothing and closes what being a separate account does not: everything the
+// machine hands to Everyone, INTERACTIVE and the rest of the crowd.
 //
 // A sandbox an earlier version built has no account yet -- s.Account stays
 // empty until `--init` runs again to add one -- and keeps running the old
@@ -41,11 +45,11 @@ func Run(s *state.State, commandLine string) (int, error) {
 // runRestricted is what every run did before this sandbox had an account of
 // its own, kept for one still without it.
 //
-// It is also what lets the delete-boundary tests exercise this same
-// function with a synthetic SID and no administrator rights, by giving a
-// state.State no account either: the NTFS access check a real account's
-// token faces is identical to the one a restricted token carrying the same
-// SID faces, so a boundary proven against one is proven against the other.
+// It is also what lets the delete-boundary tests exercise this same function
+// with a synthetic SID and no administrator rights, by giving a state.State
+// no account either. What that shows is the second of the two access checks,
+// which is the same one either way; what it cannot show is named in
+// token.Restricted, and is why internal/e2e/account_test.go exists alongside.
 func runRestricted(s *state.State, commandLine string) (int, error) {
 	restricted, err := token.Restricted(s.SID)
 	if err != nil {
@@ -63,7 +67,17 @@ func runRestricted(s *state.State, commandLine string) (int, error) {
 // runAsAccount starts commandLine as the sandbox's own account, with its
 // profile loaded and an environment built to point inside that profile
 // rather than the caller's own.
+//
+// What the account starts is not the program but wuserbox, which narrows its
+// own token before starting it: being the account keeps a sandbox apart from
+// the person who owns the machine, and the token keeps it away from what
+// every account on the machine shares. See stub.go for why the second half
+// cannot be arranged from here.
 func runAsAccount(s *state.State, commandLine string) (int, error) {
+	self, err := whereIAm()
+	if err != nil {
+		return -1, err
+	}
 	password, err := account.Unprotect(s.Secret)
 	if err != nil {
 		// The seal is tied to the account that made it, so the one way to
@@ -77,7 +91,15 @@ func runAsAccount(s *state.State, commandLine string) (int, error) {
 				"rebuild the sandbox with `wuserbox --init --dir %s`: %w",
 			s.Account, s.Dir, err)
 	}
-	return proc.RunAsAccount(s.Account, password, commandLine, s.Dir, childEnv(s, profileOf(s)))
+	line, err := StubLine(self, s.SID, commandLine)
+	if err != nil {
+		return -1, err
+	}
+	code, err := proc.RunAsAccount(s.Account, password, line, s.Dir, childEnv(s, profileOf(s)))
+	if err != nil {
+		return -1, cannotStart(s, self, err)
+	}
+	return code, nil
 }
 
 // profileOf is where the sandbox's own thin profile lives. `--init` fills

@@ -16,6 +16,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox/exec"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/facts"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/grants"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/plan"
@@ -298,6 +299,17 @@ func Init(args []string) error {
 	s, err := sandbox.Init(options)
 	if err != nil {
 		return err
+	}
+	// Said rather than raised. The sandbox on the machine is complete and will
+	// work the moment wuserbox is somewhere its account can reach, so throwing
+	// away what was just built would cost the person their permissions over a
+	// binary in the wrong place. Loud, though: what is wrong here stops every
+	// program, not some read at the edges.
+	if err := exec.ProveItStarts(s); err != nil {
+		report(options, "sandbox %s is built, and no program will start in it: %v.\n"+
+			"  Every run starts wuserbox again as the sandbox's own account, so that account "+
+			"has to be able to read and execute it. Put wuserbox somewhere every account can "+
+			"-- under Program Files, say -- and run this again.", s.Group, err)
 	}
 	fmt.Printf("%s\t%s\n", s.Group, s.Dir)
 	return nil

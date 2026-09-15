@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox/exec"
 )
 
 func TestUnknownCommandIsReported(t *testing.T) {
@@ -45,6 +46,20 @@ func TestBareHelpIsNotARequestForHelp(t *testing.T) {
 		if !isHelpRequest(spelling) {
 			t.Errorf("%q should be recognized as a request for help", spelling)
 		}
+	}
+}
+
+// TestTheStubFlagIsNotReadAsAProgram guards the one word that gets past the
+// dash rule. It carries a single dash, so the dispatcher would hand it to Run
+// as the name of a program to start in a sandbox -- and the sandbox it would
+// start is the one it is meant to be the inside of.
+func TestTheStubFlagIsNotReadAsAProgram(t *testing.T) {
+	err := Execute([]string{exec.StubFlag})
+	if err == nil || !strings.Contains(err.Error(), "takes a group") {
+		t.Errorf("the stub flag was not answered by the stub: %v", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "unknown command") {
+		t.Errorf("the stub flag was read as a program: %v", err)
 	}
 }
 

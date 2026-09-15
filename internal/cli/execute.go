@@ -13,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/cli/inspect"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/setup"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox/exec"
 )
 
 // command is one entry in the dispatch table.
@@ -70,6 +71,14 @@ func Execute(args []string) error {
 	if len(args) == 0 {
 		_, _ = io.WriteString(os.Stderr, usage.Text)
 		return exit.Errorf(exit.Usage, "no command given")
+	}
+	// wuserbox calling itself, inside the account a sandbox runs as. Answered
+	// here rather than from the table below, because it is not a command: it
+	// carries one dash where a command carries two, so the dispatcher would
+	// read it as the name of a program to start in a sandbox -- which is the
+	// one thing it is not.
+	if args[0] == exec.StubFlag {
+		return exec.Stub(args[1:])
 	}
 	if isHelpRequest(args[0]) {
 		return help(args[1:])
