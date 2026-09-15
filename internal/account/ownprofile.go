@@ -53,10 +53,37 @@ func MakeProfile(dir string, account sid.Value) error {
 	if _, err := os.Stat(hive); err == nil {
 		return nil
 	}
-	if err := createEmptyHive(hive); err != nil {
+	return makeHive(hive, account)
+}
+
+// makeHive builds the empty hive beside its final name and moves it there
+// only once its permissions have been narrowed, so NTUSER.DAT never exists
+// except finished.
+//
+// The two steps need different rights -- creating a hive needs none,
+// narrowing one needs SE_BACKUP_NAME and SE_RESTORE_NAME -- so a run
+// without them gets through the first and fails the second. Written
+// straight to NTUSER.DAT, what that leaves behind is a hive still granting
+// Everyone full control, and the next run, elevated or not, sees the file,
+// takes the profile for built and never narrows it: exactly the hole the
+// narrowing exists to close, held open by the attempt to close it.
+func makeHive(hive string, account sid.Value) error {
+	partial := hive + ".partial"
+	if err := os.Remove(partial); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("clearing a half-made profile hive: %w", err)
+	}
+	if err := createEmptyHive(partial); err != nil {
 		return err
 	}
-	return tightenHive(hive, account)
+	if err := tightenHive(partial, account); err != nil {
+		_ = os.Remove(partial)
+		return err
+	}
+	if err := os.Rename(partial, hive); err != nil {
+		_ = os.Remove(partial)
+		return fmt.Errorf("putting the profile hive in place: %w", err)
+	}
+	return nil
 }
 
 // createEmptyHive makes an empty registry hive at path with RegLoadAppKey,
@@ -85,7 +112,10 @@ func tightenHive(path string, account sid.Value) error {
 	if err := enablePrivilege("SeRestorePrivilege"); err != nil {
 		return err
 	}
-	const tempName = `wuserbox-tighten-hive`
+	// Named per process: two sandboxes initialized at once would otherwise
+	// collide here, and RegLoadKey refuses a name already in use rather
+	// than waiting for it.
+	tempName := fmt.Sprintf(`wuserbox-tighten-hive-%d`, os.Getpid())
 	if r, _, _ := procRegLoadKey.Call(hkeyUsers, uintptr(unsafe.Pointer(w32.UTF16(tempName))),
 		uintptr(unsafe.Pointer(w32.UTF16(path)))); r != 0 {
 		return fmt.Errorf("loading the profile hive to permission it: error %d", r)
@@ -135,9 +165,12 @@ var (
 // nothing already on it -- Everyone among it -- survives into the result.
 func setHiveSecurity(key uintptr, account sid.Value) error {
 	const (
-		keyAllAccess     = 0xF003F
-		trusteeIsSID     = 0
-		trusteeIsUnknown = 5
+		keyAllAccess = 0xF003F
+		trusteeIsSID = 0
+		// TRUSTEE_IS_UNKNOWN. The kind is not read where the form is a SID,
+		// which is every entry below; saying unknown rather than guessing
+		// keeps it from claiming something that was never checked.
+		trusteeIsUnknown = 0
 		grantAccess      = 1
 	)
 	who := func(p uintptr) trustee {
@@ -262,12 +295,17 @@ func RegisterProfile(account sid.Value, dir string) error {
 	}
 	defer procRegCloseKey.Call(key)
 
-	wide, _ := syscall.UTF16FromString(dir)
-	if r, _, _ := procRegSetValueEx.Call(key, uintptr(unsafe.Pointer(w32.UTF16("ProfileImagePath"))), 0,
-		regExpandSZ, uintptr(unsafe.Pointer(&wide[0])), uintptr(len(wide)*2)); r != 0 {
+	wide, err := syscall.UTF16FromString(dir)
+	if err != nil {
+		return fmt.Errorf("the profile directory cannot be written as a path: %w", err)
+	}
+	r, _, _ := procRegSetValueEx.Call(key, uintptr(unsafe.Pointer(w32.UTF16("ProfileImagePath"))), 0,
+		regExpandSZ, uintptr(unsafe.Pointer(&wide[0])), uintptr(len(wide)*2))
+	runtime.KeepAlive(wide)
+	if r != 0 {
 		return fmt.Errorf("writing ProfileImagePath for %s: error %d", sidText, r)
 	}
-	r, _, _ := procRegSetValueEx.Call(key, uintptr(unsafe.Pointer(w32.UTF16("Sid"))), 0,
+	r, _, _ = procRegSetValueEx.Call(key, uintptr(unsafe.Pointer(w32.UTF16("Sid"))), 0,
 		regBinary, uintptr(unsafe.Pointer(&account[0])), uintptr(len(account)))
 	runtime.KeepAlive(account)
 	if r != 0 {
@@ -285,10 +323,11 @@ var procRegDeleteKey = w32.Advapi32.NewProc("RegDeleteKeyW")
 
 // RemoveProfileServiceReference clears the entry the profile service keeps
 // for account's SID alongside ProfileList -- a second record of the same
-// profile that DeleteProfile does not reach, and that Windows was measured
-// to leave behind marking a profile stale otherwise. A reference that was
-// never made, because the sandbox never ran, is not an error. Requires
-// administrator rights, the same as writing the entry it clears.
+// profile that DeleteProfile does not reach. Whether Windows really leaves
+// one behind for a sandbox is not something this repository has measured;
+// clearing a key that may not be there costs nothing, and a reference that
+// was never made is not an error. Requires administrator rights, the same
+// as writing the entry it clears.
 func RemoveProfileServiceReference(account sid.Value) error {
 	sidText := account.String()
 	if r, _, _ := procRegDeleteKey.Call(hkeyLocalMachine,

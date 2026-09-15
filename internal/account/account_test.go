@@ -253,3 +253,35 @@ func TestLifecycle(t *testing.T) {
 		t.Error("the account survived deletion")
 	}
 }
+
+// Unlike TestLifecycle this needs no administrator rights, because the case
+// it is about is the run that does not have them: making the hive needs
+// none and narrowing its permissions needs two, so an ordinary run gets
+// through the first half and stops in the second. What it must not leave is
+// a hive at the name MakeProfile reads to decide the profile is already
+// built -- that one still grants Everyone full control, and no later run,
+// however privileged, would look at it again.
+func TestAHalfMadeProfileLeavesNoHiveForTheNextRunToTrust(t *testing.T) {
+	users, err := BuiltinUsersName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := sid.Lookup(users)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "profile")
+	hive := filepath.Join(dir, "NTUSER.DAT")
+	if err := MakeProfile(dir, value); err != nil {
+		if _, stat := os.Stat(hive); stat == nil {
+			t.Fatalf("MakeProfile stopped at %v and still left %s where the next run reads it", err, hive)
+		}
+		return
+	}
+	if _, err := os.Stat(hive); err != nil {
+		t.Fatalf("MakeProfile finished without making a hive: %v", err)
+	}
+	if _, err := os.Stat(hive + ".partial"); err == nil {
+		t.Error("the half-made hive was left beside the finished one")
+	}
+}
