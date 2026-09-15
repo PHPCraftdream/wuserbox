@@ -12,26 +12,28 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
-// writableIdentities are the identities a sandbox carries. A directory any
-// one of them may change is a directory every sandbox may change, however it
-// was meant to be handed out, which is what makes this list worth printing.
+// writableIdentities are the identities a sandbox carries through both of the
+// access checks its token faces. A directory either of them may change is a
+// directory every sandbox may change, however it was meant to be handed out,
+// which is what makes this list worth printing.
 //
-// Authenticated Users was missing from it for as long as a sandbox was a
-// restricted token that did not carry it. It does now, and a list of where
-// the boundary does not reach that left out one of the three ways through
-// would be worse than no list.
+// Authenticated Users was on it for as long as the account was the whole of a
+// sandbox: an account that logged on carries it, so a directory naming it was
+// one every sandbox could change. The restricted token is back on top of the
+// account and puts it out of reach again -- the second check names a short
+// list, and Authenticated Users is not on it -- so listing it now would report
+// places the boundary does reach.
 var writableIdentities = []struct {
 	name     string
 	writable func(string) bool
 }{
 	{"Everyone", acl.EveryoneWritable},
 	{"Users", acl.UsersWritable},
-	{"Authenticated Users", acl.AuthenticatedWritable},
 }
 
 // Audit lists directories the identities above may write to. The sandbox can
-// write there too: it carries all of them, and has to, or no program starts
-// in it and nothing under System32 can be read.
+// write there too: it carries both, and has to, or no program starts in it
+// and nothing under System32 can be read.
 func Audit(args []string) error {
 	depth := 2
 	if len(args) == 1 {
@@ -44,10 +46,9 @@ func Audit(args []string) error {
 	found := 0
 	var walk func(dir string, left int)
 	walk = func(dir string, left int) {
-		// All three, because all three are carried by a sandbox and any one
-		// of them makes a directory writable from inside one. Listing only
-		// two would have left the third out of the very list that exists to
-		// say where the boundary does not reach.
+		// Which of them, and not merely that one of them did: a directory
+		// open to Everyone and one open to Users are different problems with
+		// different fixes, and the list exists to be acted on.
 		var by []string
 		for _, who := range writableIdentities {
 			if who.writable(dir) {

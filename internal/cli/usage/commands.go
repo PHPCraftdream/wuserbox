@@ -9,10 +9,20 @@ var Commands = []Command{
 		Default: true,
 		Summary: "run a program sandboxed for the current directory",
 		Call:    "[options] <program> [arguments...]",
-		Detail: `Starts a program as this project's own local account, which reads
+		Detail: `Starts a program as this project's own local account, under a token
+restricted to that account's own identities, so that it reads
 everything you can read and writes only where the sandbox is allowed
 to: the project directory, the directories you have handed over, and a
 profile of its own that HOME, APPDATA and TEMP point inside.
+
+Being the account and being restricted are two different walls. The
+account is why the sandbox does not carry your own rights over your own
+files; the restriction is why it does not reach what the machine hands
+to every account that happens to be logged on. A token can only be
+restricted from inside the account it belongs to, so a run starts
+wuserbox as the account first and your program second -- which is why
+wuserbox itself has to sit somewhere every account can read, rather than
+inside your own profile. "wuserbox --init" checks that and says so.
 
 This is what wuserbox does when the first word is not one of its
 commands, so "wuserbox notepad.exe" is a whole command line. Options
@@ -308,21 +318,22 @@ says that too rather than reporting a clean removal.`,
 		Name:    "audit",
 		Summary: "list directories writable by the identities a sandbox carries",
 		Call:    "--audit [depth]",
-		Detail: `Walks the fixed drives and prints the directories that Everyone,
-BUILTIN\Users or Authenticated Users may write to, saying which of them
-it found. Those stay writable inside a sandbox as well: a sandbox
-carries all three, and has to -- without the first two no program starts
-and nothing on the system can be read, and the third comes with being an
-account that logged on -- so this is the list of places the boundary
-does not cover.
+		Detail: `Walks the fixed drives and prints the directories that Everyone or
+BUILTIN\Users may write to, saying which of the two it found. Those stay
+writable inside a sandbox as well: a sandbox carries both, and has to --
+without them no program starts and nothing on the system can be read --
+so this is the list of places the boundary does not cover.
 
-Nothing else is listed. A directory writable by some other group is not
-reachable from inside a sandbox, because a sandbox is not a member of
-it.
+Nothing else is listed. A directory writable by some other identity --
+Authenticated Users, or INTERACTIVE, which Windows itself puts on the
+shared public profile -- is not reachable from inside a sandbox, because
+the second access check its token faces names a short list and neither
+of those is on it.
 
-Authenticated Users was left out of this list while a sandbox was a
-restricted token, which did not carry it, and several machines grant it
-on a second drive. It belongs here now.
+Authenticated Users was on this list for as long as the account was the
+whole of a sandbox, because an account that logs on carries it. The
+restricted token is back on top of the account, so it is out of reach
+again and listing it would name a place the boundary does cover.
 
 The depth is how many levels below each drive root to look; two by
 default. A larger number takes longer.`,
@@ -362,11 +373,23 @@ back as they were meant to be.`,
 		Summary: "ask whether one thing would be allowed",
 		Call:    "--check <path> [--operation read|write|create|delete] [--dir project] [--json]",
 		Detail: `Asks Windows whether the sandbox could do something to a path. The
-answer comes from a token carrying the sandbox's group, which is what
-every permission wuserbox writes actually names, so it answers for the
-account a run uses without needing that account's password. Nothing is
+answer comes from the token a run gets and not from a likeness of it:
+the sandbox's account is logged on and its token restricted exactly as a
+run restricts it, so the answer is the one a run would meet. Nothing is
 opened for writing and nothing is created, so asking costs nothing and
 leaves no trace.
+
+A token carrying the sandbox's group alone was what this used to answer
+with, and it was wrong in one direction that mattered: it never carried
+the account's own identifier, so about the sandbox's own profile -- where
+its credentials and settings live, and whose permissions name exactly
+that identifier -- it said "refused" about a directory every run writes
+to.
+
+Asked from inside a sandbox about that same sandbox, it answers with
+the token the asking process is already running under, which is as
+direct as an answer gets -- and the only one available in there, since
+the password is sealed to whoever is outside.
 
 This is the honest way to find out before trying. For a path that does
 not exist, "create" asks about the directory that would hold it.

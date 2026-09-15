@@ -45,6 +45,12 @@ and put `wuserbox.exe` on your PATH. Keep the `ktav_cabi-windows-*.dll` beside
 it: that is the configuration parser, and with it in place the first run needs
 no network.
 
+Wherever it ends up, it has to be somewhere **every account can read and
+execute** — `C:\Program Files` or a shared tools directory, rather than a
+folder inside your own profile. A run starts wuserbox again as the sandbox's
+own account, and that account is not you. `wuserbox --init` starts it once and
+says so plainly if it could not.
+
 ## How it works
 
 Two Windows mechanisms, nothing else:
@@ -57,14 +63,25 @@ Two Windows mechanisms, nothing else:
 
 2. **A local account per project**, the group's only member, such as
    `wub-d6e9a21f`. The command runs as *that account* — not as you. It cannot
-   log on at the sign-in screen and cannot log on remotely.
+   log on at the sign-in screen and cannot log on remotely. Your own Full
+   Control over your own profile is not something it carries, because it is
+   not you.
 
-   So an access succeeds only where the group, or one of the memberships the
-   account needs in order to function at all, has a permission of its own.
-   Reading stays open because the account also carries `Everyone` and
-   `BUILTIN\Users`, which between them cover the system, and your own read
-   group, which covers your own profile and which nothing but your own sandbox
-   accounts ever join.
+3. **A token restricted to that account's own identities.** Every access is
+   then checked twice — once against what the account is, once against a short
+   list: the project's group, `Everyone`, `BUILTIN\Users`, your read group,
+   and the account itself. Both checks have to allow it, so an entry naming
+   anything else reaches nothing, whoever the machine hands it to.
+
+   A token can only be narrowed from inside the account it belongs to, which
+   is why a run is two processes: wuserbox starts as the account, cuts its own
+   token down, and starts your program under it.
+
+So an access succeeds only where the group, or one of the few identities a
+sandbox needs in order to function at all, has a permission of its own.
+Reading stays open because `Everyone` and `BUILTIN\Users` between them cover
+the system, and your own read group covers your own profile — a group nothing
+but your own sandbox accounts ever joins.
 
 Nothing is emulated or intercepted. The kernel enforces it, child processes
 inherit it, and a sweeping `rm -rf` stops at the same boundary as everything
@@ -109,11 +126,12 @@ the sandbox refreshes a copy, and the next run starts from your original
 again. Where that means logging in every run, log in once outside the
 sandbox so the refreshed file is in your own profile.
 
-This is the part that changed most recently, and it changed because MSYS2
-programs — `bash` and everything built on it — cannot start under a restricted
-token at all. The whole measurement is in
+The sandbox has a profile of its own because it has an account of its own, and
+it has an account of its own because MSYS2 programs — `bash` and everything
+built on it — could not start under a restricted copy of *your* token. The
+whole measurement is in
 [docs/investigations](docs/investigations/msys-under-a-restricted-token.md),
-and what replaced it in
+and what it led to in
 [docs/design](docs/design/an-account-of-its-own.md).
 
 ## Commands
@@ -236,12 +254,21 @@ inside a directory the sandbox may otherwise write to. Your own Full Control
 over your own profile is simply not something the sandbox carries, because it
 is not you.
 
-This is the second answer to the same problem. The first was a fully
-restricted token, which checked every access a second time against the
-sandbox's own identifier. It closed the gap and worked, right up against a
-wall: MSYS2 programs — `bash` and everything built on it — cannot start under
-one at all. The measurement is in
+The restricted token is the other answer to the same problem, and for a while
+the two were treated as alternatives. It checks every access a second time
+against a short list of the sandbox's own identities. It closed the gap and
+ran into a wall: MSYS2 programs — `bash` and everything built on it — could
+not start under one at all. The measurement is in
 [docs/investigations](docs/investigations/msys-under-a-restricted-token.md).
+
+What the wall was made of turned out to be *whose* identities. An MSYS runtime
+writes permissions naming the account it runs as and then reopens its own
+objects — its own process token among them — and a token restricted to a list
+that could not name that user was refused by them. A user's own identifier can
+never be a restricting one. An account's can, and under an account of its own
+the name in those permissions *is* the account. So the restriction went back
+on, on top of the account, where it costs nothing and closes what the account
+alone does not.
 
 The account carries `Everyone` and `BUILTIN\Users`, or it could not read
 System32, Program Files, or start a program that opens a window at all. That
@@ -315,7 +342,8 @@ Code running in the sandbox must not be able to widen its own permissions:
 * `--init`, `--rm`, `--grant`, `--revoke`, `--add-dir` and `--remove-dir`
   refuse to run from inside a sandbox, and wuserbox never asks for
   administrator rights from there. The check reads the kernel's
-  restricted-token flag, which sandboxed code cannot clear.
+  restricted-token flag, which sandboxed code cannot clear, and the name of
+  the account it is running as, which it cannot change either.
 * Sensitive entries that do not exist yet are taken as empty placeholders under
   the same locked permissions before the profile root is handed over, so a
   sandbox cannot claim one of those names first. A name is taken as whatever it
@@ -403,15 +431,14 @@ returned, so the code you read after it is the sandboxed program's own.
   a consequence of the account, not a feature built on top of it, so do not
   lean on it the way you would lean on the file boundary, which is tested.
 * **The network is not restricted.**
-* **Directories writable by `Everyone`, `BUILTIN\Users` or
-  `Authenticated Users` stay writable**, and this is the one place where what a
-  sandbox may change is wider than what it was handed. A sandbox carries all
-  three — the first for programs to start at all, the second to read System32
-  and Program Files, the third by virtue of being an account that logged on —
-  so a sandbox may change whatever the machine already lets every local account
-  change, without that directory ever having been granted. Many machines ship
-  `C:\ProgramData` that way. `wuserbox --audit` lists what it finds under any
-  of them. So the guarantee to hold wuserbox to is **a sandbox cannot change
+* **Directories writable by `Everyone` or `BUILTIN\Users` stay writable**, and
+  this is the one place where what a sandbox may change is wider than what it
+  was handed. A sandbox carries both — the first for programs to start at all,
+  the second to read System32 and Program Files — so a sandbox may change
+  whatever the machine already lets every local account change, without that
+  directory ever having been granted. Many machines ship
+  `C:\ProgramData` that way. `wuserbox --audit` lists what it finds under
+  either. So the guarantee to hold wuserbox to is **a sandbox cannot change
   what the machine does not already let every local account change, anywhere
   it was not handed** — somebody's own files, another sandbox's files, and
   anything named to its owner alone are outside a sandbox's reach; a shared
@@ -421,10 +448,14 @@ returned, so the code you read after it is the sandboxed program's own.
   everything under it, so a subdirectory somebody left open to `Everyone` or
   `Users` is narrowed along with the rest.
 
-  Only those two. A directory writable by some other group — `Authenticated
-  Users`, which several machines grant on a second drive — is out of a
-  sandbox's reach anyway, because a sandbox's restricted list does not carry
-  it, so `--audit` does not list it either.
+  Only those two. A directory writable by some other identity — `Authenticated
+  Users`, which several machines grant on a second drive, or `INTERACTIVE`,
+  which Windows itself puts on the shared public profile — is out of a
+  sandbox's reach, because the second access check names a short list and
+  neither is on it. That is what the restriction buys over the account alone,
+  and it buys it without anybody having to keep a list of such identities
+  complete: an ordinary interactive token carries at least nine. `--audit`
+  does not list them either.
 
   **An AppContainer would close this, and would cost the other half of the
   tool.** An AppContainer token ignores `Everyone` and `BUILTIN\Users`

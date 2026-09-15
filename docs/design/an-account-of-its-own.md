@@ -1,10 +1,13 @@
 # A sandbox with an account of its own
 
-**Status:** decided, not built. Follows
+**Status:** built. Follows
 [the MSYS investigation](../investigations/msys-under-a-restricted-token.md),
 which established that no change to the restricting list can let MSYS2
 programs start, because the only identities that would work are the user's own
-by another name.
+by another name. That was right about the list and wrong about what followed
+from it — the restricted token is here too now, on top of the account, where
+the identity it could not name is no longer the user's. See the
+investigation's Status section.
 
 ## What changes
 
@@ -17,6 +20,18 @@ The objects a program builds around "the current user" are then the sandbox's
 own objects: the MSYS runtime's signal pipe, its per-user shared section, its
 rewritten default list, and the registry a shell wants to write to. None of
 them needs a restricted token to be talked out of refusing.
+
+It also makes the restricted token usable rather than unnecessary, which is
+not what this section said when it was written. Those objects name the account
+now, and an account's identifier may be a restricting one, so restricting the
+token costs nothing — and it buys the thing the account alone does not: a
+sandbox reaches whatever the machine hands to every account that has logged
+on, `INTERACTIVE` on the shared public profile and `Authenticated Users`
+wherever somebody granted it, without having been handed anything. The second
+access check closes all of it, and closes it without anyone having to keep a
+list of such identities complete. A run is therefore the account *and* the
+token: wuserbox starts as the account, restricts its own token there, and
+starts the program under that.
 
 ## What the profile is
 
@@ -160,28 +175,40 @@ purpose:
 - **Nothing extra had to be granted** to start the process: no window station
   or desktop permission was needed.
 
-## Open questions
+## What the open questions turned out to be
 
-- Where the account password lives, and what protects it. This one grew:
-  `CreateProcessWithLogonW` needs the password on every run, not only at
-  creation.
-- Whether `Ctrl+C` from a keypress reaches a program running as another
-  account. This was reported as broken and the report does not establish it:
-  the same measurement fails identically for a program started by the *same*
-  account, so it was measuring its own method rather than the account
-  boundary. Sending the event the documented way — a child in its own process
-  group, signalled by that group's id — ends the child with
-  `STATUS_CONTROL_C_EXIT`, within one account at least.
+All four are closed. They are kept here rather than deleted, because what an
+answer cost is part of the design.
 
-  It is also no longer a question that can stop the design. wuserbox holds the
-  child's handle, so if a keypress does not cross the boundary by itself, the
-  parent can catch it and stop the child — through a job object, which reaches
-  grandchildren too. Today the parent deliberately ignores `Ctrl+C` because the
-  shared console delivers it directly; that would become an explicit hand-off
-  instead of a property relied upon.
-- What happens to sandboxes made by the current version when a new one meets
-  them.
-- Whether the copy is made afresh each run or only where the source is newer.
+- **Where the account password lives, and what protects it.** In the
+  sandbox's own record, sealed with `CryptProtectData` under the account that
+  built the sandbox. A file permission alone would not have done: the record
+  is readable by the sandbox itself, by the read group every record grants.
+  The seal is not, so a sandbox holding the bytes gets nothing from them —
+  and neither does a record carried to another machine or another person,
+  which is said in as many words rather than left as a DPAPI error about data
+  that is perfectly fine.
+- **Whether `Ctrl+C` reaches a program running as another account.** It does
+  not have to. wuserbox catches the keypress itself and ends a job object,
+  which reaches everything the sandbox started; the first interrupt is left
+  to the program, on purpose, and a second one within two seconds ends the
+  run. That held when the stub put a second process and a second job in the
+  chain: one interrupt still arrives at the program at the far end, and
+  insisting still ends everything — `internal/win/proc/middle_test.go`.
+- **What happens to sandboxes made by the current version when a new one
+  meets them.** They are recognised by what they are missing and brought
+  forward in place, keeping every permission they hold, because those
+  permissions name the group and the new account joins that group. The
+  diagnosis is shared between the listing and the repair, so a sandbox is
+  described the same way wherever it is mentioned —
+  `internal/sandbox/facts/condition.go`.
+- **Whether the copy is made afresh each run or only where the source is
+  newer.** Afresh, every run, and that turned out to depend on a second
+  decision: what is on the list. Naming whole agent state directories came to
+  72,320 files and 19 GB per run on one machine, almost none of it
+  credentials. The list names credential and settings *files* — 17 of them,
+  254 KB — and copying those on every run is cheap enough that nothing has to
+  reason about staleness.
 
 ## Building one as a standard user: not done, and how it would work
 
@@ -224,3 +251,12 @@ A coding agent started with `wuserbox` in a project can run `bash`, `git` and
 its own tooling; it sees the credentials the rules file lists and nothing else
 of yours; it cannot write or delete outside the project and what was granted;
 and a second sandbox cannot touch the first. Measured, not argued.
+
+Where it is measured: the tests named one by one in
+`.github/workflows/ci.yml`, which fail the build if any of them skips or if
+any name in the list stops matching anything. The ones built on real local
+accounts are in `internal/e2e/account_test.go` — two accounts that cannot
+reach each other, a shell that starts under the account's own restricted
+token, a directory granted only to `INTERACTIVE` that the restriction closes
+and the plain account does not, and the program's exit code coming back out
+through both.

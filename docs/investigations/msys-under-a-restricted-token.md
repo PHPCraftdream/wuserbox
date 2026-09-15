@@ -1,7 +1,9 @@
 # MSYS2 programs will not start under the restricted token
 
-**Status:** open, under investigation. First seen 2026-09-15 on wuserbox
-`3385448`.
+**Status:** resolved. First seen 2026-09-15 on wuserbox `3385448`; closed the
+same day by changing *whose* token is restricted rather than what is on the
+list. See the Status section at the end — everything before it is the
+measurement as it was taken, and is left alone.
 
 ## The problem
 
@@ -225,19 +227,39 @@ with it.
 
 ## Status
 
-The mechanism is settled and measured, and so is the fact that no change to
-the restricting list can fix it. The direction is not settled. Nothing in the
-program has been changed for it.
+**Resolved.** The finding above — that no change to the restricting list can
+fix this — holds, and was the wrong end of the problem to pull on. The list was
+never what was wrong. The user was.
+
+An MSYS runtime writes permissions naming the account it runs as and then
+reopens its own objects, its own process token among them, and a token
+restricted to a list that cannot name that user is refused by them. A user's
+own identifier can never be a restricting one, so for a token derived from the
+user's own token there is no list that works.
+
+Under a local account of its own, the name in those permissions is the
+account's, and an account's identifier *can* be a restricting one. So the
+token is restricted inside the account, by wuserbox starting itself there —
+`internal/sandbox/exec/stub.go`. Measured on CI: `bash --version` starts under
+a token restricted to the sandbox's own identities; the sandbox still writes
+what it was granted; a directory granted only to `INTERACTIVE` is refused,
+paired with the same write succeeding under the plain account so the refusal
+cannot pass for the wrong reason. See `internal/e2e/account_test.go`.
+
+The account and the restricted token are therefore complementary, not
+alternatives, although they were treated as alternatives for a while after
+this was written.
 
 Of the measurements above, the permission list on the pipe and the sweep of
 identities that let the shell start were made twice, independently, and agree.
 
-## What a fix has to keep
+## What a fix had to keep
 
-The twenty-five tests named one by one in `.github/workflows/ci.yml`. They are
-the property the tool exists for: a sandbox writes and deletes only inside what
-it was granted, and never reaches another sandbox. A change that makes `bash`
-start and costs one of those is not a fix.
+The tests named one by one in `.github/workflows/ci.yml`. They are the
+property the tool exists for: a sandbox writes and deletes only inside what it
+was granted, and never reaches another sandbox. A change that made `bash`
+start and cost one of those would not have been a fix. None was lost, and the
+list has grown by the account-based tests since.
 
 ## Reproducing it
 

@@ -243,11 +243,3 @@ func heldBy(path, account string, wanted uint32) (bool, error) {
 	}
 	return found, nil
 }
-
-// AuthenticatedWritable reports whether Authenticated Users may write to
-// path, the third identity every sandbox carries. Unlike the other two it
-// was invisible until a sandbox became an account: a restricted token never
-// carried it, so a directory naming it was not reachable from inside one.
-func AuthenticatedWritable(path string) bool {
-	return writableBy(path, sid.Authenticated)
-}
