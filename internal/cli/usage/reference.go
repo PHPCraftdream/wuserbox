@@ -46,6 +46,23 @@ THE RULES FILE
   entry wins, and that is reported too. Set WUSERBOX_CONFIG to read the rules
   from somewhere else.
 
+  A second, project-independent list, "profile", names what is copied from
+  the user's own profile into a sandbox's own thin one before a run:
+
+    profile: [
+        .claude
+        .gitconfig
+        AppData/Local/claude-cli-nodejs
+    ]
+
+  Each entry is a path relative to the profile root, copied to the same
+  relative place under the sandbox's; there is no rw or ro here, because
+  copying only ever reads from the user's profile and never writes back to
+  it. It is pre-filled when this file is first created, from the agent preset
+  and the credentials a coding agent commonly needs, and is otherwise edited
+  by hand like the rest of this file. A name missing on this machine is
+  simply not copied.
+
 ENVIRONMENT
 
   Set for the program running inside a sandbox:

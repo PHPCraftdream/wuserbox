@@ -15,4 +15,11 @@ package config
 // Config is the whole file.
 type Config struct {
 	Projects []Rule `json:"projects"`
+	// Profile lists the files and directories copied from the user's profile
+	// into a sandbox's own thin profile before a run, each named as a path
+	// relative to the profile root so a copy can land at the same relative
+	// place under whatever a sandbox is given. It is pre-filled when this
+	// file is first created and otherwise edited by hand, the same as the
+	// project rules above it.
+	Profile []string `json:"profile"`
 }

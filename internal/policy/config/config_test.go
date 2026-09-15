@@ -52,6 +52,32 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	}
 }
 
+// TestProfileRoundTripsAsRelativeForwardSlashPaths is the regression guard
+// for the copier: it joins these entries onto a profile root itself, so a
+// backslash surviving into the file (an escape, in ktav) or an absolute
+// spelling would send it somewhere the user's own profile never had.
+func TestProfileRoundTripsAsRelativeForwardSlashPaths(t *testing.T) {
+	path := useTempConfig(t)
+	want := &Config{Profile: []string{`.claude`, `AppData\Local\claude-cli-nodejs`}}
+	if err := want.Save(); err != nil {
+		t.Fatal(err)
+	}
+	text, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(text), `\`) {
+		t.Errorf("a backslash survived into the file:\n%s", text)
+	}
+	got, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Profile) != 2 || got.Profile[1] != "AppData/Local/claude-cli-nodejs" {
+		t.Errorf("profile came back as %v", got.Profile)
+	}
+}
+
 func TestLoadWithoutFileIsEmpty(t *testing.T) {
 	useTempConfig(t)
 	got, err := Load()

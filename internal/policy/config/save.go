@@ -9,14 +9,18 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
-const header = "## wuserbox: extra directories each project may write to.\n" +
+const header = "## wuserbox: extra directories each project may write to, and the\n" +
+	"## profile entries copied into a sandbox before a run.\n" +
 	"## Edit with `wuserbox --add-dir <dir>` / `wuserbox --remove-dir <dir>`.\n" +
 	"## Paths use forward slashes: ktav reads a backslash as an escape.\n"
 
 // Save writes the config as ktav, storing paths with forward slashes so the
 // file stays hand-editable.
 func (c *Config) Save() error {
-	out := Config{Projects: []Rule{}}
+	out := Config{Projects: []Rule{}, Profile: []string{}}
+	for _, entry := range c.Profile {
+		out.Profile = append(out.Profile, filepath.ToSlash(entry))
+	}
 	for _, p := range c.Projects {
 		rule := Rule{Dir: filepath.ToSlash(p.Dir)}
 		for _, d := range p.RW {

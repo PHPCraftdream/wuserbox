@@ -51,9 +51,11 @@ func ProtectSettings(s *state.State) error {
 	return nil
 }
 
-// ensureRules writes an empty rules file when there is none. It is held while
-// doing so, like every other change to that file, so it cannot overwrite a rule
-// another command is writing at the same moment.
+// ensureRules writes a rules file when there is none, its profile section
+// pre-filled from the agent preset, so the common agents' credentials are
+// copied into a sandbox without anybody composing that list by hand. It is
+// held while doing so, like every other change to that file, so it cannot
+// overwrite a rule another command is writing at the same moment.
 func ensureRules() error {
 	if _, err := os.Stat(config.Path()); err == nil {
 		return nil
@@ -68,6 +70,7 @@ func ensureRules() error {
 		if err != nil {
 			return err
 		}
+		rules.Profile = preset.Profile()
 		return rules.Save()
 	})
 }
