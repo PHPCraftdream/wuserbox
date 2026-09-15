@@ -282,9 +282,9 @@ says that too rather than reporting a clean removal.`,
 		Call:    "--audit [depth]",
 		Detail: `Walks the fixed drives and prints the directories that Everyone or
 BUILTIN\Users may write to, saying which of the two it found. Those stay
-writable inside a sandbox as well, because both have to be restricting
-identifiers for a program to start at all and to read the system it runs
-on, so this is the list of places the boundary does not cover.
+writable inside a sandbox as well: a sandbox carries both, and has to --
+without them no program starts and nothing on the system can be read --
+so this is the list of places the boundary does not cover.
 
 Nothing else is listed. A directory writable by some other group — by
 "Authenticated Users", say, which several machines grant on a second
@@ -328,10 +328,12 @@ back as they were meant to be.`,
 		Name:    "check",
 		Summary: "ask whether one thing would be allowed",
 		Call:    "--check <path> [--operation read|write|create|delete] [--dir project] [--json]",
-		Detail: `Asks Windows whether the sandbox could do something to a path, using
-the same restricted token a run would get. Nothing is opened for
-writing and nothing is created, so asking costs nothing and leaves no
-trace.
+		Detail: `Asks Windows whether the sandbox could do something to a path. The
+answer comes from a token carrying the sandbox's group, which is what
+every permission wuserbox writes actually names, so it answers for the
+account a run uses without needing that account's password. Nothing is
+opened for writing and nothing is created, so asking costs nothing and
+leaves no trace.
 
 This is the honest way to find out before trying. For a path that does
 not exist, "create" asks about the directory that would hold it.

@@ -12,9 +12,8 @@ import (
 // It refuses changing and not reading, which is the whole of the difference
 // between AccessChange and AccessModify. Refusing with the wider mask looks
 // stricter and is simply wrong: the wider one carries FILE_READ_DATA and
-// READ_CONTROL, and a restricted token's second check refuses the entire
-// request the moment any bit still wanted is denied, so the file stopped being
-// readable as well. That is what --home-writes does to every file already in
+// READ_CONTROL, and a refusal naming a bit refuses every request that asks
+// for it, so the file stopped being readable as well. That is what --home-writes does to every file already in
 // the profile root, which left the sandbox unable to read ~/.gitconfig or
 // ~/.npmrc -- against the promise this tool opens with.
 //

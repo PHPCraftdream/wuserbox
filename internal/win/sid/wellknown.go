@@ -2,17 +2,19 @@ package sid
 
 // Identifiers Windows assigns the same value on every machine.
 const (
-	// Everyone has to be a restricting identifier on the sandbox token:
-	// starting any program that loads the window subsystem opens
-	// \Sessions\N\Windows, whose permissions name only Everyone. Without it
-	// every process except the command interpreter dies with 0xC0000142.
+	// Everyone is carried by every account there is, so a sandbox running as
+	// its own account has it without asking. It still has to be named in the
+	// restricting list of the token a sandbox without an account of its own
+	// runs under: starting any program that loads the window subsystem opens
+	// \Sessions\N\Windows, whose permissions name only Everyone, and without
+	// it every process except the command interpreter dies with 0xC0000142.
 	Everyone = "S-1-1-0"
 	System   = "S-1-5-18"
-	// Users has to be a restricting identifier too, for the same reason
-	// Everyone does: without it, a sandbox token that checks every access
-	// against the restricted list -- not only writes -- cannot read the
-	// system it needs to run anything, since Program Files and Windows
-	// itself grant Users read and execute rather than Everyone.
+	// Users is how a sandbox reads the system it needs in order to run
+	// anything at all: Program Files and Windows itself grant Users read and
+	// execute rather than Everyone. A sandbox account is made a member of it
+	// outright; the older restricted token names it in its restricting list
+	// instead, which arrives at the same access by a different route.
 	Users = "S-1-5-32-545"
 	// Administrators is needed when a permission list has to be written from
 	// nothing. An object with no list at all grants everybody everything,

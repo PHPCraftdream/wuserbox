@@ -10,9 +10,9 @@ import (
 	"unsafe"
 )
 
-// auditCmd lists directories that Everyone or BUILTIN\Users may write to. The
-// sandbox can write there too, because both have to be restricting
-// identifiers for processes to start and read System32 at all.
+// Audit lists directories that Everyone or BUILTIN\Users may write to. The
+// sandbox can write there too: it carries both, and has to, or no program
+// starts in it and nothing under System32 can be read.
 func Audit(args []string) error {
 	depth := 2
 	if len(args) == 1 {

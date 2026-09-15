@@ -13,9 +13,11 @@ import (
 const Prefix = "wub-"
 
 // ReadGroup is the one group shared by every sandbox, rather than made fresh
-// per project: a fully restricted token needs BUILTIN\Users to read System32
-// and Program Files, but nothing built in covers the user's own profile the
-// same way, so this is granted read-and-execute there once, machine-wide.
+// per project. BUILTIN\Users covers System32 and Program Files, but nothing
+// built in covers the user's own profile the same way -- a Windows profile
+// names its owner, the system and administrators and nobody else -- so this
+// is granted read-and-execute there once, machine-wide, and every sandbox
+// account joins it.
 const ReadGroup = Prefix + "read"
 
 const errNotFound = 2220 // NERR_GroupNotFound

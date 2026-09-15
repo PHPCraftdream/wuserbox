@@ -47,10 +47,10 @@ const (
 	// -- GENERIC_WRITE (0x40000000) expands to FILE_GENERIC_WRITE, which
 	// includes READ_CONTROL and SYNCHRONIZE -- so a refusal built from one
 	// would deny part of an ordinary read alongside every write bit, and
-	// deny it outright: a restricted token's second check refuses the whole
-	// request the moment any bit still wanted is denied. A write-restricted
-	// token never surfaced this, because it skipped that second check for
-	// reads entirely; a fully restricted one does not.
+	// deny it outright: a refusal naming a bit refuses every request asking
+	// for it, and an ordinary read asks for READ_CONTROL. This went unseen
+	// under the write-restricted token wuserbox started with, which skipped
+	// its second check for reads entirely.
 	AccessChange uint32 = changing &^ genericBits
 )
 

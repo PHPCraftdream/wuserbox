@@ -31,6 +31,18 @@ type sidAndAttributes struct {
 }
 
 // Restricted derives a fully restricted token from the caller's own token.
+//
+// This was how a sandbox ran, and is no longer: MSYS2 programs cannot start
+// under one at all, which is what moved a sandbox onto an account of its own
+// -- see docs/investigations/msys-under-a-restricted-token.md. It is kept,
+// and still carries weight, in three places. A sandbox built by an older
+// version runs this way until `--init` gives it an account. `--check`
+// answers with it, because it needs no password. And the boundary tests
+// reach it with a made-up group, which is what lets them prove the boundary
+// on a machine with no administrator rights at all -- the NTFS check a real
+// account's token faces is the same one this faces, since what every
+// permission names is the group, and both carry it.
+//
 // Every access, not only writes, is checked a second time against the
 // restricting identifiers, so it succeeds only where the sandbox group — or
 // one of the shared identifiers alongside it — has a permission of its own.

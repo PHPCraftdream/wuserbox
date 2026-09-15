@@ -183,17 +183,21 @@ var (
 // carries. Inheritance is switched off, so a permission granted on a parent
 // directory can never reach this object afterwards.
 //
-// Reading is not part of what this refuses, and the identifier it is given to
-// is the whole of the care here. A sandbox's restricted list checks every
-// access now, not only writes, so a file naming only the owner, the system
-// and administrators goes unreadable to every sandbox along with unwritable.
+// Reading is not part of what this refuses, and the identity it is given to
+// is the whole of the care here. A file naming only the owner, the system and
+// administrators is unreadable to a sandbox as well as unwritable, and a
+// sandbox that cannot read ~/.gitconfig is one most tools will not start in.
 // Everyone and BUILTIN\Users would fix that and give it away: this is applied
 // to .ssh, .aws, .netrc and the rest of them, so on a machine with a second
-// local account it would hand that account the owner's private keys.
-// group.ReadGroup has no members at all, so no ordinary token carries it and
-// no other account gains anything, while a sandbox — which carries it among
-// its restricting identifiers rather than its groups — passes its second
-// check on it and still has to pass the first as the user it really is.
+// person's account it would hand that account the owner's private keys.
+// group.ReadGroup is joined by sandbox accounts and nothing else, so it
+// reaches exactly what wuserbox started and no other login on the machine.
+//
+// So a sandbox reads these files and cannot change or delete them. That is
+// the deliberate shape of it, and it is worth saying plainly rather than
+// leaving to be inferred: the secret in ~/.ssh is readable from inside a
+// sandbox, and what this protects is that it cannot be rewritten, replaced
+// or destroyed there.
 //
 // Where that group does not exist yet, nothing takes its place. A protected
 // file the sandbox cannot read is the safe half of that choice.

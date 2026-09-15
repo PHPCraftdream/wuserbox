@@ -33,9 +33,16 @@ type Result struct {
 	Reason string `json:"reason"`
 }
 
-// Check asks Windows whether a sandbox could perform an operation, using the
-// same restricted token a run would get. Nothing is opened for writing and
-// nothing is created, so asking is free of consequences.
+// Check asks Windows whether a sandbox could perform an operation.
+//
+// The answer comes from a token carrying the sandbox's group, not from the
+// account a run actually uses -- logging that account on would need its
+// password, and this has to be answerable without one. It is the same answer
+// either way: every permission wuserbox writes names the group, and the
+// account's only way to any of them is being a member of it.
+//
+// Nothing is opened for writing and nothing is created, so asking is free of
+// consequences.
 func Check(group string, path string, operation Operation) (Result, error) {
 	result := Result{Path: path, Operation: operation, Checked: path}
 

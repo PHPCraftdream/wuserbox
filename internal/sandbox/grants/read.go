@@ -10,10 +10,9 @@ import (
 )
 
 // EnsureReadGroup makes the profile of whoever is running this readable to
-// group.ReadGroup, the one identifier a fully restricted token can reach the
-// profile through: neither Everyone nor BUILTIN\Users covers a Windows
-// profile, which by default names only its owner, the system and
-// administrators.
+// group.ReadGroup, the one identity a sandbox can reach the profile
+// through: neither Everyone nor BUILTIN\Users covers a Windows profile,
+// which by default names only its owner, the system and administrators.
 //
 // What it asks is whether the permission is on the profile, not whether the
 // group exists. Those are two different things, and the second is a poor
