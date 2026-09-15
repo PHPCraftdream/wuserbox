@@ -82,12 +82,52 @@ And the promise at the top of the README, in its narrowed form: the sandbox
 still reads what you can read, through membership of `wub-read` rather than
 through a restricting identity.
 
+## What was measured before building any of it
+
+The design holds. Under a throwaway local account, made and removed for the
+purpose:
+
+- **The shell starts.** `bash --version` from Git for Windows printed its
+  banner and exited 0, with none of the fatal errors the investigation
+  recorded. `git` and `powershell -NoProfile` ran too. That is the whole reason
+  for the change, and it is confirmed rather than argued.
+- **Starting the program needs no administrator rights.**
+  `CreateProcessWithLogonW` is the one call that is guaranteed to work from an
+  ordinary user, and it takes the account's password — which is why where that
+  password lives is now a question the design has to answer rather than a
+  detail. `LogonUser` with `CreateProcessAsUser` happened to work here only
+  because this account is in `Administrators`; on a plain account it would not.
+- **Reading works as intended.** `BUILTIN\Users` covers `C:\Windows` and
+  `C:\Program Files` — neither grants `Everyone` — and membership of
+  `wub-read` covers the user's own files, which grant no `Users` entry at all.
+- **Without a Windows-made profile**, which is what the thin profile wants,
+  `USERPROFILE` points at `C:\Users\Default`, there is no `HKEY_CURRENT_USER`
+  hive, and writing to it fails. Reading the registry still works, and
+  PowerShell still ran. So a shell works without a profile; anything that saves
+  settings in the registry will not, which is what the README already says
+  about sandboxes today.
+- **Nothing extra had to be granted** to start the process: no window station
+  or desktop permission was needed.
+
 ## Open questions
 
-- Where the account password lives, and what protects it.
-- Whether a process started as another account can keep this console, its
-  standard handles and Ctrl+C. This decides whether the design is usable at
-  all, and it is the first thing to measure.
+- Where the account password lives, and what protects it. This one grew:
+  `CreateProcessWithLogonW` needs the password on every run, not only at
+  creation.
+- Whether `Ctrl+C` from a keypress reaches a program running as another
+  account. This was reported as broken and the report does not establish it:
+  the same measurement fails identically for a program started by the *same*
+  account, so it was measuring its own method rather than the account
+  boundary. Sending the event the documented way — a child in its own process
+  group, signalled by that group's id — ends the child with
+  `STATUS_CONTROL_C_EXIT`, within one account at least.
+
+  It is also no longer a question that can stop the design. wuserbox holds the
+  child's handle, so if a keypress does not cross the boundary by itself, the
+  parent can catch it and stop the child — through a job object, which reaches
+  grandchildren too. Today the parent deliberately ignores `Ctrl+C` because the
+  shared console delivers it directly; that would become an explicit hand-off
+  instead of a property relied upon.
 - What happens to sandboxes made by the current version when a new one meets
   them.
 - Whether the copy is made afresh each run or only where the source is newer.
