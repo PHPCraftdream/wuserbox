@@ -171,15 +171,16 @@ func removeAccount(groupName string, asJSON bool) error {
 		}
 		left = append(left, part)
 	}
-	// The thin profile directory goes first, unprivileged in principle --
-	// its own entry for the machine owner is what makes that true -- so a
-	// failure past this point still leaves something a retry can find and
-	// finish.
-	if err := os.RemoveAll(sandbox.ProfileDir(groupName)); err != nil {
-		complain("its profile directory", err)
-	}
+	// The record Windows keeps goes before the directory it points at, not
+	// after. DeleteProfileW deletes the directory itself where it takes the
+	// job, and taking the directory away first leaves it pointing at nothing
+	// and refusing -- which is what it did, on every removal, until this was
+	// turned around. Whatever it leaves behind, RemoveAll finishes.
 	if err := acct.DeleteProfile(value.String()); err != nil {
 		complain("its ProfileList entry", err)
+	}
+	if err := os.RemoveAll(sandbox.ProfileDir(groupName)); err != nil {
+		complain("its profile directory", err)
 	}
 	if err := acct.RemoveProfileServiceReference(value); err != nil {
 		complain("its profile service reference", err)

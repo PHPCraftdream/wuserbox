@@ -245,6 +245,12 @@ func TestLifecycle(t *testing.T) {
 	if err := DeleteProfile(value.String()); err != nil {
 		t.Errorf("deleting a profile that was never made: %v", err)
 	}
+	// And it is actually gone. Reporting success while the entry still
+	// stands is what this looked like before: Windows would go on believing
+	// a deleted account has a profile at a path nothing has cleaned up.
+	if hasProfile(value.String()) {
+		t.Error("the ProfileList entry survived DeleteProfile")
+	}
 
 	if err := Delete(testName); err != nil {
 		t.Fatal(err)
