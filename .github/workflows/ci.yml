@@ -59,8 +59,18 @@ jobs:
           # on any skip would be shorter and wrong: two tests in it skip for
           # honest reasons about the machine they find, and a check that turns
           # red for those teaches people to ignore it. Every name here is a
-          # claim that this one can always be answered, anywhere.
-          names='TestDeletingOutsideTheBoundaryIsRefused|TestASweepStopsAtTheBoundary|TestTheSandboxKeepsItsOwnWrites|TestReadingIsStillUnrestricted|TestOneSandboxCannotDeleteAnothersFiles|TestAProtectedFileInsideAGrantedDirectorySurvives|TestOneSandboxCannotReachWhatADirectoryAboveHandedDown|TestPeerCannotReachAnEntryASubdirectoryHoldsItself|TestRevokingReachesWhatANestedGrantPinned|TestRepairingAnInterruptedNarrowingReachesWhatANestedGrantPinned|TestASandboxCannotRewriteThePermissionsItWasLeft|TestNarrowingNeverHandsOutReading|TestHomeTopHoldsWhereTheMachineHandsOutNothing|TestAGrantThatCannotFinishGrantsNothing|TestAGrantThatCannotFinishChangesNothingAtAll|TestAnObjectWithNoListAtAllIsNarrowedToo|TestAnAuditSeesWhatWasHandedDown|TestASweepDoesNotCostTheOwnerTheirOwnWrite|TestAGrantDoesNotReachThroughAJunction|TestGrantingADirectoryWithNoListKeepsItsOwner|TestAProtectedObjectInsideAGrantedTreeStaysProtected|TestAGrantRefusesAFileWithASecondNameOutside|TestAllowLinksHandsTheTreeOverAnyway|TestAGrantAllowsALinkThatStaysInsideTheTree|TestALinkInsideATreeNamedInShortFormIsStillInside|TestAGrantTakesWriteFromAuthenticatedUsersToo'
+          # claim that this one can always be answered here.
+          #
+          # "Here" and not "anywhere", since the last two were added: those
+          # build real local accounts and need administrator rights, which a
+          # runner always has and a desk usually does not. They are on this
+          # list because they are the only tests that measure the boundary on
+          # the mechanism a real run uses -- the rest go through the older
+          # restricted token, where an entry naming something the token does
+          # not carry reaches nobody, so they cannot tell a permission taken
+          # away from one that was never reachable. Running them anywhere but
+          # CI means reading the skip and knowing why.
+          names='TestDeletingOutsideTheBoundaryIsRefused|TestASweepStopsAtTheBoundary|TestTheSandboxKeepsItsOwnWrites|TestReadingIsStillUnrestricted|TestOneSandboxCannotDeleteAnothersFiles|TestAProtectedFileInsideAGrantedDirectorySurvives|TestOneSandboxCannotReachWhatADirectoryAboveHandedDown|TestPeerCannotReachAnEntryASubdirectoryHoldsItself|TestRevokingReachesWhatANestedGrantPinned|TestRepairingAnInterruptedNarrowingReachesWhatANestedGrantPinned|TestASandboxCannotRewriteThePermissionsItWasLeft|TestNarrowingNeverHandsOutReading|TestHomeTopHoldsWhereTheMachineHandsOutNothing|TestAGrantThatCannotFinishGrantsNothing|TestAGrantThatCannotFinishChangesNothingAtAll|TestAnObjectWithNoListAtAllIsNarrowedToo|TestAnAuditSeesWhatWasHandedDown|TestASweepDoesNotCostTheOwnerTheirOwnWrite|TestAGrantDoesNotReachThroughAJunction|TestGrantingADirectoryWithNoListKeepsItsOwner|TestAProtectedObjectInsideAGrantedTreeStaysProtected|TestAGrantRefusesAFileWithASecondNameOutside|TestAllowLinksHandsTheTreeOverAnyway|TestAGrantAllowsALinkThatStaysInsideTheTree|TestALinkInsideATreeNamedInShortFormIsStillInside|TestAGrantTakesWriteFromAuthenticatedUsersToo|TestTwoRealAccountsCannotReachEachOther|TestAGrantTakesAuthenticatedUsersAwayFromEveryOtherAccount'
           output=$(go test ./internal/e2e/... ./internal/win/acl/... -count=1 -v -run "$names" 2>&1)
           echo "$output"
           if echo "$output" | grep -q -- "--- SKIP"; then
