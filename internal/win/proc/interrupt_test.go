@@ -192,7 +192,7 @@ func runDriver() {
 // waitForPid waits for a pid file to hold a pid, which is not the same as
 // waiting for it to exist. PowerShell's Out-File creates the file and writes
 // into it afterwards, so a driver that moved on at the first sight of it
-// signalled readiness while the file was still empty, and the test reading it
+// signaled readiness while the file was still empty, and the test reading it
 // got "" where it wanted a number. Every use of the marker wants the pid, so
 // the wait is for the pid.
 func waitForPid(path string, timeout time.Duration) bool {
@@ -352,17 +352,34 @@ func TestRunStopsOnInterruptAndWhatItStarted(t *testing.T) {
 		t.Fatal("driver never became ready")
 	}
 
-	// Sent to the driver's own console process group id -- its pid, since
-	// it was started with CREATE_NEW_PROCESS_GROUP above -- twice in a row:
-	// an interrupt arriving while the first is still being handled must not
-	// change the outcome.
+	// Sent to the driver's own console process group id -- its pid, since it
+	// was started with CREATE_NEW_PROCESS_GROUP above.
 	pid := uint32(cmd.Process.Pid)
 	if r, _, callErr := procGenerateCtrlEvent.Call(ctrlBreakEvent, uintptr(pid)); r == 0 {
 		t.Fatalf("GenerateConsoleCtrlEvent: %v", callErr)
 	}
-	procGenerateCtrlEvent.Call(ctrlBreakEvent, uintptr(pid))
+	// And kept up until the run ends, rather than pressed exactly twice and
+	// hoped for. What ends the run is a second interrupt the driver *observes*
+	// within two seconds of the first, and observing one is not the same as
+	// sending it: Windows delivers each console control event on a thread it
+	// creates in the target, so under load -- the whole suite at once -- two
+	// sent back to back can arrive more than two seconds apart, and the second
+	// then counts as a new first. That made this test fail while the behavior
+	// it tests was working. Somebody insisting presses again; so does this.
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(300 * time.Millisecond):
+				procGenerateCtrlEvent.Call(ctrlBreakEvent, uintptr(pid))
+			}
+		}
+	}()
 
 	waitDriver(t, cmd, 45*time.Second)
+	close(stop)
 
 	report := readReport(t, resultFile)
 	if !strings.HasPrefix(report, "ok ") {

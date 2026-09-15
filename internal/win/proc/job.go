@@ -21,12 +21,14 @@ var (
 )
 
 const (
-	// The child starts suspended and in its own console process group, so it
-	// cannot start anything of its own before it is in the job (the job is
-	// what has to reach what it starts), and a Ctrl+C at the console reaches
-	// this process rather than the child directly. Whether that keypress
-	// would even cross into the account a sandboxed program runs as is not
-	// something to rely on; ending the job from here does not depend on it.
+	// The child starts suspended, so it cannot start anything of its own
+	// before it is in the job -- the job is what has to reach what it starts.
+	//
+	// It is deliberately not put in a process group of its own, which would
+	// disable Ctrl+C for it entirely and take the keypress away from the
+	// program it is meant for. Whether a keypress crosses into the account a
+	// sandboxed program runs as is a separate question, and not one this
+	// depends on: ending the job from here works either way.
 	createSuspended       = 0x00000004
 	createNewProcessGroup = 0x00000200
 
