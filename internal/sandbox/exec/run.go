@@ -66,7 +66,16 @@ func runRestricted(s *state.State, commandLine string) (int, error) {
 func runAsAccount(s *state.State, commandLine string) (int, error) {
 	password, err := account.Unprotect(s.Secret)
 	if err != nil {
-		return -1, fmt.Errorf("opening the sandbox account's password: %w", err)
+		// The seal is tied to the account that made it, so the one way to
+		// hold this record and not be able to open it is to be somebody
+		// else -- which means the sandbox was built by another account and
+		// its record reached this one by some route wuserbox did not take.
+		// Said here rather than left as a DPAPI error code, because that
+		// code says "the data is invalid" and the data is fine.
+		return -1, fmt.Errorf(
+			"the password for %s was sealed by a different account and cannot be opened by this one; "+
+				"rebuild the sandbox with `wuserbox --init --dir %s`: %w",
+			s.Account, s.Dir, err)
 	}
 	return proc.RunAsAccount(s.Account, password, commandLine, s.Dir, childEnv(s, profileOf(s)))
 }

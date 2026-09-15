@@ -175,9 +175,45 @@ func rebuild(options sandbox.Options, name string) (*state.State, error) {
 		return nil, err
 	}
 	if s == nil {
-		return nil, fmt.Errorf("sandbox %s was not created", name)
+		return nil, elevatedRunWentElsewhere(name, options.Dir)
 	}
 	return s, nil
+}
+
+// elevatedRunWentElsewhere explains an elevated init that reported success
+// and left nothing where this process looks.
+//
+// The elevated process gets its own environment rather than this one's:
+// ShellExecuteEx with "runas" has nowhere to put an environment block, and
+// the service that starts it builds one from the account that answered the
+// consent prompt. Where that is the same person -- an administrator clicking
+// Yes -- %LOCALAPPDATA% is the same directory and everything lands where
+// this process will look. Where it is somebody else -- a standard user's
+// prompt asks for an administrator's credentials, and the process then runs
+// as that administrator -- the group, the account and the profile are made
+// on the machine, and the record naming them is written into that
+// administrator's profile, which this account never reads.
+//
+// Retrying walks the same path: the group and account are found, the record
+// is not, and init is asked for again. So this refuses rather than
+// returning something that looks like a reason to try once more, and says
+// what is actually on the machine, because a sandbox half-built this way
+// leaves an account behind that this person cannot use.
+func elevatedRunWentElsewhere(name, dir string) error {
+	if !resolves(name) {
+		// Elevation came back saying it worked and the group is not there.
+		// Nothing more is known than that.
+		return exit.Errorf(exit.Failed, "sandbox %s was not created", name)
+	}
+	return exit.Errorf(exit.Failed,
+		"sandbox %s was created by a different administrator than the one running this, "+
+			"so its record went to that account's profile and this one cannot read it.\n"+
+			"  The group and the account exist on the machine and nothing here can use them: "+
+			"remove them with `wuserbox --rm --dir %s`.\n"+
+			"  wuserbox cannot yet build a sandbox for an account that is not itself an "+
+			"administrator; open an elevated terminal as this account and run "+
+			"`wuserbox --init --dir %s` there.",
+		name, dir, dir)
 }
 
 // rebuildOptions is what actually goes into the elevated re-exec.

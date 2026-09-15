@@ -183,6 +183,41 @@ purpose:
   them.
 - Whether the copy is made afresh each run or only where the source is newer.
 
+## Building one as a standard user: not done, and how it would work
+
+A standard user's consent prompt asks for *another* administrator's
+credentials, and `ShellExecuteEx` with `runas` has nowhere to put an
+environment block — the service that starts the elevated process builds one
+from whoever answered. So the elevated half runs as that administrator, and
+two things land in the wrong place at once:
+
+- `%LOCALAPPDATA%` is theirs, so the record goes into their profile.
+- `CryptProtectData` seals under their account, so even a record that
+  somehow reached the right person could not be opened by them.
+
+Today wuserbox detects this after the fact — the elevated run reports
+success and the record is not where this process looks — refuses instead of
+asking for elevation again, and says what was left on the machine. That is
+honest and it is not a fix.
+
+The fix is to split the elevated half down to only what actually needs
+administrator rights, and hand the rest back:
+
+1. The unelevated parent passes its own account identifier — public
+   information, safe on a command line — and the paths it wants used.
+2. The elevated child makes the group, the account and the profile, and
+   writes the generated password into a file whose permission list names
+   exactly that one account and nobody else.
+3. The parent reads it, seals it with its own DPAPI, writes the record into
+   its own state directory, and deletes the file.
+
+The password crosses a process boundary in the clear, on disk, for as long
+as those two steps take. That is the part to measure rather than reason
+about: the permission list has to be right before the bytes are written,
+not after, and the file has to go even where the parent dies in between.
+None of it can be measured on a machine whose only user is an
+administrator, which is why it is written down here instead of built.
+
 ## Acceptance
 
 A coding agent started with `wuserbox` in a project can run `bash`, `git` and

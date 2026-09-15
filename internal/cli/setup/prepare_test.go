@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	acct "github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
@@ -294,5 +295,46 @@ func TestRunClearsTheProfileWhenTheAgentPresetIsWithheld(t *testing.T) {
 	}
 	if len(recorded) != 0 {
 		t.Errorf("the bookkeeping still lists %v after --no-ai cleared the profile", recorded)
+	}
+}
+
+// TestAnElevatedRunThatWentElsewhereSaysSo is the regression guard for the
+// dead end a standard user walks into. Their consent prompt asks for an
+// administrator's credentials, so the elevated init runs as that
+// administrator, with that administrator's environment: the group and the
+// account are made on the machine and the record naming them is written
+// into a profile this account never reads. The run then reported "sandbox
+// was not created", which is the one thing that had not happened, and
+// asking again did the same thing again.
+func TestAnElevatedRunThatWentElsewhereSaysSo(t *testing.T) {
+	const missingGroup = "wub-nothing-by-this-name-00000000"
+	dir := t.TempDir()
+
+	// Nothing on the machine: there is nothing more to say than that.
+	plain := elevatedRunWentElsewhere(missingGroup, dir)
+	if plain == nil {
+		t.Fatal("an elevated run that left nothing behind was not reported at all")
+	}
+	if strings.Contains(plain.Error(), "different administrator") {
+		t.Errorf("a missing group was blamed on the wrong thing: %v", plain)
+	}
+
+	// A group this machine really has, standing in for one the elevated run
+	// made: that is the case worth explaining.
+	users, err := acct.BuiltinUsersName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	said := elevatedRunWentElsewhere(users, dir)
+	if said == nil {
+		t.Fatal("a sandbox built by another account was not reported at all")
+	}
+	for _, want := range []string{"different administrator", "--rm", "--init", dir} {
+		if !strings.Contains(said.Error(), want) {
+			t.Errorf("the refusal never mentions %q: %v", want, said)
+		}
+	}
+	if got := exit.Of(said); got != exit.Failed {
+		t.Errorf("exit code is %v, want %v", got, exit.Failed)
 	}
 }

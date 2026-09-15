@@ -371,6 +371,16 @@ returned, so the code you read after it is the sandboxed program's own.
 
 ## Limits worth knowing
 
+* **You have to be an administrator yourself.** Not to run a sandbox — that
+  needs nothing — but to build one. A standard user's consent prompt asks for
+  *another* administrator's credentials, and the elevated half then runs as
+  that person: the group, the account and the profile are made on the machine,
+  while the record naming them is written into that administrator's profile
+  and sealed to their account, where yours can neither read nor open it.
+  wuserbox detects this, refuses rather than looping, and tells you what is
+  left on the machine and how to remove it. Making it work means the elevated
+  half doing only what needs administrator rights and handing the rest back,
+  which is not built.
 * **Reading is not restricted.** The sandbox sees your keys, tokens and browser
   data. It prevents damage, not a determined leak.
 * **What it cannot read is what belongs to your account rather than to a file.**
