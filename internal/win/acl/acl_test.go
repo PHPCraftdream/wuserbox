@@ -629,3 +629,104 @@ func TestAGrantThatCannotFinishChangesNothingAtAll(t *testing.T) {
 		t.Error("a grant that refused had already narrowed part of the tree")
 	}
 }
+
+// TestGrantingADirectoryWithNoListKeepsItsOwner is the regression guard for
+// the same absence one level up.
+//
+// A directory with no permission list has nothing to carry over, so the grant
+// published a list holding the sandbox and nobody else, and the person who
+// granted it could no longer write their own directory. What the absence gave
+// everybody is written down first, narrowed, and the grant added to that.
+func TestGrantingADirectoryWithNoListKeepsItsOwner(t *testing.T) {
+	root := t.TempDir()
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	setSDDL(t, root, "D:NO_ACCESS_CONTROL")
+	t.Cleanup(func() { setSDDL(t, root, `D:P(A;OICI;FA;;;`+owner+`)`) })
+	if !EveryoneWritable(root) {
+		t.Fatal("a list-less directory was not writable by Everyone, so this proves nothing")
+	}
+
+	if err := Isolate(root, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "owner.txt"), []byte("x"), 0o644); err != nil {
+		t.Errorf("granting a directory with no list cost its owner their own write: %v", err)
+	}
+	if held, err := heldBy(root, unusedAccount, AccessModify); err != nil || !held {
+		t.Errorf("the sandbox did not get what it was granted (held=%v, err=%v)", held, err)
+	}
+	if EveryoneWritable(root) {
+		t.Error("Everyone still writes the directory that was handed over")
+	}
+	if !holds(t, root, "Everyone", "(RX)") {
+		t.Error("Everyone lost its reading instead of being narrowed to it")
+	}
+}
+
+// TestAProtectedObjectInsideAGrantedTreeStaysProtected is a guard against a
+// change that would look like a fix.
+//
+// A protected object does not hear from the directory above it, so handing
+// that directory to a sandbox does not reach inside: the sandbox holds the
+// tree and not this. It is tempting to call that a gap and have the sweep add
+// the sandbox's own identifier to what it normalises — and that would hand
+// every granted home directory's .ssh, .aws and .netrc to the sandbox, which
+// is the one thing acl.Protect exists to prevent.
+//
+// The same is true whether the protected object has an ordinary list or none
+// at all; the second only looks different because the absence used to give
+// everybody everything.
+func TestAProtectedObjectInsideAGrantedTreeStaysProtected(t *testing.T) {
+	root := t.TempDir()
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordinary := filepath.Join(root, "ordinary")
+	listless := filepath.Join(root, "listless")
+	for _, dir := range []string{ordinary, listless} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setSDDL(t, ordinary, `D:P(A;OICI;FA;;;`+owner+`)(A;OICI;0x1301BF;;;BU)`)
+	setSDDL(t, listless, "D:P"+"NO_ACCESS_CONTROL")
+	t.Cleanup(func() {
+		for _, dir := range []string{ordinary, listless} {
+			setSDDL(t, dir, `D:P(A;OICI;FA;;;`+owner+`)`)
+		}
+	})
+	secret := filepath.Join(root, "id_rsa")
+	if err := os.WriteFile(secret, []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Protect(secret); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Isolate(root, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{ordinary, listless, secret} {
+		if held, err := heldBy(path, unusedAccount, AccessModify); err != nil || held {
+			t.Errorf("granting the tree above reached into %s (held=%v, err=%v)",
+				filepath.Base(path), held, err)
+		}
+	}
+	// And the reason the sweep went there at all still holds.
+	if UsersWritable(ordinary) {
+		t.Error("a protected descendant is still writable by BUILTIN\\Users")
+	}
+	if EveryoneWritable(listless) {
+		t.Error("a protected descendant with no list is still writable by Everyone")
+	}
+}

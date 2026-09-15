@@ -361,6 +361,14 @@ returned, so the code you read after it is the sandboxed program's own.
   "reads everything you can read" is the promise this tool opens with. Closing
   the shared-writable hole that way makes a different, narrower tool, so it is
   not a change to make quietly on top of this one.
+* **A protected file inside a granted tree stays protected**, and that is
+  deliberate rather than an oversight. Handing a directory over reaches
+  everything under it that still listens to it, but an object whose
+  permissions are its own and do not inherit — `~/.ssh`, `~/.aws`, `~/.netrc`
+  and the rules file, which wuserbox protects itself — does not. Granting a
+  home directory therefore does not hand over the keys in it. The cost is that
+  anything else protected in there is out of the sandbox's reach too; grant it
+  by name if the sandbox should have it.
 * **Two commands changing overlapping trees at once are not one operation.**
   A lock is held per path, so `wuserbox --grant C:\work` and `wuserbox --grant
   C:\work\inner` started at the same moment can cross: the sweep over the outer

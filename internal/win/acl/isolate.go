@@ -105,6 +105,20 @@ func Isolate(path, account string, entries []ACE, reach uint32) error {
 	}
 
 	var list []explicitAccess
+	if dacl == nil {
+		// Nothing to carry over, because there was no list -- which is not an
+		// empty list but the widest an object gets, everybody holding every
+		// right. Writing only the grant on top of that left a directory whose
+		// permissions named the sandbox and nobody else: the owner could not
+		// write their own directory afterwards, measured. What the absence gave
+		// everybody is written down instead, narrowed, and the grant is added
+		// to it.
+		seed, err := fromNothing(holder)
+		if err != nil {
+			return err
+		}
+		list = seed
+	}
 	var taken uint32
 	for _, one := range held {
 		// What this account holds is about to be set outright, refusals and
@@ -318,22 +332,37 @@ func narrowOwn(path string, everyone, users, holder uintptr) error {
 // directory above hands down still arrives here afterwards, the same as for
 // every other object the sweep touches.
 func giveAList(path string, holder uintptr) error {
+	list, err := fromNothing(holder)
+	if err != nil {
+		return err
+	}
+	return apply(path, list, false)
+}
+
+// fromNothing is the list that stands for an absent one, narrowed.
+//
+// It is built in one place because two callers need the same answer: the
+// sweep, writing it onto an object inside a granted tree, and the grant
+// itself, where the directory being handed over is the one with no list. The
+// second was missed at first, and a grant on such a directory published a list
+// naming the sandbox alone -- the owner locked out of their own directory by
+// the act of granting it.
+func fromNothing(holder uintptr) ([]explicitAccess, error) {
 	const subtree = InheritObjects | InheritContainers
 	const fullControl = 0x1F01FF
 	list := []explicitAccess{entry(holder, fullControl, subtree, grantAccess)}
 	for _, known := range []string{sid.System, sid.Administrators} {
 		value, err := sid.Parse(known)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		list = append(list, entry(value, fullControl, subtree, grantAccess))
 	}
 	everyone, err := sid.Parse(sid.Everyone)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	list = append(list, entry(everyone, fullControl&^changing, subtree, grantAccess))
-	return apply(path, list, false)
+	return append(list, entry(everyone, fullControl&^changing, subtree, grantAccess)), nil
 }
 
 // allEntries walks an access control list entry by entry and returns what it
