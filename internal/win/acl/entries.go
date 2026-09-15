@@ -185,12 +185,30 @@ func Reads(path, account string) bool {
 // writableBy answers the question --audit is built on. A list that cannot be
 // read counts as writable: the command exists to point at places worth looking
 // at, and passing one over in silence is the one answer it must not give.
+//
+// Unreadable is how the caller tells that answer from the other one. The two
+// must not be printed alike -- see there.
 func writableBy(path, account string) bool {
 	held, err := heldBy(path, account, changing)
 	if err != nil {
 		return true
 	}
 	return held
+}
+
+// Unreadable reports that path's permission list cannot be read at all, so
+// nothing can be said about who may write there.
+//
+// writableBy counts such a list as writable, which is the right way to fail
+// and the wrong thing to print. The two findings are not the same, and the
+// difference lands hardest where it alarms most: measured on an ordinary
+// machine, `--audit` named two other people's profiles as writable by
+// Everyone and by Users. Neither is. Their lists are unreadable precisely
+// because they are closed, and this account may not look at them -- which the
+// list then reported as the opposite of what it means.
+func Unreadable(path string) bool {
+	_, err := heldBy(path, sid.Everyone, changing)
+	return err != nil
 }
 
 // heldBy reports whether account holds any of the wanted rights on path.

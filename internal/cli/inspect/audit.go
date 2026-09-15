@@ -43,7 +43,7 @@ func Audit(args []string) error {
 	} else if len(args) > 1 {
 		return exit.Errorf(exit.Usage, "usage: wuserbox --audit [depth]")
 	}
-	found := 0
+	found, unreadable := 0, 0
 	var walk func(dir string, left int)
 	walk = func(dir string, left int) {
 		// Which of them, and not merely that one of them did: a directory
@@ -55,8 +55,13 @@ func Audit(args []string) error {
 				by = append(by, who.name)
 			}
 		}
-		if len(by) > 0 {
-			fmt.Printf("%s (%s)\n", dir, strings.Join(by, ", "))
+		switch {
+		case len(by) == 0:
+		case acl.Unreadable(dir):
+			fmt.Println(finding(dir, nil))
+			unreadable++
+		default:
+			fmt.Println(finding(dir, by))
 			found++
 		}
 		if left == 0 {
@@ -76,7 +81,23 @@ func Audit(args []string) error {
 		walk(drive, depth)
 	}
 	fmt.Fprintf(os.Stderr, "%d directories writable by Everyone or Users\n", found)
+	if unreadable > 0 {
+		fmt.Fprintf(os.Stderr, "%d more could not be read by this account, so nothing is claimed about them; "+
+			"a list this account may not look at usually belongs to somebody else\n", unreadable)
+	}
 	return nil
+}
+
+// finding is one line of the list. Naming the identities is the answer; "the
+// permissions could not be read" is a different answer and has to look like
+// one, or the most alarming lines in the list are the ones that mean the
+// least -- another person's profile is unreadable here exactly because it is
+// closed.
+func finding(dir string, by []string) string {
+	if len(by) == 0 {
+		return fmt.Sprintf("%s (the permissions could not be read)", dir)
+	}
+	return fmt.Sprintf("%s (%s)", dir, strings.Join(by, ", "))
 }
 
 func fixedDrives() []string {
