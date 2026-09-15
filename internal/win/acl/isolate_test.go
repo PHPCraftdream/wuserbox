@@ -324,13 +324,21 @@ func TestAGrantDoesNotReachThroughAJunction(t *testing.T) {
 	if err := Set(outside, unusedAccount, writable); err != nil {
 		t.Fatal(err)
 	}
+	beyond := filepath.Join(outside, "beyond.txt")
+	if err := os.WriteFile(beyond, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	link := filepath.Join(root, "link")
 	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, outside).CombinedOutput(); err != nil {
 		t.Skipf("this machine would not make a junction: %v\n%s", err, out)
 	}
 	t.Cleanup(func() { _ = os.Remove(link) })
 
-	if err := Isolate(root, unusedAccount, writable, InheritObjects|InheritContainers); err != nil {
+	// Handed to somebody else than the account already named outside, so that
+	// what is found there afterwards says which direction it came from. Asking
+	// only whether the outside entry survived would pass either way.
+	const newcomer = "S-1-5-21-1111111111-2222222222-3333333333-543211"
+	if err := Isolate(root, newcomer, writable, InheritObjects|InheritContainers); err != nil {
 		t.Fatal(err)
 	}
 	if !UsersWritable(outside) {
@@ -339,6 +347,17 @@ func TestAGrantDoesNotReachThroughAJunction(t *testing.T) {
 	if kept, err := heldBy(outside, unusedAccount, AccessModify); err != nil || !kept {
 		t.Errorf("granting a tree rewrote an entry somewhere outside it, through a junction (kept=%v, err=%v)",
 			kept, err)
+	}
+	// The other half, and the one the comment above has always claimed: a
+	// junction must not carry the new permission across either. Nothing removed
+	// is only half of "does not reach through".
+	if reached, err := heldBy(outside, newcomer, AccessModify); err != nil || reached {
+		t.Errorf("granting a tree handed an entry to something outside it, through a junction (reached=%v, err=%v)",
+			reached, err)
+	}
+	if reached, err := heldBy(beyond, newcomer, AccessModify); err != nil || reached {
+		t.Errorf("granting a tree reached a file inside the junction's target (reached=%v, err=%v)",
+			reached, err)
 	}
 }
 

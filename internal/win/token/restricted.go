@@ -3,6 +3,7 @@ package token
 
 import (
 	"fmt"
+	"runtime"
 	"syscall"
 	"unsafe"
 
@@ -81,18 +82,37 @@ func Restricted(sandboxGroup string) (syscall.Token, error) {
 	// A sandbox built before ReadGroup existed simply runs without it: the
 	// profile reads that depended on it fail, the same way any other missing
 	// grant would, rather than refusing to run at all.
+	// Held in a variable that outlives the if, so it can be kept alive across
+	// the call below rather than ending where the condition does.
+	var readBuf sid.Value
 	if read, err := sid.Lookup(group.ReadGroup); err == nil {
-		restricting = append(restricting, sidAndAttributes{uintptr(unsafe.Pointer(&read[0])), 0})
+		readBuf = read
+		restricting = append(restricting, sidAndAttributes{uintptr(unsafe.Pointer(&readBuf[0])), 0})
 	}
 
 	var restricted syscall.Token
 	r, _, callErr := procCreateRestrictedToken.Call(uintptr(self), disableMaxPrivilege,
 		0, 0, 0, 0, uintptr(len(restricting)), uintptr(unsafe.Pointer(&restricting[0])),
 		uintptr(unsafe.Pointer(&restricted)))
+	// The restricting list holds plain numbers, and a number is not a reference:
+	// three of those identifiers live in memory Go allocated and nothing else
+	// mentions afterwards, so the collector is entitled to take them back before
+	// the call above has read them. The rule that keeps an unsafe.Pointer alive
+	// covers the call expression it appears in and nothing further. The two
+	// parsed identifiers need no such care -- ConvertStringSidToSid hands back
+	// memory belonging to Windows.
+	//
+	// Losing one would almost certainly refuse to build a token rather than
+	// build a weaker one, which is the right direction to fail in, but a
+	// boundary should not rest on that.
+	runtime.KeepAlive(logonBuf)
+	runtime.KeepAlive(readBuf)
 	if r == 0 {
 		return 0, fmt.Errorf("creating the restricted token: %w", callErr)
 	}
-	if err := shareWithGroup(restricted, formatSID(user), sandboxGroup); err != nil {
+	owner := formatSID(user)
+	runtime.KeepAlive(userBuf)
+	if err := shareWithGroup(restricted, owner, sandboxGroup); err != nil {
 		return 0, err
 	}
 	return restricted, nil

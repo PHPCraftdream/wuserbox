@@ -374,3 +374,43 @@ func TestPruneIsNotHeldUpByAnOpenFile(t *testing.T) {
 		}
 	}
 }
+
+// TestARefusalLeavesReadingAlone is the regression guard for a refusal that
+// refused too much.
+//
+// Refuse used the wider of the two masks, and the wider one carries
+// FILE_READ_DATA and READ_CONTROL. A restricted token's second check refuses
+// the whole request the moment any bit still wanted is denied, so a file
+// refused this way stopped being readable as well as unwritable. That is what
+// --home-writes does to every file already in the profile root, which left the
+// sandbox unable to read ~/.gitconfig or ~/.npmrc -- against the one promise
+// this tool opens with.
+func TestARefusalLeavesReadingAlone(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "settings.conf")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := acl.Set(file, unusedAccount, []acl.ACE{{Access: acl.AccessReadExecute}}); err != nil {
+		t.Fatal(err)
+	}
+	if !acl.Reads(file, unusedAccount) {
+		t.Fatal("the account cannot read the file before it is refused, so this proves nothing")
+	}
+
+	if err := Refuse(unusedAccount, file); err != nil {
+		t.Fatal(err)
+	}
+
+	if !acl.Reads(file, unusedAccount) {
+		t.Error("refusing a file took reading away from it as well")
+	}
+	// And the refusal is really there, or the check above would pass for the
+	// plain reason that nothing was written at all.
+	listed, err := exec.Command("icacls", file).CombinedOutput()
+	if err != nil {
+		t.Fatalf("icacls %s: %v", file, err)
+	}
+	if !strings.Contains(string(listed), "(DENY)") {
+		t.Errorf("no refusal was written:\n%s", listed)
+	}
+}
