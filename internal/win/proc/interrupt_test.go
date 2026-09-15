@@ -43,6 +43,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -82,6 +83,20 @@ func runDriver() {
 
 	gcPidFile := filepath.Join(dir, "grandchild.pid")
 	readyFile := filepath.Join(dir, "ready.marker")
+
+	// A handler that outlives the run, and is never taken down.
+	//
+	// The tests press again every 300ms until the driver is seen to have
+	// ended, because two events sent back to back can arrive more than two
+	// seconds apart under load. That leaves a window: once Run returns it
+	// takes its own handler down with it, and the next event in that window
+	// is handled by Windows instead, which ends this process with
+	// STATUS_CONTROL_C_EXIT. Measured on CI as a driver that "failed" with
+	// exactly that code after doing everything it was asked and writing its
+	// report. Keeping a handler installed leaves this process its own master
+	// for as long as it is alive, which is what a real wuserbox is too.
+	ignored := make(chan os.Signal, 16)
+	signal.Notify(ignored, os.Interrupt)
 
 	var token syscall.Token
 	if err := syscall.OpenProcessToken(syscall.Handle(^uintptr(0)), syscall.TOKEN_ALL_ACCESS, &token); err != nil {
