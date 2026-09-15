@@ -145,25 +145,28 @@ func remove(name string, asJSON bool) error {
 	return group.Delete(name)
 }
 
-// removeAccount takes the sandbox's own local account away: its profile
-// directory first, while its SID still resolves, so a failure part-way
-// through leaves something a retry can still find; then the sign-in screen
-// entry and the account itself. It works from the group's name alone,
+// removeAccount takes away the sandbox's own local account and everything
+// wuserbox put on the machine for it. It works from the group's name alone,
 // deriving the account's name the same way ensureAccount does, so a missing
-// or damaged record never stands between removal and an account it can
-// still find.
+// or damaged record never stands between removal and what it has to remove.
 //
-// The account never existing -- a sandbox this old, or one whose account a
-// previous attempt already removed -- is not a failure.
+// Two rules shape the order, and the second was learned from a profile that
+// could not be got rid of.
+//
+// The account goes last, and only where everything naming it has gone
+// first. Its SID is how the ProfileList entry and the profile service
+// reference are found, and once the account is deleted that SID resolves to
+// nothing: deleting it while one of those is still standing leaves a record
+// nothing can look up again.
+//
+// The profile directory is taken away whether or not there was an account to
+// remove. It is derived from the group's name and depends on the account for
+// nothing, and the early return that used to stand here -- no account, so
+// nothing to do -- meant that an attempt which deleted the account but
+// failed on the directory stranded it for good, because every later attempt
+// left immediately. A thin profile is about two and a half megabytes; one
+// somebody has added to can be gigabytes.
 func removeAccount(groupName string, asJSON bool) error {
-	name := acct.NameFor(groupName)
-	if !accountExists(name) {
-		return nil // never made, or already taken by an earlier attempt
-	}
-	value, err := sid.Lookup(name)
-	if err != nil {
-		return err
-	}
 	var left []string
 	complain := func(part string, err error) {
 		if !asJSON {
@@ -171,26 +174,45 @@ func removeAccount(groupName string, asJSON bool) error {
 		}
 		left = append(left, part)
 	}
-	// The record Windows keeps goes before the directory it points at, not
-	// after. DeleteProfileW deletes the directory itself where it takes the
-	// job, and taking the directory away first leaves it pointing at nothing
-	// and refusing -- which is what it did, on every removal, until this was
-	// turned around. Whatever it leaves behind, RemoveAll finishes.
-	if err := acct.DeleteProfile(value.String()); err != nil {
-		complain("its ProfileList entry", err)
+
+	name := acct.NameFor(groupName)
+	if accountExists(name) {
+		value, err := sid.Lookup(name)
+		if err != nil {
+			return err
+		}
+		// The record Windows keeps goes before the directory it points at,
+		// not after. DeleteProfileW deletes the directory itself where it
+		// takes the job, and taking the directory away first leaves it
+		// pointing at nothing and refusing -- which is what it did, on every
+		// removal, until this was turned around.
+		stillNamesIt := false
+		if err := acct.DeleteProfile(value.String()); err != nil {
+			complain("its ProfileList entry", err)
+			stillNamesIt = true
+		}
+		if err := acct.RemoveProfileServiceReference(value); err != nil {
+			complain("its profile service reference", err)
+			stillNamesIt = true
+		}
+		if err := acct.UnhideFromSignIn(name); err != nil {
+			complain("its sign-in screen entry", err)
+			stillNamesIt = true
+		}
+		if stillNamesIt {
+			// Kept on purpose: its SID is how a second attempt finds what
+			// is still standing above.
+			left = append(left, "the account itself, kept so a retry can still find the rest")
+		} else if err := acct.Delete(name); err != nil {
+			complain("the account itself", err)
+		}
 	}
+	// Whatever the account's own removal made of it, and whether or not
+	// there was one.
 	if err := os.RemoveAll(sandbox.ProfileDir(groupName)); err != nil {
 		complain("its profile directory", err)
 	}
-	if err := acct.RemoveProfileServiceReference(value); err != nil {
-		complain("its profile service reference", err)
-	}
-	if err := acct.UnhideFromSignIn(name); err != nil {
-		complain("its sign-in screen entry", err)
-	}
-	if err := acct.Delete(name); err != nil {
-		complain("the account itself", err)
-	}
+
 	if len(left) > 0 {
 		return exit.Errorf(exit.Failed,
 			"%s was not fully removed and is left in place so `wuserbox --rm` can finish it: %s",

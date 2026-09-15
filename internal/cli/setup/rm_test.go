@@ -14,9 +14,11 @@ import (
 	"syscall"
 	"testing"
 
+	acct "github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 	"github.com/PHPCraftdream/wuserbox/internal/win/access"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
@@ -483,4 +485,35 @@ func captureStdout(t *testing.T, run func() error) string {
 		t.Fatal(runErr)
 	}
 	return shown
+}
+
+// TestRemovalClearsTheProfileEvenWithNoAccountLeft is the regression guard
+// for a profile nothing could ever get rid of.
+//
+// removeAccount used to leave at once when the account was gone -- no
+// account, nothing to do. But an attempt that deleted the account and then
+// failed on the directory left exactly that state, and every later attempt
+// walked straight past it. A thin profile is a couple of megabytes; one
+// somebody has added to is gigabytes, and it was stranded for good.
+func TestRemovalClearsTheProfileEvenWithNoAccountLeft(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	const name = "wub-stranded-00000000"
+
+	profile := sandbox.ProfileDir(name)
+	if err := os.MkdirAll(filepath.Join(profile, "AppData", "Local"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profile, "NTUSER.DAT"), []byte("a hive"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if accountExists(acct.NameFor(name)) {
+		t.Skip("an account by this name really exists here, which this test is not about")
+	}
+
+	if err := removeAccount(name, true); err != nil {
+		t.Fatalf("removing a sandbox whose account is already gone: %v", err)
+	}
+	if _, err := os.Stat(profile); !os.IsNotExist(err) {
+		t.Errorf("the profile directory survived, with no account left to ever come back for it: %v", err)
+	}
 }
