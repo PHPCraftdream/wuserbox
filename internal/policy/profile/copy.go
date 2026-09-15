@@ -149,8 +149,25 @@ func within(entry string) (string, error) {
 	return clean, nil
 }
 
+// Ceiling is how much one run may carry into a sandbox's profile before it is
+// stopped.
+//
+// The list this serves names credentials and settings, and came to 254 KB
+// where it was measured. It named whole agent state directories once and came
+// to 72,320 files and 19,436 MB -- per sandbox, per run -- and nothing noticed
+// until somebody counted. Retiring that default fixes the rules files wuserbox
+// wrote; it does not fix one somebody wrote themselves, and nothing else here
+// would ever tell them.
+//
+// Going over stops the run rather than being reported and passed over. A copy
+// still going after this much is filling a sandbox with somebody's work rather
+// than with what an agent needs to log in, and the run it is holding up was
+// going to start with a half-built profile either way.
+const Ceiling = 64 << 20
+
 func copyEntries(home string, root *os.Root, entries []string) ([]string, error) {
 	var copied []string
+	left := int64(Ceiling)
 	for _, entry := range entries {
 		dst, err := within(entry)
 		if err != nil {
@@ -161,7 +178,7 @@ func copyEntries(home string, root *os.Root, entries []string) ([]string, error)
 		if err != nil {
 			continue // not on this machine; not an error
 		}
-		if err := mirror(src, dst, root, info); err != nil {
+		if err := mirror(src, dst, root, info, &left); err != nil {
 			return copied, fmt.Errorf("copying %s: %w", entry, err)
 		}
 		copied = append(copied, entry)
@@ -186,14 +203,21 @@ func copyEntries(home string, root *os.Root, entries []string) ([]string, error)
 // the default was the latter once, and came to 72,320 files and 19 GB per
 // run. A sandbox has its own writable profile for project data and caches,
 // and those never belong in this list.
-func mirror(src, dst string, root *os.Root, info os.FileInfo) error {
+func mirror(src, dst string, root *os.Root, info os.FileInfo, left *int64) error {
 	if info.IsDir() {
-		return mirrorDir(src, dst, root)
+		return mirrorDir(src, dst, root, left)
+	}
+	if *left -= info.Size(); *left < 0 {
+		return fmt.Errorf("this is carrying more than %d MB into the sandbox's profile, and %s is "+
+			"where it went over. The profile section of the rules file is for the files an agent "+
+			"needs in order to be logged in, not for the directories it keeps its work in: name "+
+			"those files, or take the directory out",
+			Ceiling>>20, src)
 	}
 	return mirrorFile(src, dst, root)
 }
 
-func mirrorDir(src, dst string, root *os.Root) error {
+func mirrorDir(src, dst string, root *os.Root, left *int64) error {
 	if err := clearWhatIsNotADirectory(root, dst); err != nil {
 		return err
 	}
@@ -219,7 +243,7 @@ func mirrorDir(src, dst string, root *os.Root) error {
 			continue
 		}
 		present[e.Name()] = true
-		if err := mirror(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()), root, info); err != nil {
+		if err := mirror(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()), root, info, left); err != nil {
 			return err
 		}
 	}

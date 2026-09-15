@@ -15,12 +15,19 @@ import (
 // every dotfile already in it writable, because Windows pushes an inherited
 // permission down to the files that are already there.
 func AI() []grant.Spec {
+	dirs, files := aiPaths()
+	return existing(dirs, files)
+}
+
+// aiPaths is every place this project knows an agent keeps its state, whether
+// or not any of it is on this machine.
+func aiPaths() (dirs, files []string) {
 	home := paths.Home()
 	local := os.Getenv("LOCALAPPDATA")
 	roaming := os.Getenv("APPDATA")
 	join := filepath.Join
 
-	dirs := []string{
+	dirs = []string{
 		// The whole of ~/.config, not the agent directories inside it: tools
 		// keep their settings there and expect to be able to write them.
 		//
@@ -44,8 +51,20 @@ func AI() []grant.Spec {
 		join(home, ".junie"), join(home, ".lingma"), join(home, ".cagent"),
 		join(roaming, "Goose"), join(local, "Goose"),
 	}
-	files := []string{join(home, ".claude.json")}
+	files = []string{join(home, ".claude.json")}
+	return dirs, files
+}
 
+// existing keeps only what is on this machine, which is most of what makes
+// AI() usable: a list built for every agent this project knows about is
+// mostly absent for any one person.
+//
+// Kept apart from the list itself because one caller must not have it.
+// RetiredProfileEntries recognizes names an older rules file still carries,
+// and such a name may be for a directory deleted since it was written -- it
+// still has to be recognized as the old default's doing rather than as
+// somebody's own addition.
+func existing(dirs, files []string) []grant.Spec {
 	var out []grant.Spec
 	for _, dir := range dirs {
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {

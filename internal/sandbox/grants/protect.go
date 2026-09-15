@@ -8,6 +8,7 @@ package grants
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
@@ -73,6 +74,68 @@ func ensureRules() error {
 		rules.Profile = preset.Profile()
 		return rules.Save()
 	})
+}
+
+// RetireWholeDirectoryProfileRules replaces the whole agent directories an
+// older default wrote into a rules file with the files that default names
+// now, and answers with what it took out so the caller can say so.
+//
+// A narrower default only reaches a machine that has never run wuserbox. The
+// rules file is written once and kept, so everywhere it has run, the profile
+// section still names whole state directories and a run still copies them --
+// all of them, every time. Nothing else would ever have fixed that: no later
+// version writes that file again.
+//
+// Only what that default produced is touched. Anything else in the section
+// was put there by somebody on purpose and is left exactly as it is,
+// including a directory they added themselves. This cannot tell a person who
+// wants a whole tree copied from a default that wanted it on their behalf,
+// so it removes only what it can recognize as its own doing.
+func RetireWholeDirectoryProfileRules() ([]string, error) {
+	var retired []string
+	err := lock.Hold(lock.Rules, func() error {
+		rules, err := config.Load()
+		if err != nil {
+			return err
+		}
+		old := make(map[string]bool)
+		for _, entry := range preset.RetiredProfileEntries() {
+			old[folded(entry)] = true
+		}
+		kept := make([]string, 0, len(rules.Profile))
+		have := make(map[string]bool, len(rules.Profile))
+		for _, entry := range rules.Profile {
+			if old[folded(entry)] {
+				retired = append(retired, entry)
+				continue
+			}
+			kept = append(kept, entry)
+			have[folded(entry)] = true
+		}
+		if len(retired) == 0 {
+			return nil
+		}
+		// What the narrow default would have written into a fresh file, minus
+		// anything already named. Added rather than substituted wholesale, so
+		// a section somebody has edited keeps its own shape.
+		for _, entry := range preset.Profile() {
+			if !have[folded(entry)] {
+				kept = append(kept, entry)
+			}
+		}
+		rules.Profile = kept
+		return rules.Save()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return retired, nil
+}
+
+// folded is how two spellings of the same entry are compared: Windows does
+// not care about case, and a rules file may be written with either separator.
+func folded(entry string) string {
+	return strings.ToLower(filepath.ToSlash(entry))
 }
 
 // ReserveSensitiveNames takes the sensitive entries of the profile root that

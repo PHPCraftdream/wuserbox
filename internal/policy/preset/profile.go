@@ -101,6 +101,35 @@ func Profile() []string {
 	return out
 }
 
+// RetiredProfileEntries are what a rules file's profile section used to be
+// filled with: the agent state directories, whole, each as a path relative to
+// the profile root.
+//
+// Worth recognizing because they are still on disk. A rules file is written
+// once and kept, so a machine that ran that version still carries that list,
+// still copies whole trees into every sandbox on every run, and would go on
+// doing so however narrow the default becomes afterwards. On the machine this
+// was measured on that came to 72,320 files and 19,436 MB a run.
+//
+// Derived from the same place the old default derived it rather than copied
+// into a table here, so the two cannot drift apart. Unlike that default this
+// does not skip what is missing: a rules file can name a directory that has
+// since been deleted, and the name still has to be recognized as the old
+// default's doing rather than as somebody's own addition.
+func RetiredProfileEntries() []string {
+	home := paths.Home()
+	dirs, files := aiPaths()
+	var out []string
+	for _, path := range append(append([]string{}, dirs...), files...) {
+		rel, err := filepath.Rel(home, path)
+		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		out = append(out, filepath.ToSlash(rel))
+	}
+	return out
+}
+
 func firstSegment(entry string) string {
 	if cut := strings.IndexByte(filepath.ToSlash(entry), '/'); cut >= 0 {
 		return entry[:cut]

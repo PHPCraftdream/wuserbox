@@ -12,6 +12,7 @@ import (
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/preset"
 )
 
 func TestProtectSettingsLocksTheRulesFile(t *testing.T) {
@@ -30,6 +31,66 @@ func TestProtectSettingsLocksTheRulesFile(t *testing.T) {
 	// The owner keeps full access, which is what makes the tool usable.
 	if err := os.WriteFile(rulesPath, []byte("projects: []\n"), 0o644); err != nil {
 		t.Errorf("the owner lost access to the rules: %v", err)
+	}
+}
+
+// TestRetiringOldProfileRulesKeepsWhatSomebodyAdded is the whole risk of
+// editing a file that belongs to the person using the tool.
+//
+// The entries an older default wrote have to go, because they copy whole
+// agent state directories into every sandbox on every run and no later
+// version rewrites that file. Everything else in the section was typed by
+// somebody, and nothing here can tell a person who wants a whole tree copied
+// from a default that wanted it on their behalf -- so only what is
+// recognizable as the default's own doing is touched.
+func TestRetiringOldProfileRulesKeepsWhatSomebodyAdded(t *testing.T) {
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
+	t.Setenv("USERPROFILE", tempDir(t))
+
+	old := preset.RetiredProfileEntries()
+	if len(old) == 0 {
+		t.Skip("this machine resolves no profile root, so there is no old default to recognize")
+	}
+	const mine = "my-own-directory"
+	rules := &config.Config{Profile: append([]string{mine}, old...)}
+	if err := rules.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	retired, err := RetireWholeDirectoryProfileRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retired) != len(old) {
+		t.Errorf("took out %d of the %d entries the old default wrote", len(retired), len(old))
+	}
+	after, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := false
+	for _, entry := range after.Profile {
+		if entry == mine {
+			kept = true
+		}
+		for _, gone := range old {
+			if entry == gone {
+				t.Errorf("%q is still listed, so a whole directory is still copied on every run", entry)
+			}
+		}
+	}
+	if !kept {
+		t.Errorf("%q was taken out, and nobody but the person using this put it there", mine)
+	}
+
+	// And again changes nothing: a run that rewrote the file every time would
+	// fight anybody editing it.
+	again, err := RetireWholeDirectoryProfileRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 0 {
+		t.Errorf("a second pass took out %d more entries", len(again))
 	}
 }
 

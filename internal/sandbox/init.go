@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	acct "github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
@@ -54,6 +55,19 @@ func Init(o Options) (*state.State, error) {
 	}
 	if err := grants.ProtectSettings(built); err != nil {
 		return built, err
+	}
+	// After the rules file is certain to exist, and said out loud: this edits
+	// a file somebody may have opened themselves. A narrower default reaches
+	// only a machine that has never run wuserbox, and this is the one place
+	// that can reach the rest.
+	retired, err := grants.RetireWholeDirectoryProfileRules()
+	if err != nil {
+		note(o, "could not bring the profile section of the rules file up to date: %v", err)
+	} else if len(retired) > 0 {
+		note(o, "the rules file named %d whole agent directories to copy into every sandbox, "+
+			"which an older version put there and which carried their entire contents on every "+
+			"run; they are now the credential and settings files inside them. Taken out: %s",
+			len(retired), strings.Join(retired, ", "))
 	}
 	return built, nil
 }
