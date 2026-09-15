@@ -26,7 +26,12 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
+          # The version the project declares, the same as the tests use. With
+          # "stable" the binary people download was built by a toolchain the
+          # tests had never run under, and nothing said so -- the one build
+          # whose behavior nobody gets to check afterwards is the worst place
+          # for that.
+          go-version-file: go.mod
           cache: true
 
       - name: Fetch the parser library

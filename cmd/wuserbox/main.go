@@ -1,6 +1,10 @@
-// Command wuserbox runs a command in a write-restricted Windows sandbox: it
-// reads everything the calling user can read, and writes only where a
-// permission for the project's group allows it.
+// Command wuserbox runs a command on Windows so that it reads everything the
+// calling user can read and changes nothing the machine does not already let
+// every local account change, anywhere it was not granted. The exception is
+// named rather than glossed over: a directory already open to Everyone or
+// BUILTIN\Users stays open, because a sandbox has to carry both to start a
+// program and read the system at all. `wuserbox --audit` lists them; the
+// README sets out what that is worth.
 package main
 
 import (
