@@ -83,6 +83,83 @@ func TestForPathIsTheSameNameForTheSameDirectory(t *testing.T) {
 	}
 }
 
+// TestContainingRunsFromTheVolumeRootDown guards the property that keeps two
+// tree locks from waiting on each other: every caller claims the directories
+// above its root in the same order, from the volume root downwards, so a
+// caller only ever waits on something deeper than everything it already
+// holds. Reverse this list and two commands can hold what the other wants.
+func TestContainingRunsFromTheVolumeRootDown(t *testing.T) {
+	got := containing(`C:\Users\someone\work\inner`)
+	want := []string{`C:\`, `C:\Users`, `C:\Users\someone`, `C:\Users\someone\work`}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+	// A volume root is contained by nothing, and asking for its parent forever
+	// is how that loop would fail to end.
+	if above := containing(`C:\`); len(above) != 0 {
+		t.Errorf("a volume root is inside %v", above)
+	}
+}
+
+// TestATreeShutsOutWhatIsInsideItButNotWhatIsBesideIt is the lock half of the
+// overlapping-trees guard: a hold on a directory excludes a hold on one inside
+// it, and leaves a hold on one beside it alone.
+func TestATreeShutsOutWhatIsInsideItButNotWhatIsBesideIt(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	const outer = `C:\wub-lock-test\outer`
+	release, err := takeTree(outer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	beside := make(chan error, 1)
+	go func() {
+		let, err := takeTree(`C:\wub-lock-test\beside`)
+		if err == nil {
+			let()
+		}
+		beside <- err
+	}()
+	select {
+	case err := <-beside:
+		if err != nil {
+			t.Fatalf("a directory beside the held one: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		release()
+		t.Fatal("a directory beside the held one waited for it")
+	}
+
+	inside := make(chan error, 1)
+	go func() {
+		let, err := takeTree(outer + `\inner`)
+		if err == nil {
+			let()
+		}
+		inside <- err
+	}()
+	select {
+	case err := <-inside:
+		release()
+		t.Fatalf("a directory inside the held one was taken while it was held: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	release()
+	select {
+	case err := <-inside:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a directory inside the held one never came free")
+	}
+}
+
 // TestLettingGoTwiceClosesNothingTwice is the regression guard for a crash
 // that never pointed at this package.
 //

@@ -51,8 +51,20 @@ func Hold(name string, work func() error) error {
 	return work()
 }
 
-// take acquires the lock file for a group and returns how to let it go.
-func take(name string) (func(), error) {
+// How a name is held. Exclusive shuts everybody else out; shared shuts out
+// only whoever wants it exclusively, which is what lets two changes deep
+// inside unrelated parts of one directory run at the same time.
+const (
+	shared    = uintptr(0)
+	exclusive = uintptr(0x2) // LOCKFILE_EXCLUSIVE_LOCK
+)
+
+// take acquires the lock file for a group, for this caller alone, and returns
+// how to let it go.
+func take(name string) (func(), error) { return takeAs(name, exclusive) }
+
+// takeAs is take, told how much of the name to claim.
+func takeAs(name string, how uintptr) (func(), error) {
 	dir := filepath.Join(paths.StateDir(), "locks")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("preparing the lock directory %s: %w", dir, err)
@@ -70,11 +82,10 @@ func take(name string) (func(), error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening the lock %s: %w", path, err)
 	}
-	const exclusive = 0x2
 	var overlapped syscall.Overlapped
 	// Without LOCKFILE_FAIL_IMMEDIATELY this call waits for the holder rather
 	// than returning, so there is nothing here that polls.
-	if r, _, callErr := procLockFileEx.Call(uintptr(handle), exclusive, 0, 1, 0,
+	if r, _, callErr := procLockFileEx.Call(uintptr(handle), how, 0, 1, 0,
 		uintptr(unsafe.Pointer(&overlapped))); r == 0 {
 		_ = syscall.CloseHandle(handle)
 		return nil, fmt.Errorf("waiting for the lock %s: %w", path, callErr)

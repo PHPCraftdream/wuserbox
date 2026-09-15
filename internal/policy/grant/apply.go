@@ -21,13 +21,16 @@ import (
 // The change is held on the path itself, not on the sandbox asking for it. Two
 // sandboxes handed the same shared directory each read its whole access list,
 // alter a copy and write the lot back, and without this one of the two
-// permissions is lost while its record still claims it.
+// permissions is lost while its record still claims it. It is held on the
+// whole tree, because that is what is changed: the sweep reaches everything
+// under the path, so a grant on a directory inside this one is the same change
+// under another name.
 func Apply(account, path string, kind Kind) error {
 	entries := kind.Entries()
 	if len(entries) == 0 {
 		return fmt.Errorf("unknown grant kind %q", kind)
 	}
-	return lock.Hold(lock.ForPath(path), func() error {
+	return lock.HoldTree(path, func() error {
 		return acl.Isolate(path, account, entries, kind.IsolationReach())
 	})
 }

@@ -199,14 +199,90 @@ func TestTwoAccountsKeepTheirPermissionsOnOneDirectory(t *testing.T) {
 	}
 }
 
+// TestAGrantWaitsForOneOnTheDirectoryAboveIt is the regression guard for two
+// commands changing overlapping trees at once.
+//
+// Handing a directory over sweeps everything under it, so a grant on the outer
+// directory and a grant on one inside it are two changes to the same objects.
+// Each used to hold only its own path, so they could cross and the outer sweep
+// could narrow what the inner grant had just written: no sandbox gained
+// anything it was not given, but one of the two grants came out weaker than it
+// was asked for, with the record still claiming the whole of it.
+func TestAGrantWaitsForOneOnTheDirectoryAboveIt(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	outer := t.TempDir()
+	inner := filepath.Join(outer, "inner")
+	if err := os.Mkdir(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := holdTree(outer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- Apply(unusedAccount, inner, RW) }()
+	select {
+	case err := <-finished:
+		release()
+		t.Fatalf("a directory inside a held tree was changed while the tree was held: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	release()
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the change never happened after the tree was let go")
+	}
+}
+
+// TestGrantsInUnrelatedTreesDoNotWaitForEachOther is the other half of the
+// guard above, and the reason the fix is not one machine-wide lock. Serializing
+// every permission change would close the same hole and make each grant wait
+// for every other, however far apart the two directories are.
+func TestGrantsInUnrelatedTreesDoNotWaitForEachOther(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	held, other := t.TempDir(), t.TempDir()
+
+	release, err := holdTree(held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	finished := make(chan error, 1)
+	go func() { finished <- Apply(unusedAccount, other, RW) }()
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s waited for %s, which does not contain it and is not inside it", other, held)
+	}
+}
+
 // hold takes a lock in the background and returns how to let it go, so a test
 // can watch something wait for it.
 func hold(name string) (func(), error) {
+	return holding(func(work func() error) error { return lock.Hold(name, work) })
+}
+
+// holdTree is hold for a whole tree: it claims the root and every directory
+// above it, the way a permission change does.
+func holdTree(root string) (func(), error) {
+	return holding(func(work func() error) error { return lock.HoldTree(root, work) })
+}
+
+// holding runs one of those in the background and hands back how to end it.
+func holding(take func(func() error) error) (func(), error) {
 	taken := make(chan error, 1)
 	done := make(chan struct{})
 	released := make(chan struct{})
 	go func() {
-		_ = lock.Hold(name, func() error {
+		_ = take(func() error {
 			taken <- nil
 			<-done
 			return nil

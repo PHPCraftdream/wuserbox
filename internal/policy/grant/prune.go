@@ -34,7 +34,7 @@ func Prune(account, path string, held []string) error {
 			keep[strings.ToLower(one)] = true
 		}
 	}
-	return lock.Hold(lock.ForPath(path), func() error {
+	return lock.HoldTree(path, func() error {
 		return filepath.WalkDir(path, func(name string, entry fs.DirEntry, err error) error {
 			switch {
 			case err != nil:

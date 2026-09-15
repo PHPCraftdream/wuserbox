@@ -369,16 +369,16 @@ returned, so the code you read after it is the sandboxed program's own.
   home directory therefore does not hand over the keys in it. The cost is that
   anything else protected in there is out of the sandbox's reach too; grant it
   by name if the sandbox should have it.
-* **Two commands changing overlapping trees at once are not one operation.**
-  A lock is held per path, so `wuserbox --grant C:\work` and `wuserbox --grant
-  C:\work\inner` started at the same moment can cross: the sweep over the outer
-  tree may narrow what the inner grant had just written, or the other way
-  round. No sandbox gains anything it was not given — both sides only ever
-  narrow — but one of the two grants can end up weaker than it was asked for.
-  `wuserbox --explain` reports it against the record, and `wuserbox --init`
-  puts it back. Serializing every permission change behind one machine-wide
-  lock would close it and would make each grant wait for every other, so the
-  limit is accepted instead of hidden.
+* **Two commands changing overlapping trees wait for each other.** Handing a
+  directory over sweeps everything under it, so `wuserbox --grant C:\work` and
+  `wuserbox --grant C:\work\inner` are two changes to the same objects under
+  two different names. Each change claims its own tree outright and every
+  directory above it in passing, so the inner one waits for the outer one to
+  finish rather than crossing it. Two directories where neither holds the other
+  run at the same time as before: they share only the directories above them
+  both, and those are claimed in a way that does not exclude. The order is
+  fixed, from the volume root downwards, so neither can end up holding what the
+  other waits for.
 * **Revoking does not reach a file that is already open.** Windows checks
   permissions when a file is opened and not again afterwards, so a sandbox that
   already had something open keeps writing through that handle until it closes
