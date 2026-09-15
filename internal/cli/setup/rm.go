@@ -101,12 +101,16 @@ func remove(name string, asJSON bool) error {
 				name, strings.Join(left, ", "))
 		}
 	}
-	if s != nil || damaged {
-		if err := discardRecord(name); err != nil {
-			return exit.Errorf(exit.Failed,
-				"the permissions of %s are revoked, but its record at %s remains: %v",
-				name, state.Path(name), err)
-		}
+	// Asked for unconditionally, and not only where a record was read. The
+	// record and the copy behind it go missing separately: deleting the record
+	// by hand leaves the copy, and a copy that outlives the sandbox it
+	// describes is not merely untidy. A later sandbox of the same name starts
+	// with no copy of its own until its second save, so until then the stale
+	// one stands behind its record, naming directories that answered to a group
+	// that no longer exists. Removing what is not there is not an error.
+	if err := discardRecord(name); err != nil {
+		return exit.Errorf(exit.Failed,
+			"the permissions of %s are revoked, but its bookkeeping remains: %v", name, err)
 	}
 	dir, exists, err := group.Comment(name)
 	if err != nil {
@@ -161,16 +165,20 @@ func recordFor(name string, asJSON bool) (*state.State, bool, error) {
 	return unreadable.Previous, true, nil
 }
 
-// discardRecord deletes the record and the copy kept beside it. A copy left
-// behind outlives the sandbox it describes and keeps naming directories that
-// no longer answer to it.
+// discardRecord deletes the record and the copy kept beside it, whichever of
+// them is still there.
 func discardRecord(name string) error {
-	for _, path := range []string{state.Path(name), state.PreviousPath(name)} {
+	for _, path := range bookkeeping(name) {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return err
+			return fmt.Errorf("deleting %s: %w", path, err)
 		}
 	}
 	return nil
+}
+
+// bookkeeping is every file wuserbox keeps about one sandbox.
+func bookkeeping(name string) []string {
+	return []string{state.Path(name), state.PreviousPath(name)}
 }
 
 // clearOrphans takes a sandbox's entries off the directory its group belongs
@@ -259,17 +267,35 @@ func clearGrants(s *state.State, asJSON bool) []string {
 }
 
 // previewRemoval lists what deleting this sandbox would touch.
+//
+// It reads the record the same way removal does, rather than its own way. A
+// preview built on a stricter reading is worse than none: it stayed silent
+// about every grant of a sandbox whose record had stopped parsing, while the
+// removal it is previewing would have gone ahead and taken them back from the
+// copy behind it.
 func previewRemoval(name string, asJSON bool) error {
+	s, _, err := recordFor(name, asJSON)
+	if err != nil {
+		return err
+	}
 	var actions []plan.Action
-	if s, err := state.Load(name); err == nil && s != nil {
+	if s != nil {
 		for _, g := range s.Grants {
 			actions = append(actions, plan.Action{
 				Does: "revoke", What: g.Path, Detail: string(g.Kind),
 			})
 		}
 		actions = append(actions,
-			plan.Action{Does: "delete", What: s.Temp, Detail: "temporary files"},
-			plan.Action{Does: "delete", What: state.Path(name), Detail: "bookkeeping"})
+			plan.Action{Does: "delete", What: s.Temp, Detail: "temporary files"})
+	}
+	// Named one by one, because they go missing one by one: a record deleted by
+	// hand leaves the copy behind it, and a preview that mentions only the one
+	// it could read says less than it knows.
+	for _, path := range bookkeeping(name) {
+		if _, err := os.Stat(path); err == nil {
+			actions = append(actions,
+				plan.Action{Does: "delete", What: path, Detail: "bookkeeping"})
+		}
 	}
 	if _, exists, err := group.Comment(name); err == nil && exists {
 		actions = append(actions, plan.Action{Does: "delete", What: name, Detail: "local group"})

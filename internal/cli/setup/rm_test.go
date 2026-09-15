@@ -6,6 +6,7 @@ package setup
 
 import (
 	"fmt"
+	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -372,4 +373,114 @@ func TestRemovingASandboxWithADamagedRecordClearsWhatTheCopyRemembers(t *testing
 			t.Errorf("%s outlived the sandbox it describes: %v", path, err)
 		}
 	}
+}
+
+// TestRemovingASandboxDiscardsTheCopyWhenTheRecordIsAlreadyGone is the
+// regression guard for the two bookkeeping files going missing separately.
+//
+// The copy was only deleted where a record had been read, so deleting the
+// record by hand left the copy behind for good. That is not merely untidy: a
+// later sandbox of the same name has no copy of its own until its second save,
+// so until then the stale one stands behind its record, naming directories
+// that answered to a group which no longer exists.
+func TestRemovingASandboxDiscardsTheCopyWhenTheRecordIsAlreadyGone(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	const name = "wub-leftover-copy"
+	recordWithACopy(t, name)
+
+	// The record deleted by hand, the copy beside it untouched.
+	if err := os.Remove(state.Path(name)); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeSandbox(name, true); err != nil {
+		t.Fatalf("removing a sandbox whose record is already gone failed: %v", err)
+	}
+
+	if _, err := os.Stat(state.PreviousPath(name)); !os.IsNotExist(err) {
+		t.Errorf("the copy at %s outlived the sandbox it describes: %v",
+			state.PreviousPath(name), err)
+	}
+}
+
+// TestThePreviewNamesEveryFileRemovalWouldDelete keeps --dry-run honest about
+// the copy. A preview that names one of the two files says less than it knows
+// about what the command it is previewing would do.
+func TestThePreviewNamesEveryFileRemovalWouldDelete(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	const name = "wub-preview-copy"
+	recordWithACopy(t, name)
+
+	shown := captureStdout(t, func() error { return previewRemoval(name, false) })
+	for _, path := range []string{state.Path(name), state.PreviousPath(name)} {
+		if !strings.Contains(shown, path) {
+			t.Errorf("the preview does not mention %s:\n%s", path, shown)
+		}
+	}
+}
+
+// TestThePreviewOfADamagedRecordStillNamesItsGrants is the other half of that.
+// The preview read the record more strictly than removal does, so a record
+// that had stopped parsing made it list nothing at all, while the removal it
+// was previewing would have gone ahead and taken every grant back from the
+// copy behind it.
+func TestThePreviewOfADamagedRecordStillNamesItsGrants(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	const name = "wub-preview-damaged"
+	s := recordWithACopy(t, name)
+	if err := os.WriteFile(state.Path(name), []byte("{ not a record"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	shown := captureStdout(t, func() error { return previewRemoval(name, false) })
+	if !strings.Contains(shown, s.Grants[0].Path) {
+		t.Errorf("the preview says nothing about %s, which removal would take back:\n%s",
+			s.Grants[0].Path, shown)
+	}
+}
+
+// recordWithACopy writes a record twice, which is what leaves a copy behind
+// it, and returns what was written.
+func recordWithACopy(t *testing.T, name string) *state.State {
+	t.Helper()
+	held := t.TempDir()
+	s := &state.State{
+		Group: name, SID: "S-1-5-21-1111111111-2222222222-3333333333-654321",
+		Dir: held, Temp: t.TempDir(),
+		Grants: []grant.Spec{{Path: held, Kind: grant.RW, Explicit: true}},
+	}
+	for i := 0; i < 2; i++ {
+		if err := s.Save(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(state.PreviousPath(name)); err != nil {
+		t.Fatalf("no copy was kept, so this proves nothing: %v", err)
+	}
+	return s
+}
+
+// captureStdout runs something that prints, and hands back what it printed.
+func captureStdout(t *testing.T, run func() error) string {
+	t.Helper()
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdout
+	os.Stdout = write
+	printed := make(chan string, 1)
+	go func() {
+		var collected strings.Builder
+		_, _ = io.Copy(&collected, read)
+		printed <- collected.String()
+	}()
+	runErr := run()
+	os.Stdout = saved
+	_ = write.Close()
+	shown := <-printed
+	_ = read.Close()
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	return shown
 }
