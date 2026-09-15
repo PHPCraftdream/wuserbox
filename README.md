@@ -7,9 +7,17 @@
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE)
 
 Run a command on Windows so that it **reads everything you can read**, but
-**writes only where you allow**. Intended for AI coding agents: they need your
-whole toolchain and configuration, and they must not be able to damage anything
-outside the project.
+**changes nothing the machine does not already let every local account
+change, anywhere you did not allow it to**. Your files, another sandbox's
+files and anything named to its owner alone are out of a sandbox's reach; a
+directory the machine already leaves open to everybody — `C:\ProgramData` on
+many installations — is not, and `wuserbox --audit` lists those. That
+exception is the whole of it, and it is
+[explained below](#limits-worth-knowing) rather than left to be discovered.
+
+Intended for AI coding agents: they need your whole toolchain and
+configuration, and they must not be able to damage anything outside the
+project.
 
 ```
 wuserbox claude

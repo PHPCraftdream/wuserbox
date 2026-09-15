@@ -15,6 +15,12 @@ everything you can read and writes only where the sandbox is allowed
 to: the project directory, the directories you have handed over, and a
 profile of its own that HOME, APPDATA and TEMP point inside.
 
+One exception, and the tool does not hide it: a directory the machine
+already lets every local account write to stays writable, because a
+sandbox has to carry Everyone and BUILTIN\Users to start a program and
+read the system at all. "wuserbox --audit" lists the ones on this
+machine.
+
 Being the account and being restricted are two different walls. The
 account is why the sandbox does not carry your own rights over your own
 files; the restriction is why it does not reach what the machine hands
