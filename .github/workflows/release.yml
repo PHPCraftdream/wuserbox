@@ -15,6 +15,10 @@ env:
 jobs:
   release:
     runs-on: windows-latest
+    env:
+      # Named here rather than read in the step's condition: a step may ask
+      # about env, and may not ask about secrets.
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,11 +54,15 @@ jobs:
           # A token that may push to the Scoop bucket repository.
           BUCKET_TOKEN: ${{ secrets.BUCKET_TOKEN }}
 
+      # Skipped on a prerelease tag, and skipped where there is no token to
+      # publish with. The archives are already out by this point, so failing
+      # here would leave a release that is installable one way and not the
+      # other, reported as a broken build.
       - name: Publish to npm
-        if: ${{ !contains(github.ref_name, '-') }}
+        if: ${{ !contains(github.ref_name, '-') && env.NPM_TOKEN != '' }}
         shell: bash
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
         run: |
           version="${GITHUB_REF_NAME#v}"
           staging=$(mktemp -d)

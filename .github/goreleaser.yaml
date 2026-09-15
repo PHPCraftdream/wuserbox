@@ -66,7 +66,13 @@ release:
 
 # The manifest is pushed to a bucket repository, which Scoop users add once.
 scoops:
-  - repository:
+    # Written either way, and pushed only where there is a token to push with.
+    # Without this a tag cut before the bucket exists fails here, after the
+    # archives are already published: a release nobody can install and a red
+    # build that says nothing about which half of it worked. The manifest still
+    # lands in dist/, so it can be copied into the bucket by hand.
+  - skip_upload: '{{ if .Env.BUCKET_TOKEN }}false{{ else }}true{{ end }}'
+    repository:
       owner: PHPCraftdream
       name: scoop-bucket
       branch: main
