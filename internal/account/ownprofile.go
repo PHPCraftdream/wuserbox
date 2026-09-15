@@ -14,9 +14,11 @@ package account
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -41,9 +43,22 @@ const hkeyUsers = 0x80000003
 // rights: tightening a hive needs SE_BACKUP_NAME and SE_RESTORE_NAME, which
 // only an elevated token can turn on.
 func MakeProfile(dir string, account sid.Value) error {
-	for _, sub := range []string{"", `AppData\Local`, `AppData\Roaming`, "Temp"} {
-		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
-			return fmt.Errorf("making the profile directory: %w", err)
+	// The profile's own directory first, and by name: everything above it
+	// belongs to whoever is running this, and a sandbox cannot reach into it
+	// -- it holds its profile outright but has no write access to the
+	// directory that holds the profile, so it cannot put anything in its own
+	// place.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("making the profile directory: %w", err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return fmt.Errorf("opening the profile directory: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	for _, sub := range []string{`AppData\Local`, `AppData\Roaming`, "Temp"} {
+		if err := makeInside(root, sub); err != nil {
+			return err
 		}
 	}
 	if err := acl.ProtectFull(dir, account.String()); err != nil {
@@ -54,6 +69,60 @@ func MakeProfile(dir string, account sid.Value) error {
 		return nil
 	}
 	return makeHive(hive, account)
+}
+
+// makeInside builds one of the profile's own subdirectories, one component at
+// a time, through a root pinned on the profile so that no part of the path
+// can lead out of it.
+//
+// A sandbox owns its own profile and needs no privilege to put a junction in
+// it. Plain MkdirAll follows one: measured, with a junction at AppData
+// pointing somewhere else, the missing directories were created inside *that*
+// -- by this call, which runs elevated and as the machine's owner. It is the
+// same confused deputy the profile copying was taught to refuse, one call
+// earlier, and the permissions written a moment later would have been written
+// there too if Windows propagated them through a junction, which -- measured
+// -- it does not.
+//
+// Where something that is not a directory sits exactly where a directory
+// belongs, refusing is not enough: the name would be pinned for good and
+// every later --init would fail on it. It is cleared first, which is safe for
+// the same reason the refusal is -- removing a link is not following it.
+func makeInside(root *os.Root, name string) error {
+	path := ""
+	for _, part := range strings.Split(name, `\`) {
+		path = filepath.Join(path, part)
+		if err := clearWhatIsNotADirectory(root, path); err != nil {
+			return err
+		}
+		if err := root.Mkdir(path, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("making %s inside the profile: %w", path, err)
+		}
+	}
+	return nil
+}
+
+// clearWhatIsNotADirectory removes whatever stands where a directory belongs.
+// Lstat reports the link rather than what it points at, and Remove takes the
+// link away rather than what is behind it, so neither of them follows the one
+// thing this exists to stop being followed.
+func clearWhatIsNotADirectory(root *os.Root, name string) error {
+	info, err := root.Lstat(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil // nothing there yet, which is the ordinary case
+	}
+	if err != nil {
+		// Anything else is worth passing on. A name that cannot even be looked
+		// at is not a name to go on and create something under.
+		return fmt.Errorf("looking at %s inside the profile: %w", name, err)
+	}
+	if info.IsDir() {
+		return nil // already the directory it should be
+	}
+	if err := root.Remove(name); err != nil {
+		return fmt.Errorf("clearing %s, which is in the way and is not a directory: %w", name, err)
+	}
+	return nil
 }
 
 // makeHive builds the empty hive beside its final name and moves it there
