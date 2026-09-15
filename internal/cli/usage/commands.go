@@ -310,18 +310,23 @@ says that too rather than reporting a clean removal.`,
 	},
 	{
 		Name:    "audit",
-		Summary: "list directories writable by Everyone or BUILTIN\\Users",
+		Summary: "list directories writable by the identities a sandbox carries",
 		Call:    "--audit [depth]",
-		Detail: `Walks the fixed drives and prints the directories that Everyone or
-BUILTIN\Users may write to, saying which of the two it found. Those stay
-writable inside a sandbox as well: a sandbox carries both, and has to --
-without them no program starts and nothing on the system can be read --
-so this is the list of places the boundary does not cover.
+		Detail: `Walks the fixed drives and prints the directories that Everyone,
+BUILTIN\Users or Authenticated Users may write to, saying which of them
+it found. Those stay writable inside a sandbox as well: a sandbox
+carries all three, and has to -- without the first two no program starts
+and nothing on the system can be read, and the third comes with being an
+account that logged on -- so this is the list of places the boundary
+does not cover.
 
-Nothing else is listed. A directory writable by some other group — by
-"Authenticated Users", say, which several machines grant on a second
-drive — is not reachable from inside a sandbox, because a sandbox's
-restricted list does not carry it.
+Nothing else is listed. A directory writable by some other group is not
+reachable from inside a sandbox, because a sandbox is not a member of
+it.
+
+Authenticated Users was left out of this list while a sandbox was a
+restricted token, which did not carry it, and several machines grant it
+on a second drive. It belongs here now.
 
 The depth is how many levels below each drive root to look; two by
 default. A larger number takes longer.`,

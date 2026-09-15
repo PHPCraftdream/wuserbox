@@ -607,3 +607,49 @@ func shortForm(t *testing.T, path string) string {
 	}
 	return syscall.UTF16ToString(buffer[:written])
 }
+
+// TestAGrantTakesWriteFromAuthenticatedUsersToo is the regression guard for
+// the identity isolation forgot.
+//
+// Everyone and BUILTIN\Users were narrowed; Authenticated Users was not. That
+// cost nothing while a sandbox was a restricted token, whose second check
+// carried neither it nor anything else outside its restricting list, so an
+// entry naming it reached nobody inside. A sandbox is an account now, and an
+// account carries Authenticated Users by virtue of having logged on -- so a
+// directory handed to one sandbox with this entry left standing was writable
+// and deletable by every other sandbox on the machine, which is the boundary
+// between two sandboxes and the whole point of isolating a grant.
+//
+// Checked on the list rather than by running something, deliberately: the
+// tests that run something run under the old mechanism, where this entry
+// makes no difference and the guard would pass without the fix.
+func TestAGrantTakesWriteFromAuthenticatedUsersToo(t *testing.T) {
+	root := t.TempDir()
+	if err := Set(root, sid.Authenticated, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !writableBy(root, sid.Authenticated) {
+		t.Fatal("the entry this test is about was not applied, so it is testing nothing")
+	}
+	if err := Isolate(root, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers); err != nil {
+		t.Fatal(err)
+	}
+	if writableBy(root, sid.Authenticated) {
+		t.Error("handing the directory over left Authenticated Users able to change it, " +
+			"which is every other sandbox on the machine")
+	}
+	// And the owner keeps what that entry was giving them, the same as for
+	// the other two: a grant must not cost somebody the directory they were
+	// granting.
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !writableBy(root, owner) {
+		t.Error("the person granting the directory lost their own write to it")
+	}
+}

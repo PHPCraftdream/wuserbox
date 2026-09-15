@@ -105,11 +105,16 @@ func TestLifecycle(t *testing.T) {
 // sandbox on every machine that had ever run init — one with no directory,
 // which --explain could not explain and --rm would not remove.
 func TestTheSharedReadGroupIsNotASandbox(t *testing.T) {
-	if !strings.HasPrefix(group.ReadGroup, group.Prefix) {
-		t.Fatal("wub-read no longer carries the prefix, so this guard is testing nothing")
+	mine := group.ReadGroupFor("S-1-5-21-1-2-3-1001")
+	if !strings.HasPrefix(mine, group.Prefix) {
+		t.Fatal("a read group no longer carries the prefix, so this guard is testing nothing")
 	}
-	if group.IsSandbox(group.ReadGroup) {
-		t.Error("the shared read group is reported as a sandbox")
+	// Both spellings: the one group there used to be, and the one per person
+	// there is now. A machine that has run an older wuserbox has both.
+	for _, name := range []string{mine, group.LegacyReadGroup} {
+		if group.IsSandbox(name) {
+			t.Errorf("the read group %s is reported as a sandbox", name)
+		}
 	}
 	if !group.IsSandbox(group.Prefix + "project-d6e9a21f") {
 		t.Error("an ordinary sandbox group is not reported as one")
@@ -123,7 +128,7 @@ func TestTheSharedReadGroupIsNotASandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if entry.Name == group.ReadGroup {
+		if strings.HasPrefix(entry.Name, group.ReadPrefix) {
 			t.Errorf("%s was listed as a sandbox", entry.Name)
 		}
 	}

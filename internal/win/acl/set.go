@@ -209,7 +209,10 @@ func Protect(path string) error {
 	inheritance := inheritanceFor(path)
 	text := fmt.Sprintf("D:PAI(A;%s;GA;;;%s)(A;%s;GA;;;SY)(A;%s;GA;;;BA)",
 		inheritance, user, inheritance, inheritance)
-	if reader, err := sid.Lookup(group.ReadGroup); err == nil {
+	// The read group of whoever owns this file, not one shared by the
+	// machine: a group every sandbox on the machine joined would hand these
+	// files to the sandboxes of everybody else who uses it.
+	if reader, err := sid.Lookup(group.ReadGroupFor(user)); err == nil {
 		text += fmt.Sprintf("(A;%s;0x%x;;;%s)", inheritance, AccessReadExecute, reader.String())
 	}
 	return setProtectedSDDL(path, text)

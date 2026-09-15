@@ -16,6 +16,14 @@ const (
 	// outright; the older restricted token names it in its restricting list
 	// instead, which arrives at the same access by a different route.
 	Users = "S-1-5-32-545"
+	// Authenticated Users is carried by every account that logged on, which
+	// a sandbox account does on every run. It was harmless while a sandbox
+	// was a restricted token, whose second check never carried it -- an entry
+	// naming it reached nothing inside -- so isolation ignored it. Under an
+	// account it is an ordinary membership like any other, which makes a
+	// directory naming it a directory every sandbox on the machine may
+	// change, whichever one it was handed to.
+	Authenticated = "S-1-5-11"
 	// Administrators is needed when a permission list has to be written from
 	// nothing. An object with no list at all grants everybody everything,
 	// administrators and the system among them, so giving it one has to name

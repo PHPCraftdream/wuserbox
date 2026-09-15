@@ -259,11 +259,24 @@ func TestNarrowingADirectoryStopsWritesInsideIt(t *testing.T) {
 // so an unprivileged run of these tests has nowhere to get it from.
 func needsReadGroup(t *testing.T) {
 	t.Helper()
-	if _, exists, err := group.Comment(group.ReadGroup); err != nil {
-		t.Fatal(err)
-	} else if !exists {
-		t.Skip("wub-read does not exist yet; run `wuserbox --init` elevated once to cover profile reads")
+	if !hasReadGroup(t) {
+		t.Skip("this account has no read group yet; run `wuserbox --init` elevated once to cover profile reads")
 	}
+}
+
+// hasReadGroup answers the same question without ending the test, for one
+// that has other things to prove either way.
+func hasReadGroup(t *testing.T) bool {
+	t.Helper()
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, exists, err := group.Comment(group.ReadGroupFor(owner))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return exists
 }
 
 func TestReadsFilesTheCallerCanRead(t *testing.T) {

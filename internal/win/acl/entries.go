@@ -126,10 +126,17 @@ func sameSID(a, b uintptr) bool {
 	return same != 0
 }
 
-// sharedWrite reports whether an entry lets Everyone or BUILTIN\Users change
-// something. Those two are the identifiers every sandbox's restricted list
-// carries, so an entry naming either of them is an entry every sandbox holds.
-func sharedWrite(held explicitAccess, everyone, users uintptr) bool {
+// sharedWrite reports whether an entry lets one of the identities every
+// sandbox carries change something, which makes it an entry every sandbox
+// holds however the directory was meant to be handed out.
+//
+// Authenticated Users is the third of them and was missing. It cost nothing
+// while a sandbox was a restricted token, because that token's second check
+// never carried it: an entry naming it reached nobody inside. An account
+// carries it by virtue of having logged on, so a directory handed to one
+// sandbox with Authenticated Users:Modify left standing on it was writable,
+// and deletable, by every other sandbox on the machine.
+func sharedWrite(held explicitAccess, shared ...uintptr) bool {
 	const trusteeIsSID = 0
 	if held.mode != grantAccess || held.trustee.form != trusteeIsSID {
 		return false
@@ -137,7 +144,12 @@ func sharedWrite(held explicitAccess, everyone, users uintptr) bool {
 	if held.permissions&changing == 0 {
 		return false
 	}
-	return sameSID(held.trustee.name, everyone) || sameSID(held.trustee.name, users)
+	for _, one := range shared {
+		if sameSID(held.trustee.name, one) {
+			return true
+		}
+	}
+	return false
 }
 
 var procEqualSid = w32.Advapi32.NewProc("EqualSid")
@@ -230,4 +242,12 @@ func heldBy(path, account string, wanted uint32) (bool, error) {
 		}
 	}
 	return found, nil
+}
+
+// AuthenticatedWritable reports whether Authenticated Users may write to
+// path, the third identity every sandbox carries. Unlike the other two it
+// was invisible until a sandbox became an account: a restricted token never
+// carried it, so a directory naming it was not reachable from inside one.
+func AuthenticatedWritable(path string) bool {
+	return writableBy(path, sid.Authenticated)
 }

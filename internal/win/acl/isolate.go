@@ -2,6 +2,8 @@ package acl
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
@@ -55,6 +57,10 @@ func Isolate(path, account string, entries []ACE, reach uint32) error {
 	if err != nil {
 		return err
 	}
+	authenticated, err := sid.Parse(sid.Authenticated)
+	if err != nil {
+		return err
+	}
 	owner, err := sid.CurrentUser()
 	if err != nil {
 		return err
@@ -93,7 +99,13 @@ func Isolate(path, account string, entries []ACE, reach uint32) error {
 		}
 		list = seed
 	}
-	var taken uint32
+	// What was taken from the crowd, kept apart by how far each entry
+	// reached. Handing it all back with one reach is what a single accumulator
+	// did, and it under-restored: an inheritable entry stripped from a
+	// directory stops reaching what is already inside it, so a grant whose own
+	// reach stops at the directory -- --home-writes is one -- left the owner
+	// unable to delete a subdirectory that was there before. Measured.
+	taken := map[uint32]uint32{}
 	for _, one := range held {
 		// What this account holds is about to be set outright, refusals and
 		// all. Carrying the old entries over first would keep them: a
@@ -104,7 +116,7 @@ func Isolate(path, account string, entries []ACE, reach uint32) error {
 		if sameSID(one.trustee.name, value) {
 			continue
 		}
-		if sharedWrite(one, everyone, users) {
+		if sharedWrite(one, everyone, users, authenticated) {
 			// Taken away, not replaced. Assigning read-and-execute here would
 			// hand reading to an entry that only covered writing, which is a
 			// widening dressed as a narrowing: measured, a directory whose
@@ -113,7 +125,7 @@ func Isolate(path, account string, entries []ACE, reach uint32) error {
 			// granted. Taking the changing rights out of what is already
 			// there cannot do that. For Modify it lands on read-and-execute
 			// anyway, which is where the plain case ends up.
-			taken |= one.permissions & changing
+			taken[one.inheritance] |= one.permissions & changing
 			one.permissions &^= changing
 			if one.permissions == 0 {
 				continue // nothing left to say about them
@@ -121,12 +133,17 @@ func Isolate(path, account string, entries []ACE, reach uint32) error {
 		}
 		list = append(list, one)
 	}
-	// Those two may have been the only thing letting the person who owns this
-	// machine write here, and they are not who is being kept out: a grant must
-	// not cost somebody the directory they were granting. Whatever was taken
-	// from the crowd is handed straight back to them by name.
-	if taken != 0 {
-		list = append(list, entry(holder, taken, reach, grantAccess))
+	// Those three may have been the only thing letting the person who owns
+	// this machine write here, and they are not who is being kept out: a grant
+	// must not cost somebody the directory they were granting. Whatever was
+	// taken from the crowd is handed straight back to them by name, each part
+	// of it reaching exactly as far as the entry it came from did.
+	//
+	// Sorted, because ranging a map orders them differently every time and a
+	// permission list that comes out in a different order on two identical
+	// runs is one more thing to rule out when something behaves differently.
+	for _, inheritance := range slices.Sorted(maps.Keys(taken)) {
+		list = append(list, entry(holder, taken[inheritance], inheritance, grantAccess))
 	}
 	list = append(list, listFor(value, entries)...)
 	// What is inside is put right before the grant itself is written, and the

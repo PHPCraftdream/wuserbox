@@ -91,13 +91,22 @@ func Restricted(sandboxGroup string) (syscall.Token, error) {
 		return 0, err
 	}
 	restricting := []sidAndAttributes{{groupSID, 0}, {everyone, 0}, {users, 0}, {logon, 0}}
-	// A sandbox built before ReadGroup existed simply runs without it: the
+	// A sandbox built before a read group existed simply runs without it: the
 	// profile reads that depended on it fail, the same way any other missing
 	// grant would, rather than refusing to run at all.
+	//
+	// The group named is the one reading this caller's own profile. That is
+	// the only one this token has any business carrying: it is the caller's
+	// token cut down, and it is their profile it is being cut down to reach.
+	//
 	// Held in a variable that outlives the if, so it can be kept alive across
 	// the call below rather than ending where the condition does.
 	var readBuf sid.Value
-	if read, err := sid.Lookup(group.ReadGroup); err == nil {
+	caller, err := sid.CurrentUser()
+	if err != nil {
+		return 0, err
+	}
+	if read, err := sid.Lookup(group.ReadGroupFor(caller)); err == nil {
 		readBuf = read
 		restricting = append(restricting, sidAndAttributes{uintptr(unsafe.Pointer(&readBuf[0])), 0})
 	}

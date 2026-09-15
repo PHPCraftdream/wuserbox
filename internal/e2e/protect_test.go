@@ -33,7 +33,16 @@ func TestProtectedSettingsCannotBeRewritten(t *testing.T) {
 	}
 	mustFail(t, box.state, writeFileCommand(rules))
 	mustNotDelete(t, box, rules)
-	mustSucceed(t, box.state, []string{"cmd.exe", "/c", "type " + rules})
+	// Reading it from inside is the other half, and it needs the read group
+	// of whoever owns the file -- which only an elevated init creates. Where
+	// there is none, Protect names nobody a sandbox carries and the file is
+	// unreadable as well as unwritable. That is the safe half of the choice
+	// and not what this test exists to prove, so it is checked where it can
+	// be and passed over where it cannot, rather than failing on a machine
+	// that has simply never run init.
+	if hasReadGroup(t) {
+		mustSucceed(t, box.state, []string{"cmd.exe", "/c", "type " + rules})
+	}
 	place(t, rules, "still mine\n") // the owner keeps full access
 }
 

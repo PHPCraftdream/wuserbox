@@ -4,7 +4,10 @@
 package group
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
@@ -12,13 +15,35 @@ import (
 // Prefix marks groups owned by wuserbox.
 const Prefix = "wub-"
 
-// ReadGroup is the one group shared by every sandbox, rather than made fresh
-// per project. BUILTIN\Users covers System32 and Program Files, but nothing
-// built in covers the user's own profile the same way -- a Windows profile
-// names its owner, the system and administrators and nobody else -- so this
-// is granted read-and-execute there once, machine-wide, and every sandbox
-// account joins it.
-const ReadGroup = Prefix + "read"
+// ReadPrefix marks the groups that let a sandbox read a profile. One per
+// person whose profile is read, not one per project: BUILTIN\Users covers
+// System32 and Program Files, but nothing built in covers a user's own
+// profile the same way -- a Windows profile names its owner, the system and
+// administrators and nobody else.
+const ReadPrefix = Prefix + "read"
+
+// LegacyReadGroup is what that was before it was split per person: one group
+// machine-wide, joined by every sandbox on it, granted read on every
+// profile that had ever run init.
+//
+// That was safe while a sandbox was the caller's own token cut down, because
+// the first of the two access checks still had to pass as the person the
+// caller really was, and nobody is a member of a group with no members. It
+// stopped being safe the moment a sandbox became an account that joins the
+// group for real: on a machine with two people, one person's sandbox could
+// read the other's profile, private keys included, since ReadGroupFor's
+// predecessor was granted on both. It is named here so init can take its
+// permission off a profile it still stands on.
+const LegacyReadGroup = ReadPrefix
+
+// ReadGroupFor is the group that reads the profile of the person whose
+// account identifier is ownerSID. Derived rather than looked up, so nothing
+// has to keep a table, and short enough to leave room inside the 256
+// characters a local group name allows.
+func ReadGroupFor(ownerSID string) string {
+	digest := sha256.Sum256([]byte(strings.ToLower(ownerSID)))
+	return ReadPrefix + "-" + hex.EncodeToString(digest[:4])
+}
 
 const errNotFound = 2220 // NERR_GroupNotFound
 

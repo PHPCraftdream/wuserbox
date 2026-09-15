@@ -62,8 +62,9 @@ Two Windows mechanisms, nothing else:
    So an access succeeds only where the group, or one of the memberships the
    account needs in order to function at all, has a permission of its own.
    Reading stays open because the account also carries `Everyone` and
-   `BUILTIN\Users`, which between them cover the system, and `wub-read`, which
-   covers your own profile and which nothing but a sandbox account ever joins.
+   `BUILTIN\Users`, which between them cover the system, and your own read
+   group, which covers your own profile and which nothing but your own sandbox
+   accounts ever join.
 
 Nothing is emulated or intercepted. The kernel enforces it, child processes
 inherit it, and a sweeping `rm -rf` stops at the same boundary as everything
@@ -76,19 +77,23 @@ a directory wuserbox builds, holding an empty registry hive and three folders,
 handed to the program as its `USERPROFILE`, `HOME`, `APPDATA`, `LOCALAPPDATA`
 and `TEMP`. It costs about two and a half megabytes.
 
-Before each run, the files and directories named in the `profile:` section of
-the rules file are **copied in** from your profile. That is where an agent's
-credentials and settings come from, and the list is pre-filled with the common
-agents' state directories when the rules file is created. Nothing on the
-sensitive list — `~/.ssh`, `~/.netrc`, `~/.npmrc`, `~/.gitconfig` — is in that
-default, and you can add what you need.
+**Not finished, and worth being exact about.** The plan is that the files and
+directories named in the `profile:` section of the rules file are copied into
+that profile before each run, and nothing is ever copied back. The list is
+written and pre-filled, the copying is written and tested, and the two are
+**not yet wired together**.
 
-**Nothing is copied back.** A sandbox able to write into the files its own
-credentials came from could rewrite them, which is the shape of hole this
-exists to close. The cost is real: an agent that refreshes a token inside the
-sandbox refreshes a copy, and the next run starts from your original again.
-Where that means logging in every run, log in once outside the sandbox so the
-refreshed file is in your own profile.
+What happens today is what happened before: the sandbox is handed your real
+`~/.claude`, `~/.config` and their neighbours, with write access, exactly as
+the "agent directories are shared" limit below describes. Until that changes,
+the thin profile is where a program's `HOME` points and not yet where its
+credentials come from.
+
+When it is wired, **nothing will be copied back**: a sandbox able to write into
+the files its own credentials came from could rewrite them, which is the shape
+of hole this exists to close. The cost of that is real and worth knowing in
+advance — an agent that refreshes a token inside the sandbox will refresh a
+copy, and the next run will start from your original again.
 
 This is the part that changed most recently, and it changed because MSYS2
 programs — `bash` and everything built on it — cannot start under a restricted
@@ -265,10 +270,17 @@ the record says it was granted something inside in its own right.
 Reading is untouched by any of this: a sandbox still reads everything its
 user can read that `Everyone`, `BUILTIN\Users`, or its own account already
 covers. The profile is the one place none of those reaches by Windows' own
-default, which is what `wub-read` is for — a machine-wide group nobody is a
-member of, granted reading on a profile the first time somebody builds a
-sandbox from it. No ordinary token carries it, so it lets a sandbox past its
-second check without letting another account on the machine read anything.
+default, which is what the read groups are for: one per person, named
+`wub-read-<hash>`, granted reading on that person's profile the first time
+they build a sandbox from it, and joined only by their own sandbox accounts.
+
+One group for the whole machine is what this used to be, and it was safe only
+for as long as a sandbox was your own token cut down — the first of the two
+access checks still had to pass as the person you really were, and nobody was
+a member of a group with no members. An account joins a group for real, so on
+a machine with two people that one group would have let one person's sandbox
+read the other's profile, private keys included. `--init` splits it and takes
+the old group's permission off your profile.
 
 ## Protecting your settings
 
@@ -280,10 +292,10 @@ Code running in the sandbox must not be able to widen its own permissions:
 * The shell startup files and credential directories in the profile root get
   the same treatment: `.bashrc`, `.profile`, `.gitconfig`, `.npmrc`, `.netrc`,
   `.ssh`, `.gnupg`, `.aws` and their neighbours. That fixed list names the
-  owner, the system, administrators and `wub-read`, and nobody else: a sandbox
-  reads them through `wub-read`, which nothing but a sandbox account ever
-  joins, while another person's account on the same machine is no closer to
-  your keys than it was before wuserbox was installed. Reading them is what
+  owner, the system, administrators and your own read group, and nobody else:
+  your sandbox reads them through that group, which nothing but your own
+  sandbox accounts join, while another person on the same machine — and their
+  sandboxes — are no closer to your keys than before wuserbox was installed. Reading them is what
   this allows; changing or destroying them is what it refuses.
 * `--init`, `--rm`, `--grant`, `--revoke`, `--add-dir` and `--remove-dir`
   refuse to run from inside a sandbox, and wuserbox never asks for
@@ -366,14 +378,15 @@ returned, so the code you read after it is the sandboxed program's own.
   a consequence of the account, not a feature built on top of it, so do not
   lean on it the way you would lean on the file boundary, which is tested.
 * **The network is not restricted.**
-* **Directories writable by `Everyone` or `BUILTIN\Users` stay writable**, and
-  this is the one place where what a sandbox may change is wider than what it
-  was handed. A sandbox carries both — the first for programs to start at all,
-  the second to read System32 and Program Files — so a
-  sandbox may change whatever the machine already lets every local account
+* **Directories writable by `Everyone`, `BUILTIN\Users` or
+  `Authenticated Users` stay writable**, and this is the one place where what a
+  sandbox may change is wider than what it was handed. A sandbox carries all
+  three — the first for programs to start at all, the second to read System32
+  and Program Files, the third by virtue of being an account that logged on —
+  so a sandbox may change whatever the machine already lets every local account
   change, without that directory ever having been granted. Many machines ship
-  `C:\ProgramData` that way. `wuserbox --audit` lists what it finds under
-  either. So the guarantee to hold wuserbox to is **a sandbox cannot change
+  `C:\ProgramData` that way. `wuserbox --audit` lists what it finds under any
+  of them. So the guarantee to hold wuserbox to is **a sandbox cannot change
   what the machine does not already let every local account change, anywhere
   it was not handed** — somebody's own files, another sandbox's files, and
   anything named to its owner alone are outside a sandbox's reach; a shared
@@ -507,10 +520,9 @@ The end-to-end tests create real permissions under a synthetic identifier and
 try to escape: writing outside the project, through a child process, into the
 profile, into the registry, and deleting a whole tree. Most need no elevation.
 
-One test reads the user's profile directory, which needs `wub-read` — the
-group a sandbox reaches it through, created once the first time any sandbox is
-built. Creating a group needs administrator rights, so that
-test skips rather than fails without them. The full lifecycle test creates an
+One test reads the user's profile directory, which needs that user's own read
+group, created the first time they build a sandbox. Creating a group needs
+administrator rights, so that test skips rather than fails without them. The full lifecycle test creates an
 actual local group and needs elevation for the same reason. Run both from an
 elevated shell:
 

@@ -38,9 +38,10 @@ func Init(o Options) (*state.State, error) {
 		// is quietly less useful than the one that was asked for: reads under
 		// the profile fail, and the program inside will report those as
 		// permission errors with nothing pointing back at this line.
-		note(o, "the sandbox will not be able to read anything under %s: setting up %s failed (%v).\n"+
+		note(o, "the sandbox will not be able to read anything under %s: setting up the group "+
+			"that reads your profile failed (%v).\n"+
 			"  Everything else is in place. Run `wuserbox --init` again as an administrator to finish it.",
-			paths.Home(), group.ReadGroup, err)
+			paths.Home(), err)
 	}
 	var built *state.State
 	// Everything from reading the record to writing it back is one operation.
@@ -187,13 +188,22 @@ func ensureAccount(s *state.State, groupName, dir string) error {
 		return err
 	}
 	wanted := []string{groupName, builtinUsers}
+	// The read group of the person building this sandbox, and only theirs.
+	// Joining a group shared by the machine would let this sandbox read
+	// every profile on it that had ever run init, which is the one thing
+	// the split into a group per person exists to stop.
+	//
 	// A sandbox built before EnsureReadGroup ever ran, or on a run where it
 	// failed, simply runs without this membership -- the same tolerance
 	// EnsureReadGroup's own caller already extends, since the alternative is
 	// refusing to build the sandbox at all over one grant that was always
 	// allowed to be missing.
-	if _, err := sid.Lookup(group.ReadGroup); err == nil {
-		wanted = append(wanted, group.ReadGroup)
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		return err
+	}
+	if readGroup := group.ReadGroupFor(owner); resolves(readGroup) {
+		wanted = append(wanted, readGroup)
 	}
 	if err := acct.EnsureMembership(name, wanted...); err != nil {
 		return err
