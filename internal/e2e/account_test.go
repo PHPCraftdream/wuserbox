@@ -437,12 +437,20 @@ func TestCheckAnswersWithTheTokenARunGets(t *testing.T) {
 		t.Fatal(err)
 	}
 	openToEveryone(t, root)
-	owned := filepath.Join(root, "owned")
-	if err := os.Mkdir(owned, 0o755); err != nil {
-		t.Fatal(err)
+	// Deliberately not inside what the sandbox was granted. A grant names the
+	// group, the group is on the restricting list, and the old answer would
+	// then reach this the ordinary way -- measured on CI, where a first
+	// version of this test put the directory under the granted root and the
+	// two answers agreed for exactly that reason.
+	work := filepath.Join(root, "work")   // granted, so there is somewhere to run from
+	owned := filepath.Join(root, "owned") // never granted; the account is named on it directly
+	for _, dir := range []string{work, owned} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-	box := newRealBox(t, firstSandbox, root)
-	box.hand(t, root, grant.RW)
+	box := newRealBox(t, firstSandbox, work)
+	box.hand(t, work, grant.RW)
 
 	// Named for the account and not the group, the way a thin profile is:
 	// account.MakeProfile writes the account's own identifier into it, because
@@ -456,8 +464,8 @@ func TestCheckAnswersWithTheTokenARunGets(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !box.tries(t, writeInto(owned), root) {
-		t.Fatal("a directory granted to the account was not writable by it, so nothing below means anything")
+	if !box.tries(t, writeInto(owned), work) {
+		t.Fatal("a directory naming the account was not writable by it, so nothing below means anything")
 	}
 
 	written := filepath.Join(owned, "written.txt")

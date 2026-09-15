@@ -120,16 +120,25 @@ func runDriver() {
 		err  error
 	}
 	results := make(chan outcome, 1)
-	started := time.Now()
 	go func() {
 		code, err := Run(token, commandLine, dir)
 		results <- outcome{code, err}
 	}()
 
-	if !waitForPid(gcPidFile, 10*time.Second) {
+	// Generous, and for a reason worth naming: ten seconds was enough until
+	// the account tests made `go test ./...` heavy enough to contend with
+	// this package, and then a PowerShell that simply had not been scheduled
+	// yet was reported as a boundary that did not hold. Nothing here is a
+	// measurement of how fast a machine starts a program; what is measured
+	// begins below, once it has.
+	if !waitForPid(gcPidFile, 60*time.Second) {
 		report("error: the grandchild never reported its pid")
 		return
 	}
+	// The clock for "was it stopped, or did it just finish" starts here and
+	// not at the launch above, so that a slow start cannot be mistaken for a
+	// run that went the distance.
+	started := time.Now()
 
 	switch mode {
 	case "patient":
@@ -336,7 +345,7 @@ func TestRunStopsOnInterruptAndWhatItStarted(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if !waitForFile(readyFile, 15*time.Second) {
+	if !waitForFile(readyFile, 90*time.Second) {
 		_ = cmd.Process.Kill()
 		t.Fatal("driver never became ready")
 	}
@@ -367,7 +376,7 @@ func TestRunStopsOnInterruptAndWhatItStarted(t *testing.T) {
 		}
 	}()
 
-	waitDriver(t, cmd, 45*time.Second)
+	waitDriver(t, cmd, 90*time.Second)
 	close(stop)
 
 	report := readReport(t, resultFile)
@@ -404,7 +413,7 @@ func TestKillOnCloseStopsEverythingIfWuserboxIsKilledOutright(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !waitForFile(readyFile, 15*time.Second) {
+	if !waitForFile(readyFile, 90*time.Second) {
 		_ = cmd.Process.Kill()
 		t.Fatal("driver never became ready")
 	}
@@ -445,7 +454,7 @@ func TestOneInterruptIsLeftToTheProgram(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = cmd.Process.Kill() }()
-	if !waitForFile(filepath.Join(dir, "ready.marker"), 20*time.Second) {
+	if !waitForFile(filepath.Join(dir, "ready.marker"), 90*time.Second) {
 		t.Fatal("the driver never became ready")
 	}
 	raw, err := os.ReadFile(pidFile)

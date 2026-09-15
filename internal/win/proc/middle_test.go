@@ -164,7 +164,7 @@ func TestOneInterruptStillReachesTheProgramThroughTheMiddle(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if !waitForFile(filepath.Join(dir, "ready.marker"), 20*time.Second) {
+	if !waitForFile(filepath.Join(dir, "ready.marker"), 90*time.Second) {
 		t.Fatal("the driver never became ready")
 	}
 	pid := readPid(t, pidFile)
@@ -173,7 +173,12 @@ func TestOneInterruptStillReachesTheProgramThroughTheMiddle(t *testing.T) {
 		t.Fatalf("GenerateConsoleCtrlEvent: %v", callErr)
 	}
 
-	if !waitForFile(heardFile(pidFile), 5*time.Second) {
+	// Ten and not more: the program at the end sleeps for thirty seconds and
+	// then ends on its own, which would look exactly like the run being
+	// ended. Delivering a console event takes milliseconds, so a wait long
+	// enough to eat that margin would only ever turn one failure into
+	// another.
+	if !waitForFile(heardFile(pidFile), 10*time.Second) {
 		t.Error("the interrupt never reached the program at the end of the chain")
 	}
 	// Long enough that an ending would have happened by now.
@@ -205,7 +210,7 @@ func TestInsistingStillEndsTheRunThroughTheMiddle(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if !waitForFile(filepath.Join(dir, "ready.marker"), 20*time.Second) {
+	if !waitForFile(filepath.Join(dir, "ready.marker"), 90*time.Second) {
 		t.Fatal("the driver never became ready")
 	}
 	pid := readPid(t, pidFile)
@@ -226,7 +231,7 @@ func TestInsistingStillEndsTheRunThroughTheMiddle(t *testing.T) {
 			}
 		}
 	}()
-	waitDriver(t, cmd, 45*time.Second)
+	waitDriver(t, cmd, 90*time.Second)
 	close(stop)
 
 	report := readReport(t, resultFile)
