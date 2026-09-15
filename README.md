@@ -51,25 +51,51 @@ Two Windows mechanisms, nothing else:
 
 1. **A local group per project.** The folder name plus a hash of its full path
    become a group such as `wub-wuserbox-d6e9a21f`. The group's comment stores
-   the full path, so the mapping works in both directions with no database. The
-   group has no members and cannot log on.
+   the full path, so the mapping works in both directions with no database.
+   Every permission wuserbox grants is an ordinary NTFS entry naming this
+   group, and the group is what decides what the sandbox may touch.
 
-2. **A fully restricted token.** The command runs under *your* account, with
-   your environment, your `HKEY_CURRENT_USER` and your credentials, but the
-   token carries a list of restricting identifiers. Every access is checked
-   twice: against you *and* against that list. Not only writes — `DELETE` and
-   `FILE_DELETE_CHILD` go through the same check, which is what a
-   write-restricted token could not do and why this one replaced it.
+2. **A local account per project**, the group's only member, such as
+   `wub-d6e9a21f`. The command runs as *that account* — not as you. It cannot
+   log on at the sign-in screen and cannot log on remotely.
 
-   So an access succeeds only where one of those identifiers has a permission
-   of its own, which wuserbox grants as ordinary NTFS entries. Reading stays
-   open because the list also carries `Everyone` and `BUILTIN\Users`, which
-   between them cover the system, and `wub-read`, a group with no members, for
-   your own profile.
+   So an access succeeds only where the group, or one of the memberships the
+   account needs in order to function at all, has a permission of its own.
+   Reading stays open because the account also carries `Everyone` and
+   `BUILTIN\Users`, which between them cover the system, and `wub-read`, which
+   covers your own profile and which nothing but a sandbox account ever joins.
 
 Nothing is emulated or intercepted. The kernel enforces it, child processes
 inherit it, and a sweeping `rm -rf` stops at the same boundary as everything
 else.
+
+### What the sandbox gets instead of your profile
+
+Because it is not you, it does not have your profile. It gets one of its own:
+a directory wuserbox builds, holding an empty registry hive and three folders,
+handed to the program as its `USERPROFILE`, `HOME`, `APPDATA`, `LOCALAPPDATA`
+and `TEMP`. It costs about two and a half megabytes.
+
+Before each run, the files and directories named in the `profile:` section of
+the rules file are **copied in** from your profile. That is where an agent's
+credentials and settings come from, and the list is pre-filled with the common
+agents' state directories when the rules file is created. Nothing on the
+sensitive list — `~/.ssh`, `~/.netrc`, `~/.npmrc`, `~/.gitconfig` — is in that
+default, and you can add what you need.
+
+**Nothing is copied back.** A sandbox able to write into the files its own
+credentials came from could rewrite them, which is the shape of hole this
+exists to close. The cost is real: an agent that refreshes a token inside the
+sandbox refreshes a copy, and the next run starts from your original again.
+Where that means logging in every run, log in once outside the sandbox so the
+refreshed file is in your own profile.
+
+This is the part that changed most recently, and it changed because MSYS2
+programs — `bash` and everything built on it — cannot start under a restricted
+token at all. The whole measurement is in
+[docs/investigations](docs/investigations/msys-under-a-restricted-token.md),
+and what replaced it in
+[docs/design](docs/design/an-account-of-its-own.md).
 
 ## Commands
 
@@ -183,17 +209,24 @@ it, which includes removing what is inside a directory whatever the thing
 inside says about itself. Writing to a file elsewhere was refused; deleting
 it was not.
 
-The sandbox runs on a **fully restricted token** instead: every access, not
-only writes, is checked a second time against the sandbox's own identifier,
-`DELETE` and `FILE_DELETE_CHILD` included. Deleting now answers to that
-identifier like everything else, rather than to the caller's own account —
-which closes the same gap for a directory another sandbox holds, and for a
-protected file inside a directory the sandbox may otherwise write to.
+The sandbox runs as **an account of its own** instead. Deleting answers to
+that account like every other access, rather than to yours — which closes the
+same gap for a directory another sandbox holds, and for a protected file
+inside a directory the sandbox may otherwise write to. Your own Full Control
+over your own profile is simply not something the sandbox carries, because it
+is not you.
 
-`Everyone` and `BUILTIN\Users` have to sit in that same restricted list, or
-the sandbox could not read System32, Program Files, or start a program that
-opens a window at all. That makes any directory those two may write to a
-directory every sandbox may write to, whichever one it was handed to. So
+This is the second answer to the same problem. The first was a fully
+restricted token, which checked every access a second time against the
+sandbox's own identifier. It closed the gap and worked, right up against a
+wall: MSYS2 programs — `bash` and everything built on it — cannot start under
+one at all. The measurement is in
+[docs/investigations](docs/investigations/msys-under-a-restricted-token.md).
+
+The account carries `Everyone` and `BUILTIN\Users`, or it could not read
+System32, Program Files, or start a program that opens a window at all. That
+makes any directory those two may write to a directory every sandbox may
+write to, whichever one it was handed to. So
 handing a directory over rewrites its whole permission list:
 
 * whatever `Everyone` and `Users` held there is narrowed to reading — never
@@ -248,9 +281,10 @@ Code running in the sandbox must not be able to widen its own permissions:
   the same treatment: `.bashrc`, `.profile`, `.gitconfig`, `.npmrc`, `.netrc`,
   `.ssh`, `.gnupg`, `.aws` and their neighbours. That fixed list names the
   owner, the system, administrators and `wub-read`, and nobody else: a sandbox
-  reads them through the group it carries among its restricting identifiers,
-  while another account on the same machine is no closer to your keys than it
-  was before wuserbox was installed.
+  reads them through `wub-read`, which nothing but a sandbox account ever
+  joins, while another person's account on the same machine is no closer to
+  your keys than it was before wuserbox was installed. Reading them is what
+  this allows; changing or destroying them is what it refuses.
 * `--init`, `--rm`, `--grant`, `--revoke`, `--add-dir` and `--remove-dir`
   refuse to run from inside a sandbox, and wuserbox never asks for
   administrator rights from there. The check reads the kernel's
@@ -325,13 +359,17 @@ returned, so the code you read after it is the sandboxed program's own.
 ## Limits worth knowing
 
 * **Reading is not restricted.** The sandbox sees your keys, tokens and browser
-  data, and can decrypt whatever your account can. It prevents damage, not a
-  determined leak.
+  data. It prevents damage, not a determined leak.
+* **What it cannot read is what belongs to your account rather than to a file.**
+  Credential Manager, DPAPI secrets and mapped drives are yours, and the
+  sandbox is not you. Anything sealed under your account stays sealed. This is
+  a consequence of the account, not a feature built on top of it, so do not
+  lean on it the way you would lean on the file boundary, which is tested.
 * **The network is not restricted.**
 * **Directories writable by `Everyone` or `BUILTIN\Users` stay writable**, and
   this is the one place where what a sandbox may change is wider than what it
-  was handed. Both have to be restricting identifiers — the first for programs
-  to start at all, the second to read System32 and Program Files — so a
+  was handed. A sandbox carries both — the first for programs to start at all,
+  the second to read System32 and Program Files — so a
   sandbox may change whatever the machine already lets every local account
   change, without that directory ever having been granted. Many machines ship
   `C:\ProgramData` that way. `wuserbox --audit` lists what it finds under
@@ -385,8 +423,14 @@ returned, so the code you read after it is the sandboxed program's own.
   it. `wuserbox --revoke` and `wuserbox --rm` succeed against open files and
   refuse every new attempt straight away, but they are not a way to stop a
   program that is already running. Stop it first.
-* **`HKEY_CURRENT_USER` is read-only.** Command-line tools rarely care;
-  anything that saves settings in the registry will fail to.
+* **`HKEY_CURRENT_USER` is the sandbox's own, and starts empty.** A program
+  that saves settings in the registry can, and they go into the sandbox's hive
+  rather than yours — so they are there next run, and nothing of yours is read
+  from there. What starts blank is anything that expected your own settings:
+  locale and the like.
+* **Files the sandbox creates are owned by the sandbox's account**, not by you.
+  You keep being able to delete them, because the project directory carries an
+  entry for you, but a listing will show an owner you do not recognize.
 * **Interface isolation is weak.** A sandboxed process shares your desktop and
   clipboard.
 * **A batch file's arguments still expand variables.** Starting a `.cmd` or
@@ -464,8 +508,8 @@ try to escape: writing outside the project, through a child process, into the
 profile, into the registry, and deleting a whole tree. Most need no elevation.
 
 One test reads the user's profile directory, which needs `wub-read` — the
-group a fully restricted token needs to reach it, created once the first time
-any sandbox is built. Creating a group needs administrator rights, so that
+group a sandbox reaches it through, created once the first time any sandbox is
+built. Creating a group needs administrator rights, so that
 test skips rather than fails without them. The full lifecycle test creates an
 actual local group and needs elevation for the same reason. Run both from an
 elevated shell:

@@ -9,10 +9,10 @@ var Commands = []Command{
 		Default: true,
 		Summary: "run a program sandboxed for the current directory",
 		Call:    "[options] <program> [arguments...]",
-		Detail: `Starts a program under a token that reads everything you can read and
-writes only where this project's sandbox is allowed to: the project
-directory, the directories you have handed over, and a temporary
-directory of its own that TEMP and TMP point at.
+		Detail: `Starts a program as this project's own local account, which reads
+everything you can read and writes only where the sandbox is allowed
+to: the project directory, the directories you have handed over, and a
+profile of its own that HOME, APPDATA and TEMP point inside.
 
 This is what wuserbox does when the first word is not one of its
 commands, so "wuserbox notepad.exe" is a whole command line. Options
@@ -28,9 +28,11 @@ command out and marking where its arguments end, and means exactly what
 leaving out "--run --" means.
 
 The sandbox is created on first use, which needs administrator rights
-once. Later runs need none. The program keeps your console, your
-environment and your exit code, so it behaves like any other program
-you start from the shell.
+once. Later runs need none. The program keeps your console and your
+exit code, so it behaves like any other program you start from the
+shell. What it does not keep is your profile: it gets one of its own,
+filled before each run with what the rules file names, and nothing
+written there ever travels back to yours.
 
 A run changes nothing about the sandbox. What may be written is decided
 by "--init", "--grant" and "--add-dir", and is the same whichever
@@ -58,8 +60,9 @@ command line starts the program.`,
 		Call:       "--init [options]",
 		Elevates:   true,
 		Privileged: true,
-		Detail: `Creates the local group that carries this project's identity, applies
-the permissions the sandbox needs, and locks wuserbox's own settings so
+		Detail: `Creates the local group that carries this project's identity and the
+local account that runs as it, builds the sandbox its own thin profile,
+applies the permissions it needs, and locks wuserbox's own settings so
 the code it runs cannot change them.
 
 You rarely need this: a run does it the first time one happens in a
@@ -69,7 +72,10 @@ ahead of time — a run has no options for that, deliberately.
 
 Running it again is safe, and is the way to repair a sandbox: every
 permission is applied afresh rather than taken on trust from the
-record, so an entry removed by hand comes back.`,
+record, so an entry removed by hand comes back. It is also what brings
+a sandbox made by an older wuserbox forward, by giving it the account
+it does not have yet; everything it already holds stays, because its
+permissions name its group and the account joins that group.`,
 		Options: []Option{
 			{"--dir <d>", "project directory (default: the current one)"},
 			{"--rw <d>", "hand over another directory for writing, repeatable"},
@@ -248,9 +254,13 @@ renamed or deleted; remove one with "--rm --dir <directory>".`,
 		Elevates:   true,
 		Privileged: true,
 		Detail: `Takes back every permission the sandbox was given, deletes its
-temporary directory and its bookkeeping, and removes the group.
+temporary directory, its thin profile and its bookkeeping, and removes
+the account and the group.
 
-Your files stay where they are. The rules file keeps its entries, so
+Your files stay where they are, including anything the sandbox wrote
+into your project. What goes with the profile is only what was copied
+into it and whatever the sandbox saved there, which never traveled
+back to you in the first place. The rules file keeps its entries, so
 starting the project again rebuilds the same sandbox.
 
 If something will not go, usually a temporary directory another program

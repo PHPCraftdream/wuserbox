@@ -31,19 +31,30 @@ USAGE
 
 WHAT THIS MEANS FOR A PROGRAM RUNNING INSIDE
 
+  You are not the user. You run as a local account of this sandbox's own,
+  which is what decides everything below.
+
   You can read everything the user can read: the whole disk, the toolchain,
-  the user's settings and credentials.
+  the user's settings and credential files. What you cannot reach is what
+  belongs to the user's account rather than to a file: Credential Manager,
+  anything sealed with DPAPI, mapped drives.
+
+  Your profile is not the user's. USERPROFILE, HOME, APPDATA, LOCALAPPDATA
+  and TEMP all point inside a profile built for this sandbox, and
+  HKEY_CURRENT_USER is its own and starts empty. Settings you save are kept
+  there and are still there next run. What was copied in from the user's
+  profile is whatever the rules file names; nothing is ever copied back.
 
   You can write only to:
     * the project directory you were started in, and everything under it
     * any directory the user has granted for this project
-    * your own temporary directory, which TEMP and TMP point at
+    * your own profile, which TEMP and TMP point inside
 
-  Deleting is bounded the same way, by the same thing: the token is fully
-  restricted, so every access is checked a second time against the sandbox's
-  own identifier, and DELETE is checked with the rest of them. A sweep like
-  "rmdir /s" or "rm -rf" started in the wrong place empties what the sandbox
-  was given and stops at its edge.
+  Deleting is bounded the same way, by the same thing: what a permission
+  names is this sandbox's group, the account's only way to anything is being
+  a member of it, and DELETE is checked against that like every other access.
+  A sweep like "rmdir /s" or "rm -rf" started in the wrong place empties what
+  the sandbox was given and stops at its edge.
 
   Anywhere else a write fails with "Access is denied". That is Windows
   enforcing a permission boundary, not a broken tool and not a bug to work

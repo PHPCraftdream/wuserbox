@@ -51,16 +51,18 @@ THE RULES FILE
 
     profile: [
         .claude
-        .gitconfig
+        .codex
         AppData/Local/claude-cli-nodejs
     ]
 
   Each entry is a path relative to the profile root, copied to the same
   relative place under the sandbox's; there is no rw or ro here, because
   copying only ever reads from the user's profile and never writes back to
-  it. It is pre-filled when this file is first created, from the agent preset
-  and the credentials a coding agent commonly needs, and is otherwise edited
-  by hand like the rest of this file. A name missing on this machine is
+  it. It is pre-filled when this file is first created, with the state
+  directories of the agents found on this machine and nothing else -- no
+  .ssh, .netrc, .npmrc or .gitconfig, which are exactly what wuserbox
+  protects, and which a default that copied them would hand to every sandbox
+  at once. Add what you need by hand. A name missing on this machine is
   simply not copied.
 
 ENVIRONMENT
@@ -69,8 +71,11 @@ ENVIRONMENT
 
     WUSERBOX_DIR      the project directory the sandbox belongs to
     WUSERBOX_GROUP    the name of the sandbox, which is also its group
-    TEMP, TMP         the sandbox's own temporary directory, which it may
-                      write to and which "wuserbox --rm" deletes
+    USERPROFILE,      the sandbox's own thin profile, not the user's
+    HOME, APPDATA,
+    LOCALAPPDATA
+    TEMP, TMP         a directory inside that profile, which the sandbox may
+                      write to and which "wuserbox --rm" deletes with it
 
   Read by wuserbox itself:
 
