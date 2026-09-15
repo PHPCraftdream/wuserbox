@@ -175,6 +175,26 @@ func Isolate(path, account string, entries []ACE, reach uint32) error {
 // narrowed and the rest keeps arriving from the top, which is what lets
 // taking the grant away reach it later.
 func sweep(root string, everyone, users, holder uintptr) error {
+	// Read the whole tree before changing any of it. Doing both in one pass
+	// left a failure halfway down with part of the tree already rewritten and
+	// the grant not written at all: narrowings nobody asked for and no record
+	// anywhere that they happened. Reading first is not a promise -- the tree
+	// can change underneath between the passes -- but it turns the ordinary
+	// reason for stopping, an entry of a kind that cannot be carried over,
+	// into a refusal before anything has moved.
+	if err := walkTree(root, func(path string) error {
+		_, err := readable(path)
+		return err
+	}); err != nil {
+		return err
+	}
+	return walkTree(root, func(path string) error {
+		return narrowOwn(path, everyone, users, holder)
+	})
+}
+
+// walkTree visits everything under root that a sweep is allowed to touch.
+func walkTree(root string, visit func(string) error) error {
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		switch {
 		case err != nil:
@@ -186,8 +206,29 @@ func sweep(root string, everyone, users, holder uintptr) error {
 		case entry.Type()&os.ModeSymlink != 0:
 			return nil // a name for somewhere else, whose permissions are its own
 		}
-		return narrowOwn(path, everyone, users, holder)
+		return visit(path)
 	})
+}
+
+// readable reports whether an object's permission list can be carried over,
+// and is what the first pass asks of every one of them.
+func readable(path string) ([]heldEntry, error) {
+	var dacl *aclHeader
+	var descriptor uintptr
+	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
+		seFileObject, daclInfo, 0, 0, uintptr(unsafe.Pointer(&dacl)), 0,
+		uintptr(unsafe.Pointer(&descriptor))); r != 0 {
+		return nil, fmt.Errorf("reading the permissions of %s: error %d", path, r)
+	}
+	defer w32.Free(descriptor)
+	if dacl == nil {
+		return nil, nil
+	}
+	held, err := entriesOf(dacl)
+	if err != nil {
+		return nil, fmt.Errorf("reading the permissions of %s: %w", path, err)
+	}
+	return held, nil
 }
 
 // narrowOwn takes the changing rights of Everyone and BUILTIN\Users out of
@@ -211,6 +252,15 @@ func narrowOwn(path string, everyone, users, holder uintptr) error {
 		return fmt.Errorf("reading the permissions of %s: error %d", path, r)
 	}
 	defer w32.Free(descriptor)
+
+	if dacl == nil {
+		// No permission list at all, which Windows reads as everybody having
+		// everything -- the widest an object gets. It has no entries, so
+		// narrowing them reaches nothing, and a directory inside a granted tree
+		// carrying one stayed open to every sandbox on the machine after the
+		// tree was handed over. Measured, with a second sandbox writing there.
+		return giveAList(path, holder)
+	}
 
 	held, err := entriesOf(dacl)
 	if err != nil {
@@ -251,6 +301,39 @@ func narrowOwn(path string, everyone, users, holder uintptr) error {
 		return nil
 	}
 	return apply(path, append(update, handback...), false)
+}
+
+// giveAList writes a permission list onto an object that has none.
+//
+// Every one of these is a narrowing, which is the only thing that makes it
+// safe to do at all. An object with no list grants everybody every right, so
+// whatever is written can only take away: Everyone is left with what remains
+// of that once the changing rights are gone, which is reading and executing,
+// and the owner, the system and administrators keep what they already had in
+// full. Naming those three is not generosity either -- they held everything a
+// moment ago through the same absence, and writing a list that left them out
+// would take it from them.
+//
+// It is written as a change rather than as the whole list, so that whatever a
+// directory above hands down still arrives here afterwards, the same as for
+// every other object the sweep touches.
+func giveAList(path string, holder uintptr) error {
+	const subtree = InheritObjects | InheritContainers
+	const fullControl = 0x1F01FF
+	list := []explicitAccess{entry(holder, fullControl, subtree, grantAccess)}
+	for _, known := range []string{sid.System, sid.Administrators} {
+		value, err := sid.Parse(known)
+		if err != nil {
+			return err
+		}
+		list = append(list, entry(value, fullControl, subtree, grantAccess))
+	}
+	everyone, err := sid.Parse(sid.Everyone)
+	if err != nil {
+		return err
+	}
+	list = append(list, entry(everyone, fullControl&^changing, subtree, grantAccess))
+	return apply(path, list, false)
 }
 
 // allEntries walks an access control list entry by entry and returns what it

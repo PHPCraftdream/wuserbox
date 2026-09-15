@@ -2,6 +2,8 @@ package setup
 
 import (
 	"flag"
+	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,10 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 	"github.com/PHPCraftdream/wuserbox/internal/win/access"
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
+	"github.com/PHPCraftdream/wuserbox/internal/win/group"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
+	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
 
 func TestParseOptionsDefaultsToTheCurrentDirectory(t *testing.T) {
@@ -637,5 +643,56 @@ func TestClearGrantsReachesWhatANestedGrantPinned(t *testing.T) {
 	}
 	if !kept.Allowed {
 		t.Errorf("removing one sandbox cost another its own grant: %s", kept.Reason)
+	}
+}
+
+// TestRemovingASandboxWithNoRecordStillClearsItsProjectDirectory is the
+// regression guard for a removal that reported success and left permissions
+// behind that nothing could ever find again.
+//
+// The record is the list of what a sandbox holds. With it gone — deleted by
+// hand, or lost with the profile it lived in — removal went straight to
+// deleting the group, and every entry naming that group stayed on disk while
+// the identifier in them stopped resolving. The group's own comment still
+// remembers the directory it belongs to, so at least that much can be cleared
+// before the name goes.
+func TestRemovingASandboxWithNoRecordStillClearsItsProjectDirectory(t *testing.T) {
+	if !token.IsAdmin() {
+		t.Skip("creating and deleting a local group needs administrator rights")
+	}
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	project := t.TempDir()
+	name := fmt.Sprintf("%srmtest-%d", group.Prefix, 100000+rand.Intn(800000))
+	if _, err := sid.Lookup(name); err == nil {
+		t.Skipf("%s already exists on this machine", name)
+	}
+	if err := group.Add(name, project); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = group.Delete(name) })
+	account, err := sid.Lookup(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := grant.Apply(account.String(), project, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if !acl.Reads(project, account.String()) {
+		t.Fatal("the grant did not take, so this proves nothing")
+	}
+
+	// No record at all: exactly what removal used to walk straight past.
+	if _, err := os.Stat(state.Path(name)); !os.IsNotExist(err) {
+		t.Fatalf("this sandbox was not supposed to have a record: %v", err)
+	}
+	if err := remove(name, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if acl.Reads(project, account.String()) {
+		t.Error("the group was deleted and its entries were left on the project directory")
+	}
+	if _, exists, err := group.Comment(name); err != nil || exists {
+		t.Errorf("the group survived removal (exists=%v, err=%v)", exists, err)
 	}
 }

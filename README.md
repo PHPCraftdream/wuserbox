@@ -361,6 +361,16 @@ returned, so the code you read after it is the sandboxed program's own.
   "reads everything you can read" is the promise this tool opens with. Closing
   the shared-writable hole that way makes a different, narrower tool, so it is
   not a change to make quietly on top of this one.
+* **Two commands changing overlapping trees at once are not one operation.**
+  A lock is held per path, so `wuserbox --grant C:\work` and `wuserbox --grant
+  C:\work\inner` started at the same moment can cross: the sweep over the outer
+  tree may narrow what the inner grant had just written, or the other way
+  round. No sandbox gains anything it was not given — both sides only ever
+  narrow — but one of the two grants can end up weaker than it was asked for.
+  `wuserbox --explain` reports it against the record, and `wuserbox --init`
+  puts it back. Serializing every permission change behind one machine-wide
+  lock would close it and would make each grant wait for every other, so the
+  limit is accepted instead of hidden.
 * **Revoking does not reach a file that is already open.** Windows checks
   permissions when a file is opened and not again afterwards, so a sandbox that
   already had something open keeps writing through that handle until it closes

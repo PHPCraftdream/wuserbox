@@ -15,7 +15,11 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
+          # The version the project declares, not whatever is newest today.
+          # "stable" moved the toolchain underneath the build without anything
+          # saying so, which is the wrong thing to discover while reading a
+          # crash report.
+          go-version-file: go.mod
           cache: true
 
       - name: Check formatting
@@ -56,10 +60,19 @@ jobs:
           # honest reasons about the machine they find, and a check that turns
           # red for those teaches people to ignore it. Every name here is a
           # claim that this one can always be answered, anywhere.
-          output=$(go test ./internal/e2e/... ./internal/win/acl/... -count=1 -v \
-            -run 'TestDeletingOutsideTheBoundaryIsRefused|TestASweepStopsAtTheBoundary|TestTheSandboxKeepsItsOwnWrites|TestReadingIsStillUnrestricted|TestOneSandboxCannotDeleteAnothersFiles|TestAProtectedFileInsideAGrantedDirectorySurvives|TestOneSandboxCannotReachWhatADirectoryAboveHandedDown|TestPeerCannotReachAnEntryASubdirectoryHoldsItself|TestRevokingReachesWhatANestedGrantPinned|TestRepairingAnInterruptedNarrowingReachesWhatANestedGrantPinned|TestASandboxCannotRewriteThePermissionsItWasLeft|TestNarrowingNeverHandsOutReading|TestHomeTopHoldsWhereTheMachineHandsOutNothing|TestAGrantThatCannotFinishGrantsNothing' 2>&1)
+          names='TestDeletingOutsideTheBoundaryIsRefused|TestASweepStopsAtTheBoundary|TestTheSandboxKeepsItsOwnWrites|TestReadingIsStillUnrestricted|TestOneSandboxCannotDeleteAnothersFiles|TestAProtectedFileInsideAGrantedDirectorySurvives|TestOneSandboxCannotReachWhatADirectoryAboveHandedDown|TestPeerCannotReachAnEntryASubdirectoryHoldsItself|TestRevokingReachesWhatANestedGrantPinned|TestRepairingAnInterruptedNarrowingReachesWhatANestedGrantPinned|TestASandboxCannotRewriteThePermissionsItWasLeft|TestNarrowingNeverHandsOutReading|TestHomeTopHoldsWhereTheMachineHandsOutNothing|TestAGrantThatCannotFinishGrantsNothing|TestAGrantThatCannotFinishChangesNothingAtAll|TestAnObjectWithNoListAtAllIsNarrowedToo|TestAnAuditSeesWhatWasHandedDown|TestASweepDoesNotCostTheOwnerTheirOwnWrite|TestAGrantDoesNotReachThroughAJunction'
+          output=$(go test ./internal/e2e/... ./internal/win/acl/... -count=1 -v -run "$names" 2>&1)
           echo "$output"
           if echo "$output" | grep -q -- "--- SKIP"; then
             echo "::error::the boundary was not covered: a test that should never skip did"
+            exit 1
+          fi
+          # A name that no longer matches anything passes the check above in
+          # silence: nothing skipped, because nothing ran. Counting is what
+          # tells a renamed test from a covered one.
+          wanted=$(echo "$names" | tr '|' '\n' | grep -c .)
+          passed=$(echo "$output" | grep -c -- "--- PASS")
+          if [ "$passed" -ne "$wanted" ]; then
+            echo "::error::$passed of $wanted boundary tests ran; a name in the list matches nothing"
             exit 1
           fi

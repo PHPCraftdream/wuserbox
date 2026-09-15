@@ -409,8 +409,9 @@ func TestAGrantThatCannotFinishGrantsNothing(t *testing.T) {
 	if isolateErr == nil {
 		t.Fatal("a grant that could not finish reported success")
 	}
-	if heldBy(root, unusedAccount, AccessModify) {
-		t.Error("the grant failed, and the directory was handed over anyway")
+	if granted, err := heldBy(root, unusedAccount, AccessModify); err != nil || granted {
+		t.Errorf("the grant failed, and the directory was handed over anyway (granted=%v, err=%v)",
+			granted, err)
 	}
 }
 
@@ -494,7 +495,137 @@ func TestAGrantDoesNotReachThroughAJunction(t *testing.T) {
 	if !UsersWritable(outside) {
 		t.Error("granting a tree narrowed BUILTIN\\Users somewhere outside it, through a junction")
 	}
-	if !heldBy(outside, unusedAccount, AccessModify) {
-		t.Error("granting a tree rewrote an entry somewhere outside it, through a junction")
+	if kept, err := heldBy(outside, unusedAccount, AccessModify); err != nil || !kept {
+		t.Errorf("granting a tree rewrote an entry somewhere outside it, through a junction (kept=%v, err=%v)",
+			kept, err)
+	}
+}
+
+// TestAnObjectWithNoListAtAllIsNarrowedToo is the regression guard for the
+// widest an object gets and the one the sweep could not see.
+//
+// An object with no permission list is not an object with an empty one:
+// Windows reads the absence as everybody holding every right. Narrowing works
+// through entries, and there were none, so a directory inside a granted tree
+// carrying one stayed open to every sandbox on the machine after the tree was
+// handed over.
+func TestAnObjectWithNoListAtAllIsNarrowedToo(t *testing.T) {
+	root := t.TempDir()
+	inner := filepath.Join(root, "inner")
+	if err := os.Mkdir(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	setSDDL(t, inner, "D:NO_ACCESS_CONTROL")
+	if !EveryoneWritable(inner) {
+		t.Fatal("a list-less directory was not writable by Everyone, so this proves nothing")
+	}
+
+	if err := Isolate(root, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers); err != nil {
+		t.Fatal(err)
+	}
+
+	if EveryoneWritable(inner) {
+		t.Error("a directory with no permission list is still writable by Everyone")
+	}
+	if UsersWritable(inner) {
+		t.Error("a directory with no permission list is still writable by BUILTIN\\Users")
+	}
+	// Reading is what the absence gave them, and narrowing never takes away.
+	if !holds(t, inner, "Everyone", "(RX)") {
+		t.Error("Everyone lost its reading instead of being narrowed to it")
+	}
+	// The owner still owns it, and so do the two that held it through the same
+	// absence a moment ago.
+	probe := filepath.Join(inner, "owner.txt")
+	if err := os.WriteFile(probe, []byte("x"), 0o644); err != nil {
+		t.Errorf("giving the directory a list cost the owner their own write: %v", err)
+	}
+	for _, who := range []string{"SYSTEM", "Administrators"} {
+		if !holds(t, inner, who, "(F)") {
+			t.Errorf("%s lost what the missing list had given it", who)
+		}
+	}
+}
+
+// TestAnAuditSeesWhatWasHandedDown is the regression guard for a diagnostic
+// that answered about the wrong thing.
+//
+// Asking whether Everyone may write somewhere was answered from the object's
+// own entries alone, so the ordinary shape of the problem — one directory left
+// open and everything under it open by inheritance, with not one entry of its
+// own — was reported as fine. --audit is what points at the places the
+// boundary does not cover, and it was quiet about most of them.
+func TestAnAuditSeesWhatWasHandedDown(t *testing.T) {
+	root := t.TempDir()
+	if err := Set(root, sid.Everyone, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(root, "inner")
+	if err := os.Mkdir(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !EveryoneWritable(inner) {
+		t.Error("a directory inside a world-writable one was reported as not writable by Everyone")
+	}
+	// And a refusal settles it, the way Windows settles it. The owner is one
+	// of Everyone, so this has to come back off before the directory can be
+	// taken away again.
+	if err := Deny(inner, sid.Everyone, AccessChange); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = Remove(inner, sid.Everyone) })
+	if EveryoneWritable(inner) {
+		t.Error("a refusal was not counted against what was handed down")
+	}
+}
+
+// TestAGrantThatCannotFinishChangesNothingAtAll is the second half of the
+// guard above. Refusing before the grant is written keeps a permission from
+// being in force with nothing pointing at it; refusing before anything is
+// written at all keeps the tree as it was found.
+//
+// The whole tree is read before any of it is changed, so the ordinary reason
+// for stopping — an entry of a kind that cannot be carried over — is met while
+// nothing has moved. Without that first pass a sibling earlier in the walk was
+// already narrowed by the time the bad one was reached, and nothing recorded
+// that it had been.
+func TestAGrantThatCannotFinishChangesNothingAtAll(t *testing.T) {
+	root := t.TempDir()
+	// "a" sorts before "z", so the walk reaches it first and would narrow it
+	// before meeting the entry it cannot carry.
+	early := filepath.Join(root, "a-early")
+	late := filepath.Join(root, "z-late")
+	for _, dir := range []string{early, late} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Set(early, sid.Users, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !UsersWritable(early) {
+		t.Fatal("the first directory is not writable by Users, so this proves nothing")
+	}
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	setSDDL(t, late, `D:P(XA;;FA;;;WD;(@USER.Title=="nobody"))`)
+	t.Cleanup(func() { setSDDL(t, late, `D:P(A;OICI;FA;;;`+owner+`)`) })
+
+	if err := Isolate(root, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers); err == nil {
+		t.Fatal("a grant that could not finish reported success")
+	}
+
+	if !UsersWritable(early) {
+		t.Error("a grant that refused had already narrowed part of the tree")
 	}
 }

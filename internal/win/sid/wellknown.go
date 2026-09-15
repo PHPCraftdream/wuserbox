@@ -14,4 +14,9 @@ const (
 	// system it needs to run anything, since Program Files and Windows
 	// itself grant Users read and execute rather than Everyone.
 	Users = "S-1-5-32-545"
+	// Administrators is needed when a permission list has to be written from
+	// nothing. An object with no list at all grants everybody everything,
+	// administrators and the system among them, so giving it one has to name
+	// them or it takes away what they had.
+	Administrators = "S-1-5-32-544"
 )

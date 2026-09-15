@@ -15,6 +15,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/plan"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
 
@@ -84,9 +85,11 @@ func removeSandbox(name string, asJSON bool) error {
 }
 
 func remove(name string, asJSON bool) error {
-	if s, err := state.Load(name); err != nil {
+	s, err := state.Load(name)
+	if err != nil {
 		return err
-	} else if s != nil {
+	}
+	if s != nil {
 		if left := clearGrants(s, asJSON); len(left) > 0 {
 			// The record is the only list of what is still in force, and the
 			// group is what those entries name. Keeping both is what makes a
@@ -102,12 +105,68 @@ func remove(name string, asJSON bool) error {
 				name, state.Path(name), err)
 		}
 	}
-	if _, exists, err := group.Comment(name); err != nil {
+	dir, exists, err := group.Comment(name)
+	if err != nil {
 		return err
-	} else if exists {
-		return group.Delete(name)
 	}
-	return nil
+	if !exists {
+		return nil
+	}
+	if s == nil {
+		// The record is gone and the group is not, so nothing here knows what
+		// the sandbox was ever given. Deleting the group anyway left every
+		// entry naming it behind, on paths nothing can name afterwards: the
+		// identifier those entries hold is about to stop resolving, and no
+		// later command could find them by it.
+		//
+		// The group itself remembers one thing -- the directory it belongs to,
+		// in its own comment -- so that much can still be cleared. Anything
+		// handed over outside that directory cannot be, and the caller is told
+		// so rather than left with a success that means less than it looks.
+		if err := clearOrphans(name, dir, asJSON); err != nil {
+			return err
+		}
+	}
+	return group.Delete(name)
+}
+
+// clearOrphans takes a sandbox's entries off the directory its group belongs
+// to, for a sandbox whose record is missing.
+func clearOrphans(name, dir string, asJSON bool) error {
+	if dir == "" {
+		return nil
+	}
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return nil
+	}
+	account, named := identifierOf(name)
+	if !named {
+		// Nothing left to look for. The group is still removable, and removing
+		// it is better than refusing to finish over a name that no longer
+		// resolves.
+		return nil
+	}
+	if !asJSON {
+		fmt.Fprintf(os.Stderr,
+			"wuserbox: %s has no record left, so only %s is being cleared; "+
+				"anything handed over elsewhere keeps an entry naming a group that is about to go\n",
+			name, dir)
+	}
+	if err := grant.Revoke(account, dir); err != nil {
+		return err
+	}
+	return grant.Prune(account, dir, nil)
+}
+
+// identifierOf returns the identifier a group name stands for, and whether it
+// still stands for one. A name that resolves to nothing is not a failure here:
+// there is simply no entry anywhere that could be naming it.
+func identifierOf(name string) (string, bool) {
+	value, err := sid.Lookup(name)
+	if err != nil {
+		return "", false
+	}
+	return value.String(), true
 }
 
 // clearGrants revokes everything the sandbox holds and deletes its temp
