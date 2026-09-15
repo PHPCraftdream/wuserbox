@@ -57,6 +57,7 @@ var (
 	procFindFirstFileName = w32.Kernel32.NewProc("FindFirstFileNameW")
 	procFindNextFileName  = w32.Kernel32.NewProc("FindNextFileNameW")
 	procFindClose         = w32.Kernel32.NewProc("FindClose")
+	procGetFinalPathName  = w32.Kernel32.NewProc("GetFinalPathNameByHandleW")
 )
 
 // EnvAllowLinks hands the tree over even where a file in it answers to another
@@ -75,7 +76,14 @@ const EnvAllowLinks = "WUSERBOX_ALLOW_LINKS"
 // was already under way.
 func inspect(root string) error {
 	counting := os.Getenv(EnvAllowLinks) == ""
+	// The one spelling of the tree that the names below can be compared with.
+	// Where it cannot be worked out, the given one stands in: that can only
+	// refuse a tree it should have allowed, never the other way round.
+	spelled := root
 	if counting {
+		if out, err := finalName(root); err == nil {
+			spelled = out
+		}
 		// The root is asked about here rather than in the walk, which passes
 		// over it. Its own entry is written directly rather than inherited,
 		// but a file granted by name is still one name among however many the
@@ -84,7 +92,7 @@ func inspect(root string) error {
 		if err != nil {
 			return fmt.Errorf("looking at %s: %w", root, err)
 		}
-		if err := insideOnly(root, root, info.IsDir()); err != nil {
+		if err := insideOnly(spelled, root, info.IsDir()); err != nil {
 			return err
 		}
 	}
@@ -95,7 +103,7 @@ func inspect(root string) error {
 		if !counting {
 			return nil
 		}
-		return insideOnly(root, path, entry.IsDir())
+		return insideOnly(spelled, path, entry.IsDir())
 	})
 }
 
@@ -225,13 +233,49 @@ func within(root, path string) bool {
 	return strings.HasPrefix(strings.ToLower(path), strings.ToLower(prefix))
 }
 
+// finalName is the one spelling Windows itself uses for a path: long names
+// rather than their 8.3 abbreviations, the letter case the disk holds, and the
+// real volume behind a substituted drive or a symbolic link.
+//
+// Two spellings of one directory are not equal as strings, and comparing them
+// as strings is how a tree was refused for containing a link to itself: a
+// build machine's TEMP is handed out as C:\Users\RUNNER~1\..., while the names
+// a file answers to come back as C:\Users\runneradmin\.... Everything compared
+// here goes through this first.
+func finalName(path string) (string, error) {
+	const readAttributes = 0x80
+	handle, err := syscall.CreateFile(w32.UTF16(path), readAttributes,
+		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE, nil,
+		syscall.OPEN_EXISTING, syscall.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		return "", fmt.Errorf("opening %s to spell it out: %w", path, err)
+	}
+	defer func() { _ = syscall.CloseHandle(handle) }()
+
+	const volumeNameDOS = 0x0
+	buffer := make([]uint16, syscall.MAX_LONG_PATH)
+	written, _, callErr := procGetFinalPathName.Call(uintptr(handle),
+		uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)), volumeNameDOS)
+	if written == 0 || int(written) >= len(buffer) {
+		return "", fmt.Errorf("spelling out %s: %w", path, callErr)
+	}
+	// Windows answers in its own extended form: \\?\C:\... for a local path,
+	// \\?\UNC\server\share\... for one on the network.
+	name := syscall.UTF16ToString(buffer[:written])
+	if rest, found := strings.CutPrefix(name, `\\?\UNC\`); found {
+		return `\\` + rest, nil
+	}
+	return strings.TrimPrefix(name, `\\?\`), nil
+}
+
 // otherNames lists every name the file at path answers to, as full paths.
 //
 // Windows gives them relative to the volume root, and a hard link cannot cross
 // volumes, so the volume of the path that was asked about is the volume of
-// them all.
+// them all. That path is spelled out first, or a substituted drive would put
+// the wrong letter in front of all of them.
 func otherNames(path string) ([]string, error) {
-	absolute, err := filepath.Abs(path)
+	absolute, err := finalName(path)
 	if err != nil {
 		return nil, err
 	}

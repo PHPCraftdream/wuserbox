@@ -10,7 +10,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
@@ -549,4 +551,59 @@ func TestAGrantAllowsALinkThatStaysInsideTheTree(t *testing.T) {
 	if !holds(t, granted, unusedAccount, "(M)") {
 		t.Error("the grant was not written")
 	}
+}
+
+// TestALinkInsideATreeNamedInShortFormIsStillInside is the regression guard for
+// comparing two spellings of one directory as strings.
+//
+// A build machine hands out its TEMP in the old eight-and-three form,
+// C:\Users\RUNNER~1\..., while the names a file answers to come back spelled
+// out, C:\Users\runneradmin\.... The same directory, and not the same string,
+// so a tree containing a link to itself was refused as though the link led
+// outside. The same would happen to anybody whose path reaches the disk
+// through a substituted drive.
+func TestALinkInsideATreeNamedInShortFormIsStillInside(t *testing.T) {
+	long := filepath.Join(t.TempDir(), "a directory with a long name")
+	if err := os.MkdirAll(filepath.Join(long, "one"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(long, "two"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first := filepath.Join(long, "one", "shared.txt")
+	if err := os.WriteFile(first, []byte("shared"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := filepath.Join(long, "two", "shared.txt")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/H", second, first).CombinedOutput(); err != nil {
+		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
+	}
+
+	short := shortForm(t, long)
+	if strings.EqualFold(short, long) {
+		t.Skip("this volume does not keep short names, so there is no second spelling to test")
+	}
+
+	if err := Isolate(short, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers); err != nil {
+		t.Fatalf("a tree named in short form was refused for containing a link to itself: %v", err)
+	}
+}
+
+// shortForm asks Windows for the eight-and-three spelling of a path.
+func shortForm(t *testing.T, path string) string {
+	t.Helper()
+	wide, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]uint16, syscall.MAX_LONG_PATH)
+	proc := syscall.NewLazyDLL("kernel32.dll").NewProc("GetShortPathNameW")
+	written, _, _ := proc.Call(uintptr(unsafe.Pointer(wide)),
+		uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)))
+	if written == 0 {
+		return path
+	}
+	return syscall.UTF16ToString(buffer[:written])
 }
