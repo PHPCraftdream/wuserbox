@@ -2,6 +2,7 @@ package profile
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -266,5 +267,93 @@ func TestCopyRefusesARecordedNameThatClimbsOutOfTheProfile(t *testing.T) {
 	}
 	if _, err := os.Stat(precious); err != nil {
 		t.Errorf("it deleted something outside the profile: %v", err)
+	}
+}
+
+// junctionTo makes a real directory junction, the kind a sandbox can make in
+// its own profile without any privilege at all. Skips where the machine will
+// not make one, rather than passing quietly.
+func junctionTo(t *testing.T, link, target string) {
+	t.Helper()
+	if out, err := exec.Command("cmd.exe", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+		t.Skipf("this machine would not make a junction: %v %s", err, out)
+	}
+}
+
+// TestCopyCannotBeWalkedOutOfTheProfileThroughAJunction is the regression
+// guard for the worst thing in this file's history, and the reason every
+// write and delete below goes through an os.Root.
+//
+// The sandbox owns its own profile. It needs no privilege to replace a
+// directory in it with a junction pointing anywhere -- and this code runs as
+// the person who owns the machine, with their rights. Before the root, the
+// next run followed that junction and did exactly what it does to a copy:
+// overwrote the files it thought it was refreshing and deleted the ones it
+// thought were left over. Measured, on a real junction: both.
+func TestCopyCannotBeWalkedOutOfTheProfileThroughAJunction(t *testing.T) {
+	home, dest := useProfile(t, []string{".claude"})
+	write(t, filepath.Join(home, ".claude", "keep.txt"), "from the source")
+
+	outside := t.TempDir()
+	precious := filepath.Join(outside, "precious.txt")
+	write(t, precious, "do not touch")
+	collide := filepath.Join(outside, "keep.txt")
+	write(t, collide, "this content must survive")
+
+	copied := fill(t, dest)
+
+	// The sandbox swaps the copied directory for a junction to somebody
+	// else's.
+	link := filepath.Join(dest, ".claude")
+	if err := os.RemoveAll(link); err != nil {
+		t.Fatal(err)
+	}
+	junctionTo(t, link, outside)
+
+	if _, err := Copy(dest, copied); err != nil {
+		t.Fatalf("the run could not go on past a junction the sandbox left: %v", err)
+	}
+
+	if _, err := os.Stat(precious); err != nil {
+		t.Errorf("a file outside the profile was deleted through the junction: %v", err)
+	}
+	if got := read(t, collide); got != "this content must survive" {
+		t.Errorf("a file outside the profile was overwritten through the junction: %q", got)
+	}
+	// And the sandbox does not get to pin the name either: the link is
+	// replaced with the real copy, which is what the run was for.
+	if got := read(t, filepath.Join(dest, ".claude", "keep.txt")); got != "from the source" {
+		t.Errorf("the entry was not copied over the junction: %q", got)
+	}
+}
+
+// And the link itself is still wuserbox's to remove: refusing to follow a
+// junction must not mean a sandbox can pin a name in its own profile forever
+// by putting one there.
+func TestCopyCanStillClearAJunctionTheSandboxLeftBehind(t *testing.T) {
+	home, dest := useProfile(t, []string{".claude"})
+	write(t, filepath.Join(home, ".claude", "keep.txt"), "from the source")
+	outside := t.TempDir()
+	write(t, filepath.Join(outside, "precious.txt"), "do not touch")
+
+	copied := fill(t, dest)
+	link := filepath.Join(dest, ".claude")
+	if err := os.RemoveAll(link); err != nil {
+		t.Fatal(err)
+	}
+	junctionTo(t, link, outside)
+
+	// Taken off the list, so the next run has to clear it.
+	if err := (&config.Config{Profile: []string{}}).Save(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Copy(dest, copied); err != nil {
+		t.Fatalf("clearing a junction the sandbox left behind failed: %v", err)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Errorf("the junction is still in the profile: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "precious.txt")); err != nil {
+		t.Errorf("clearing the junction reached what it pointed at: %v", err)
 	}
 }
