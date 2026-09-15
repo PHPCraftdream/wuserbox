@@ -328,12 +328,8 @@ func stub(groupSID, readGroup, commandLine string) int {
 // throughTheStub builds the command line that reaches the program by way of
 // the stub, so what runs is confined twice: once by being the account, once
 // by the account's own restricted token.
-func (b *realBox) throughTheStub(t *testing.T, commandLine string) string {
+func (b *realBox) throughTheStub(t *testing.T, stubExe, commandLine string) string {
 	t.Helper()
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 	owner, err := sid.CurrentUser()
 	if err != nil {
 		t.Fatal(err)
@@ -343,8 +339,37 @@ func (b *realBox) throughTheStub(t *testing.T, commandLine string) string {
 		readGroup = name
 	}
 	return strings.Join([]string{
-		syscall.EscapeArg(exe), stubFlag, b.sid, readGroup, syscall.EscapeArg(commandLine),
+		syscall.EscapeArg(stubExe), stubFlag, b.sid, readGroup, syscall.EscapeArg(commandLine),
 	}, " ")
+}
+
+// stubBinary puts a copy of this test binary somewhere the sandbox account
+// can actually start it, and answers where.
+//
+// Not a detail: the account is not the person running the tests, and the
+// test binary lives under that person's own temporary directory, which the
+// account cannot read. CreateProcessWithLogonW then refuses with "access is
+// denied" before any of this has had a chance to be wrong -- measured on CI,
+// the first time these ran. The same holds for the product: whatever plays
+// the stub has to be readable and executable by the account, and a wuserbox
+// installed into a profile would not be.
+func stubBinary(t *testing.T, root string) string {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	from, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Inside root, which openToEveryone has already made readable and
+	// executable the way Program Files is.
+	stub := filepath.Join(root, "stub.exe")
+	if err := os.WriteFile(stub, from, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return stub
 }
 
 func resolvesHere(name string) bool {
@@ -376,14 +401,15 @@ func TestAShellStartsUnderTheAccountsOwnRestrictedToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	openToEveryone(t, root)
+	stub := stubBinary(t, root)
 	box := newRealBox(t, firstSandbox, root)
 	box.hand(t, root, grant.RW)
 
-	if !box.tries(t, box.throughTheStub(t, `"`+bash+`" --version`), root) {
+	if !box.tries(t, box.throughTheStub(t, stub, `"`+bash+`" --version`), root) {
 		t.Error("bash did not start under the account's own restricted token")
 	}
 	// And the sandbox can still write what it was actually given.
-	if !box.tries(t, box.throughTheStub(t, writeInto(root)), root) {
+	if !box.tries(t, box.throughTheStub(t, stub, writeInto(root)), root) {
 		t.Error("the sandbox could not write the directory it was granted")
 	}
 }
@@ -418,13 +444,14 @@ func TestTheRestrictedTokenClosesWhatTheAccountAloneCannot(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	stub := stubBinary(t, root)
 	box := newRealBox(t, firstSandbox, owned)
 	box.hand(t, owned, grant.RW)
 
 	if !box.tries(t, writeInto(shared), owned) {
 		t.Fatal("INTERACTIVE did not reach the account here, so the refusal below would prove nothing")
 	}
-	if box.tries(t, box.throughTheStub(t, writeInto(shared)), owned) {
+	if box.tries(t, box.throughTheStub(t, stub, writeInto(shared)), owned) {
 		t.Error("the restricted token still reached a directory granted only to INTERACTIVE")
 	}
 }
