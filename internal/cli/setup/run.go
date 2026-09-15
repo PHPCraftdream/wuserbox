@@ -43,6 +43,11 @@ func Run(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Failing to write this is not a reason to refuse the run: it costs a
+	// listing one accurate moment, and the run itself is what was asked for.
+	if err := sandbox.MarkUsed(s.Group); err != nil {
+		fmt.Fprintf(os.Stderr, "wuserbox: could not record this run against %s: %v\n", s.Group, err)
+	}
 	code, err := exec.Run(s, commandLine)
 	if err != nil {
 		return err

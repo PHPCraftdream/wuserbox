@@ -149,7 +149,7 @@ func runDriver() {
 		results <- outcome{code, err}
 	}()
 
-	if !waitForFile(gcPidFile, 10*time.Second) {
+	if !waitForPid(gcPidFile, 10*time.Second) {
 		report("error: the grandchild never reported its pid")
 		return
 	}
@@ -186,6 +186,27 @@ func runDriver() {
 
 	default:
 		report("error: unknown mode " + mode)
+	}
+}
+
+// waitForPid waits for a pid file to hold a pid, which is not the same as
+// waiting for it to exist. PowerShell's Out-File creates the file and writes
+// into it afterwards, so a driver that moved on at the first sight of it
+// signalled readiness while the file was still empty, and the test reading it
+// got "" where it wanted a number. Every use of the marker wants the pid, so
+// the wait is for the pid.
+func waitForPid(path string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if raw, err := os.ReadFile(path); err == nil {
+			if _, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil {
+				return true
+			}
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

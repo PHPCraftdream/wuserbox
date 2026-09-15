@@ -124,6 +124,14 @@ func build(name, dir string, o Options) (*state.State, error) {
 	if err := s.Save(); err != nil {
 		return nil, err
 	}
+	// This is where the moment a sandbox was made comes from, and the only
+	// place it can: nothing later can tell when it began. Losing it costs a
+	// listing that one moment and nothing else, so it is said rather than
+	// raised -- refusing a sandbox that works over a timestamp would be the
+	// worse trade.
+	if err := MarkUsed(name); err != nil {
+		note(o, "could not record when %s was made: %v", name, err)
+	}
 	return s, nil
 }
 
