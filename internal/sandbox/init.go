@@ -12,6 +12,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/preset"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox/facts"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/grants"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
@@ -129,8 +130,16 @@ func build(name, dir string, o Options) (*state.State, error) {
 	// listing that one moment and nothing else, so it is said rather than
 	// raised -- refusing a sandbox that works over a timestamp would be the
 	// worse trade.
-	if err := MarkUsed(name); err != nil {
+	if err := facts.MarkUsed(name); err != nil {
 		note(o, "could not record when %s was made: %v", name, err)
+	}
+	// Measured here because init is already the slow, deliberate command --
+	// it rewrites the permissions of every file in whole trees -- and
+	// because nothing that merely reports on a sandbox can afford to: a walk
+	// of a real profile takes seconds, not milliseconds. Same trade as the
+	// moment above, for the same reason.
+	if _, err := facts.Measure(name, s.Profile, s.Temp); err != nil {
+		note(o, "could not measure what %s takes on disk: %v", name, err)
 	}
 	return s, nil
 }

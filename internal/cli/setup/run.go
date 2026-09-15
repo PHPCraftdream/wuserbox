@@ -8,6 +8,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/exec"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox/facts"
 )
 
 // Run starts a command in the sandbox, creating the sandbox on first use, and
@@ -45,7 +46,7 @@ func Run(args []string) error {
 	}
 	// Failing to write this is not a reason to refuse the run: it costs a
 	// listing one accurate moment, and the run itself is what was asked for.
-	if err := sandbox.MarkUsed(s.Group); err != nil {
+	if err := facts.MarkUsed(s.Group); err != nil {
 		fmt.Fprintf(os.Stderr, "wuserbox: could not record this run against %s: %v\n", s.Group, err)
 	}
 	code, err := exec.Run(s, commandLine)

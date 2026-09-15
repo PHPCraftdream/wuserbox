@@ -15,6 +15,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox/facts"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/plan"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
@@ -235,7 +236,7 @@ func discardRecord(name string) error {
 
 // bookkeeping is every file wuserbox keeps about one sandbox.
 func bookkeeping(name string) []string {
-	return []string{state.Path(name), state.PreviousPath(name), sandbox.UsedMarker(name)}
+	return []string{state.Path(name), state.PreviousPath(name), facts.UsedMarker(name), facts.SizeCache(name)}
 }
 
 // clearOrphans takes a sandbox's entries off the directory its group belongs
