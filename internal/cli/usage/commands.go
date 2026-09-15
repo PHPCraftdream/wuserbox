@@ -235,15 +235,30 @@ disk and survives a reinstall.`,
 	{
 		Name:    "list",
 		Summary: "list the sandboxes on this machine",
-		Call:    "--list [--json]",
+		Call:    "--list [--long] [--json]",
 		Detail: `Prints every sandbox group and the directory it belongs to, one per
 line. Useful for finding sandboxes left behind by a project that was
-renamed or deleted; remove one with "--rm --dir <directory>".`,
+renamed or deleted; remove one with "--rm --dir <directory>".
+
+"--long" prints a block per sandbox instead: its account, its profile
+and what that takes on disk, its temporary directory, the directories
+it may write and the ones it may only read, and when it was made and
+last used. Anything this machine never recorded says so rather than
+being shown as zero, which is a different answer.
+
+The size is the last one measured, not one taken now -- walking a real
+profile takes seconds -- so it is always printed with the moment it was
+taken. "--init" measures afresh.
+
+"--json" carries all of it whether or not "--long" was asked for: the
+form only decides how much a person is shown.`,
 		Options: []Option{
+			{"--long", "print everything known about each sandbox, a block at a time"},
 			{"--json", "print the list as JSON instead of lines"},
 		},
 		Examples: []string{
 			`wuserbox --list`,
+			`wuserbox --list --long`,
 			`wuserbox --list --json`,
 		},
 	},

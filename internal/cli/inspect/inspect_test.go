@@ -1,8 +1,11 @@
 package inspect
 
 import (
+	"encoding/json"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
@@ -95,12 +98,86 @@ func TestFlagFailuresAreUsageFailures(t *testing.T) {
 
 // TestTheHelpListsExactlyTheFlagsListTakes holds list to its entry.
 func TestTheHelpListsExactlyTheFlagsListTakes(t *testing.T) {
-	flags, _ := listFlags()
+	flags, _, _ := listFlags()
 	undocumented, missing := usage.Mismatch("list", flags)
 	if len(undocumented) > 0 {
 		t.Errorf("list takes %v, which its help never mentions", undocumented)
 	}
 	if len(missing) > 0 {
 		t.Errorf("the help offers %v on list, which it would reject", missing)
+	}
+}
+
+// The long form has to tell "nothing was recorded" from "recorded as
+// nothing". A sandbox this machine never measured is not a sandbox of no
+// size, and one never run is not one last used at the start of 1601.
+func TestTheLongFormSaysWhatItDoesNotKnowInsteadOfGuessing(t *testing.T) {
+	var out strings.Builder
+	unknown := []Sandbox{{Group: "wub-old-00000000", Dir: `C:\projects\old`}}
+	if err := write(&out, unknown, false, true); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{"not measured", "not recorded", "nothing"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the block never says %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "1601") || strings.Contains(text, "0 B") {
+		t.Errorf("the block invented a value it was never given:\n%s", text)
+	}
+}
+
+// A program is handed the whole shape whatever form a person asked for.
+func TestJSONCarriesEverythingWithoutBeingAskedForTheLongForm(t *testing.T) {
+	made := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
+	full := []Sandbox{{
+		Group: "wub-app-0000beef", Dir: `C:\projects\app`,
+		Account: "wub-0000beef", Profile: `C:\state\profile`, Temp: `C:\state\tmp`,
+		Write: []string{`C:\projects\app`}, Read: []string{`C:\reference`},
+		Made: &made, Used: &made,
+		Size: &SizeOnDisk{Bytes: 2500000, Files: 118, Taken: made},
+	}}
+	var out strings.Builder
+	if err := write(&out, full, true, false); err != nil {
+		t.Fatal(err)
+	}
+	var back struct {
+		Sandboxes []Sandbox `json:"sandboxes"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &back); err != nil {
+		t.Fatal(err)
+	}
+	if len(back.Sandboxes) != 1 {
+		t.Fatalf("got %d sandboxes back, want 1", len(back.Sandboxes))
+	}
+	got := back.Sandboxes[0]
+	if got.Account == "" || got.Profile == "" || got.Temp == "" || got.Size == nil || got.Made == nil {
+		t.Errorf("JSON dropped part of what was known: %+v", got)
+	}
+	if len(got.Write) != 1 || len(got.Read) != 1 {
+		t.Errorf("JSON dropped the directories: %+v", got)
+	}
+}
+
+// Two runs that change nothing have to print the same thing, or the output
+// is no use for telling what actually changed between them.
+func TestTheBlocksComeOutInTheSameOrderEveryTime(t *testing.T) {
+	entries := []group.Entry{
+		{Name: "wub-c-00000003", Dir: `C:\c`},
+		{Name: "wub-a-00000001", Dir: `C:\a`},
+		{Name: "wub-b-00000002", Dir: `C:\b`},
+	}
+	first := describe(entries)
+	second := describe(entries)
+	var order []string
+	for i := range first {
+		order = append(order, first[i].Group)
+		if first[i].Group != second[i].Group {
+			t.Fatalf("two identical calls ordered them differently: %v then %v", first, second)
+		}
+	}
+	if !sort.StringsAreSorted(order) {
+		t.Errorf("the blocks are not in a fixed order: %v", order)
 	}
 }
