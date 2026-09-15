@@ -243,6 +243,18 @@ func driverCommand(t *testing.T, mode, dir, resultFile string) *exec.Cmd {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// A driver in "killable" mode waits forever on purpose, and every test
+	// here ends its own driver on the way through. None of that runs when a
+	// test fails first: a t.Fatal between starting the driver and ending it
+	// left a process waiting forever, holding the test binary open, and three
+	// of them were found still running hours later. Killing something already
+	// gone is harmless, so this is registered at the start rather than made
+	// conditional on how the test ends.
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
 	return cmd
 }
 
