@@ -60,6 +60,39 @@ type sidAndAttributes struct {
 // does that — or every other sandbox holding either identifier could reach
 // it too.
 func Restricted(sandboxGroup string) (syscall.Token, error) {
+	caller, err := sid.CurrentUser()
+	if err != nil {
+		return 0, err
+	}
+	return restrict(sandboxGroup, group.ReadGroupFor(caller), false)
+}
+
+// AsSandbox restricts the token of a process that is already running as the
+// sandbox's own account, and puts that account's own identifier in the
+// restricting list.
+//
+// That one addition is the difference between this and Restricted, and it
+// would be a catastrophe in the other direction. Restricted cuts down the
+// token of the person who owns the machine, and adding *their* identifier
+// would let the second check pass on everything they can reach, which is
+// everything -- it is the exact move the whole design refuses. Here the
+// token belongs to the sandbox, so its own identifier is the confined one,
+// and naming it grants nothing beyond what the sandbox already is.
+//
+// It is also what makes the second check usable again at all. An MSYS
+// runtime writes its own descriptors naming the account it runs as and then
+// reopens its own objects -- measured, it cannot even query its own process
+// token first -- so a restricted token that could not name the user died
+// before main. Naming the account instead costs nothing and passes.
+//
+// readGroup is handed in rather than worked out. Inside a sandbox the
+// current user is the sandbox account, so asking which read group belongs to
+// "the caller" would name a group for the wrong person.
+func AsSandbox(sandboxGroup, readGroup string) (syscall.Token, error) {
+	return restrict(sandboxGroup, readGroup, true)
+}
+
+func restrict(sandboxGroup, readGroup string, ownIdentityToo bool) (syscall.Token, error) {
 	var self syscall.Token
 	if err := syscall.OpenProcessToken(syscall.Handle(^uintptr(0)), syscall.TOKEN_ALL_ACCESS, &self); err != nil {
 		return 0, fmt.Errorf("opening the process token: %w", err)
@@ -91,22 +124,17 @@ func Restricted(sandboxGroup string) (syscall.Token, error) {
 		return 0, err
 	}
 	restricting := []sidAndAttributes{{groupSID, 0}, {everyone, 0}, {users, 0}, {logon, 0}}
+	if ownIdentityToo {
+		restricting = append(restricting, sidAndAttributes{user, 0})
+	}
 	// A sandbox built before a read group existed simply runs without it: the
 	// profile reads that depended on it fail, the same way any other missing
 	// grant would, rather than refusing to run at all.
 	//
-	// The group named is the one reading this caller's own profile. That is
-	// the only one this token has any business carrying: it is the caller's
-	// token cut down, and it is their profile it is being cut down to reach.
-	//
 	// Held in a variable that outlives the if, so it can be kept alive across
 	// the call below rather than ending where the condition does.
 	var readBuf sid.Value
-	caller, err := sid.CurrentUser()
-	if err != nil {
-		return 0, err
-	}
-	if read, err := sid.Lookup(group.ReadGroupFor(caller)); err == nil {
+	if read, err := sid.Lookup(readGroup); err == nil {
 		readBuf = read
 		restricting = append(restricting, sidAndAttributes{uintptr(unsafe.Pointer(&readBuf[0])), 0})
 	}

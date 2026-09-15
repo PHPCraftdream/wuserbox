@@ -24,6 +24,14 @@ const (
 	// directory naming it a directory every sandbox on the machine may
 	// change, whichever one it was handed to.
 	Authenticated = "S-1-5-11"
+	// Interactive is carried by every account that logged on interactively,
+	// which a sandbox account does on every run. Windows itself grants it
+	// write access on the shared public profile, so it is one of the
+	// identities a sandbox reaches through without having been granted
+	// anything -- which is why the second access check is worth having back:
+	// it closes this, and every identity like it, without anybody keeping a
+	// list of them.
+	Interactive = "S-1-5-4"
 	// Administrators is needed when a permission list has to be written from
 	// nothing. An object with no list at all grants everybody everything,
 	// administrators and the system among them, so giving it one has to name

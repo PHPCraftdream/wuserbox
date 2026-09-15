@@ -21,8 +21,11 @@
 package e2e
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 
 	acct "github.com/PHPCraftdream/wuserbox/internal/account"
@@ -279,5 +282,149 @@ func TestAShellStartsInsideARealAccount(t *testing.T) {
 
 	if !box.tries(t, `"`+bash+`" --version`, root) {
 		t.Error("bash did not start inside a sandbox, which is the failure the account exists to remove")
+	}
+}
+
+// The stub: this same test binary, started as the sandbox account, which
+// restricts its own token and runs the real command under it. That is the
+// shape the product would take -- wuserbox.exe launching wuserbox.exe --
+// because a token can only be filtered by a process already running as the
+// account it belongs to.
+const (
+	stubFlag    = "-wuserbox-sandbox-stub"
+	noReadGroup = "-"
+)
+
+func TestMain(m *testing.M) {
+	if len(os.Args) > 4 && os.Args[1] == stubFlag {
+		os.Exit(stub(os.Args[2], os.Args[3], os.Args[4]))
+	}
+	os.Exit(m.Run())
+}
+
+func stub(groupSID, readGroup, commandLine string) int {
+	if readGroup == noReadGroup {
+		readGroup = ""
+	}
+	restricted, err := token.AsSandbox(groupSID, readGroup)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "stub: restricting its own token:", err)
+		return 90
+	}
+	defer restricted.Close()
+	here, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "stub:", err)
+		return 91
+	}
+	code, err := proc.Run(restricted, commandLine, here)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "stub: starting the program:", err)
+		return 92
+	}
+	return code
+}
+
+// throughTheStub builds the command line that reaches the program by way of
+// the stub, so what runs is confined twice: once by being the account, once
+// by the account's own restricted token.
+func (b *realBox) throughTheStub(t *testing.T, commandLine string) string {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	readGroup := noReadGroup
+	if name := group.ReadGroupFor(owner); resolvesHere(name) {
+		readGroup = name
+	}
+	return strings.Join([]string{
+		syscall.EscapeArg(exe), stubFlag, b.sid, readGroup, syscall.EscapeArg(commandLine),
+	}, " ")
+}
+
+func resolvesHere(name string) bool {
+	_, err := sid.Lookup(name)
+	return err == nil
+}
+
+// TestAShellStartsUnderTheAccountsOwnRestrictedToken is the one measurement
+// the whole design rests on.
+//
+// A restricted token is what used to make this boundary tight, and it was
+// given up because MSYS programs could not start under one: the runtime
+// writes its own descriptors naming the account it runs as, and a token
+// restricted to identities that could not include the caller was refused by
+// its own objects -- it could not even query its own process token. Now the
+// account it runs as is the sandbox, so that identity can be a restricting
+// one, and the thing that broke costs nothing.
+//
+// If this fails, the account and the restricted token really are
+// alternatives and the narrow path is the only one.
+func TestAShellStartsUnderTheAccountsOwnRestrictedToken(t *testing.T) {
+	requireAdministrator(t)
+	const bash = `C:\Program Files\Git\bin\bash.exe`
+	if _, err := os.Stat(bash); err != nil {
+		t.Skip("Git for Windows is not installed here, so there is no MSYS program to start")
+	}
+	root, err := paths.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	openToEveryone(t, root)
+	box := newRealBox(t, firstSandbox, root)
+	box.hand(t, root, grant.RW)
+
+	if !box.tries(t, box.throughTheStub(t, `"`+bash+`" --version`), root) {
+		t.Error("bash did not start under the account's own restricted token")
+	}
+	// And the sandbox can still write what it was actually given.
+	if !box.tries(t, box.throughTheStub(t, writeInto(root)), root) {
+		t.Error("the sandbox could not write the directory it was granted")
+	}
+}
+
+// TestTheRestrictedTokenClosesWhatTheAccountAloneCannot is the pair that
+// says what the restriction buys.
+//
+// C:\Users\Public carries INTERACTIVE:(OI)(CI)(M,DC) on an ordinary Windows,
+// and every account that logs on interactively carries INTERACTIVE. So a
+// plain account reaches such a directory although nobody granted it
+// anything -- measured here as the first half, which is what keeps the
+// second half from passing for the wrong reason. Under a token restricted to
+// the sandbox's own identities, the same write is refused: INTERACTIVE is
+// not one of them, and no list of SIDs had to be kept complete to say so.
+func TestTheRestrictedTokenClosesWhatTheAccountAloneCannot(t *testing.T) {
+	requireAdministrator(t)
+	root, err := paths.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	openToEveryone(t, root)
+	shared := filepath.Join(root, "shared") // like C:\Users\Public: never granted
+	owned := filepath.Join(root, "owned")
+	for _, dir := range []string{shared, owned} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := acl.Set(shared, sid.Interactive, []acl.ACE{
+		{Access: acl.AccessModify, Inheritance: acl.InheritObjects | acl.InheritContainers},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	box := newRealBox(t, firstSandbox, owned)
+	box.hand(t, owned, grant.RW)
+
+	if !box.tries(t, writeInto(shared), owned) {
+		t.Fatal("INTERACTIVE did not reach the account here, so the refusal below would prove nothing")
+	}
+	if box.tries(t, box.throughTheStub(t, writeInto(shared)), owned) {
+		t.Error("the restricted token still reached a directory granted only to INTERACTIVE")
 	}
 }
