@@ -300,16 +300,24 @@ func Init(args []string) error {
 	if err != nil {
 		return err
 	}
-	// Said rather than raised. The sandbox on the machine is complete and will
-	// work the moment wuserbox is somewhere its account can reach, so throwing
-	// away what was just built would cost the person their permissions over a
-	// binary in the wrong place. Loud, though: what is wrong here stops every
-	// program, not some read at the edges.
+	// The sandbox on the machine is kept: it is complete, it holds everything
+	// it was given, and it will work the moment wuserbox is somewhere its
+	// account can reach. Throwing that away would cost somebody their
+	// permissions over a binary in the wrong place.
+	//
+	// It is still a failure, and it was reported as success until somebody
+	// pointed at it. An init that says it worked and leaves a sandbox no
+	// program will start in is a lie a script cannot see through -- and the
+	// two flags a script is most likely to be using, --quiet and --json, were
+	// exactly the ones that swallowed the warning this used to be.
 	if err := exec.ProveItStarts(s); err != nil {
-		report(options, "sandbox %s is built, and no program will start in it: %v.\n"+
-			"  Every run starts wuserbox again as the sandbox's own account, so that account "+
-			"has to be able to read and execute it. Put wuserbox somewhere every account can "+
-			"-- under Program Files, say -- and run this again.", s.Group, err)
+		return exit.Errorf(exit.Failed,
+			"sandbox %s is built and kept, and no program will start in it: %v.\n"+
+				"  Every run starts wuserbox again as the sandbox's own account, so that account "+
+				"has to be able to read and execute it. Put wuserbox somewhere every account can "+
+				"-- under Program Files, say -- and run `wuserbox --init --dir %s` again. "+
+				"Nothing has to be built twice: what is already there is waiting for it.",
+			s.Group, err, s.Dir)
 	}
 	fmt.Printf("%s\t%s\n", s.Group, s.Dir)
 	return nil
