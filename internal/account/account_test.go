@@ -285,3 +285,35 @@ func TestAHalfMadeProfileLeavesNoHiveForTheNextRunToTrust(t *testing.T) {
 		t.Error("the half-made hive was left beside the finished one")
 	}
 }
+
+// What decides whether a process may raise its own privileges. A prefix
+// alone is not enough to decide it on: the whole name has to be the shape
+// NameFor builds, or an account somebody else called wub-something would be
+// treated as a sandbox, and -- far worse in the other direction -- a real
+// sandbox account spelled in a way this does not recognize would be allowed
+// to ask for administrator rights.
+func TestOnlyAnAccountShapedLikeOneWeMadeCountsAsOne(t *testing.T) {
+	for _, groupName := range []string{"wub-project-deadbeef", "wub-a_b.c-0123abcd", "wub-x-ffffffff"} {
+		if name := NameFor(groupName); !Own(name) {
+			t.Errorf("%s, which NameFor just built from %s, is not recognized as ours", name, groupName)
+		}
+	}
+	// Windows compares account names without regard to case, so the same
+	// account can come back spelled either way and must still be known.
+	if !Own("WUB-DEADBEEF") {
+		t.Error("an account of ours spelled in upper case was not recognized")
+	}
+	for _, other := range []string{
+		"Computer", "administrator", "",
+		"wub-read",      // the shared read group, never an account
+		"wub-",          // prefix and nothing else
+		"wub-deadbee",   // one short
+		"wub-deadbeef1", // one long
+		"wub-notahexx",  // right length, not hex
+		"awub-deadbeef", // prefix, but not at the front
+	} {
+		if Own(other) {
+			t.Errorf("%q was taken for an account we made", other)
+		}
+	}
+}

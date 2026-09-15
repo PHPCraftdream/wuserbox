@@ -6,13 +6,13 @@ import (
 	"os"
 	"strings"
 
+	acct "github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/access"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/diagnose"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/inspect"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/setup"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
-	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
 
 // command is one entry in the dispatch table.
@@ -87,9 +87,11 @@ func Execute(args []string) error {
 	if asksForHelp(rest) {
 		return help([]string{name})
 	}
-	// Sandboxed code must not be able to widen its own permissions. The check
-	// reads the kernel's restricted-token flag, which it cannot clear.
-	if cmd.privileged && token.IsRestricted() {
+	// Sandboxed code must not be able to widen its own permissions. What the
+	// check reads -- who this process runs as, or the kernel's
+	// restricted-token flag where a sandbox still runs the old way -- is the
+	// kernel's to say and not this process's to edit.
+	if cmd.privileged && acct.InsideSandbox() {
 		return exit.Errorf(exit.Denied, "refusing to run %q from inside a sandbox: "+
 			"a sandboxed process may not change its own permissions", name)
 	}

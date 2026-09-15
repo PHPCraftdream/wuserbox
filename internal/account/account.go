@@ -6,9 +6,12 @@ package account
 
 import (
 	"fmt"
+	"strings"
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
+	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
@@ -41,6 +44,60 @@ func NameFor(groupName string) string {
 		return Prefix + groupName
 	}
 	return Prefix + groupName[len(groupName)-hashLen:]
+}
+
+// Own says whether name is an account wuserbox made: the prefix and exactly
+// the hex suffix NameFor builds, nothing looser. An account somebody else
+// happened to call wub-something is not one of ours, and this is asked in
+// order to decide whether a process may raise its own privileges, which is
+// not a question to answer on a prefix alone.
+func Own(name string) bool {
+	// Either case throughout, though NameFor only ever writes the lower one.
+	// Windows compares account names without regard to case, so a name can
+	// come back spelled otherwise; of the two ways to be wrong here, failing
+	// to recognize a sandbox is the one that opens something, and refusing
+	// an outsider who named themselves this way costs them nothing they had.
+	if len(name) != len(Prefix)+hashLen || !strings.EqualFold(name[:len(Prefix)], Prefix) {
+		return false
+	}
+	for _, r := range name[len(Prefix):] {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+// InsideSandbox reports whether this process is one wuserbox started inside
+// a sandbox. Two questions are asked, because there are two mechanisms: the
+// account a sandbox now runs as, and the restricted token it used to.
+//
+// This replaces asking the kernel whether the token is restricted, which
+// was the whole answer while a sandbox was the caller's own token cut down,
+// and silently became no answer at all the moment a sandbox became an
+// account instead -- IsTokenRestricted says false for an ordinary account,
+// so a sandboxed process would have been allowed to ask for administrator
+// rights and to run the commands that change other sandboxes.
+//
+// Neither question can be answered by the process being asked about. Who a
+// process runs as is the kernel's to say, the same as the flag was.
+func InsideSandbox() bool {
+	if token.IsRestricted() {
+		return true
+	}
+	current, err := sid.CurrentUser()
+	if err != nil {
+		return false
+	}
+	value, err := sid.Parse(current)
+	if err != nil {
+		return false
+	}
+	name, err := sid.Name(value)
+	if err != nil {
+		return false
+	}
+	return Own(name)
 }
 
 var (

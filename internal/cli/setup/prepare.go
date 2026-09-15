@@ -276,7 +276,7 @@ const EnvNonInteractive = "WUSERBOX_NON_INTERACTIVE"
 // asked for. Automation must not reach it either, for a duller reason: a
 // consent dialog nobody can click stops the script until it is killed.
 func Elevate(args []string) error {
-	if token.IsRestricted() {
+	if acct.InsideSandbox() {
 		return exit.Errorf(exit.Denied,
 			"refusing to ask for administrator rights from inside a sandbox")
 	}
