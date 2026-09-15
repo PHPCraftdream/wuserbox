@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/PHPCraftdream/wuserbox/internal/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 

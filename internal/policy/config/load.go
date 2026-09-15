@@ -6,7 +6,7 @@ import (
 
 	ktav "github.com/ktav-lang/golang"
 
-	"github.com/PHPCraftdream/wuserbox/internal/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 )
 
 // Load reads the config, returning an empty one when the file is absent.

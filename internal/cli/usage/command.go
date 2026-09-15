@@ -1,5 +1,6 @@
 // Package usage holds the help text: a short overview for orientation and a
 // detailed entry for every command.
+
 package usage
 
 import "strings"
@@ -93,4 +94,11 @@ func indent(text string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+type Option struct {
+	// Name is how it is written, with its value placeholder: "--dir <d>".
+	Name string
+	// Effect is a single line, in the present tense.
+	Effect string
 }

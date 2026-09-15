@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"runtime"
 
-	"github.com/PHPCraftdream/wuserbox/internal/exit"
+	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 )
 
 // Release is the version this executable was built from. The release build

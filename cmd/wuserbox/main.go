@@ -6,8 +6,8 @@ package main
 import (
 	"os"
 
+	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/cli"
-	"github.com/PHPCraftdream/wuserbox/internal/exit"
 )
 
 func main() {

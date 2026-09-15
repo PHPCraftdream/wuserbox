@@ -1,10 +1,30 @@
+// What this package does with a flag set: stop it reporting anything by
+// itself, and hold what it really registers against what the manual says it
+// takes.
+
 package usage
 
 import (
 	"flag"
+	"io"
 	"sort"
 	"strings"
 )
+
+// Quiet stops a flag set from reporting anything by itself.
+//
+// The failure it would print travels back as an error instead, carrying the
+// same message, and one place decides how a failure is shown: as a line of
+// prose, or as JSON when the command line asked for JSON. Left to itself the
+// parser writes prose and the usage text first, and a command called with
+// --json then answers with prose followed by a JSON document.
+//
+// The help text is not lost by this. A request for help is answered before the
+// arguments reach a parser at all.
+func Quiet(flags *flag.FlagSet) {
+	flags.SetOutput(io.Discard)
+	flags.Usage = func() {}
+}
 
 // Mismatch compares the flags a command really registers against the ones its
 // help entry lists, and returns what each side holds that the other does not:

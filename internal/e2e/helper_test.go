@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/PHPCraftdream/wuserbox/internal/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"

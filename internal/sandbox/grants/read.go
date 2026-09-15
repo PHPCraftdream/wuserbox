@@ -3,7 +3,7 @@ package grants
 import (
 	"os"
 
-	"github.com/PHPCraftdream/wuserbox/internal/lock"
+	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"

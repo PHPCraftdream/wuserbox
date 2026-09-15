@@ -1,6 +1,24 @@
+// Rendering the manual: the entry for one command, and the whole thing in
+// one piece.
+//
+// Both are assembled from the same Commands the overview is assembled from,
+// rather than written out a second time. A manual kept as its own copy is a
+// manual that falls behind, and the first reader here is often a program
+// deciding what to ask a person for, which makes a stale answer worse than
+// a missing one.
+
 package usage
 
 import "strings"
+
+func Detail(name string) (string, bool) {
+	for _, command := range Commands {
+		if command.Name == name {
+			return command.String(), true
+		}
+	}
+	return "", false
+}
 
 // Full is the whole manual in one piece: the overview first, then the complete
 // entry for every command, in the order the overview lists them.

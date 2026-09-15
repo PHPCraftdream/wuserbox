@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/PHPCraftdream/wuserbox/internal/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 )
 
 // Entry is one thing in the profile root that must stay out of a sandbox's

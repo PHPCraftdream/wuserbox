@@ -5,7 +5,7 @@ import (
 
 	ktav "github.com/ktav-lang/golang"
 
-	"github.com/PHPCraftdream/wuserbox/internal/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 

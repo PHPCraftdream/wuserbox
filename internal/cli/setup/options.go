@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
-	"github.com/PHPCraftdream/wuserbox/internal/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 )
 

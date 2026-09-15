@@ -3,7 +3,7 @@ package grant
 import (
 	"fmt"
 
-	"github.com/PHPCraftdream/wuserbox/internal/lock"
+	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 

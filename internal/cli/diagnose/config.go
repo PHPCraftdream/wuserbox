@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
+	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
-	"github.com/PHPCraftdream/wuserbox/internal/exit"
-	"github.com/PHPCraftdream/wuserbox/internal/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"

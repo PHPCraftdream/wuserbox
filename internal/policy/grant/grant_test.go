@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/wuserbox/internal/lock"
+	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/win/access"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )

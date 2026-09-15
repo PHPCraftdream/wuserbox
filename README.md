@@ -426,7 +426,7 @@ internal/win      Windows calls: identifiers, permissions, tokens, processes, gr
 internal/policy   what a sandbox is allowed: grants, presets, rules, bookkeeping
 internal/sandbox  identity, creation, execution
 internal/cli      the commands
-internal/exit     the exit codes every failure maps to
+internal/base     what has no opinion about sandboxes: exit codes, locks, paths
 internal/e2e      escape attempts against a real sandbox
 .github           tests and release workflows, build recipe, npm wrapper
 ```

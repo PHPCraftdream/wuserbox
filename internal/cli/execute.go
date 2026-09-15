@@ -6,12 +6,12 @@ import (
 	"os"
 	"strings"
 
+	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/access"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/diagnose"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/inspect"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/setup"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
-	"github.com/PHPCraftdream/wuserbox/internal/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
 
