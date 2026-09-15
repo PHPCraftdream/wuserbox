@@ -16,22 +16,29 @@ import (
 )
 
 // Copy places every entry the rules file's profile section names under dest,
-// at the same relative spot it holds under the user's own profile, and
-// reports the entries it found and copied. A name that does not exist on
-// this machine is left out rather than treated as an error, since most of a
-// list shared across machines will not exist for a given one.
+// at the same relative spot it holds under the user's own profile, takes away
+// what a previous copy left under a name the list no longer holds, and
+// reports what it copied this time. A name that does not exist on this
+// machine is left out rather than treated as an error, since most of a list
+// shared across machines will not exist for a given one.
+//
+// previously is what the last call returned. It is how this knows what to
+// clear, and the knowing has to come from somewhere outside dest: dest is a
+// sandbox's own profile, which the sandbox may write, so a list kept inside
+// it would be a list the sandbox could edit into an instruction to delete
+// something else. The caller keeps it where the sandbox cannot reach.
 //
 // This only ever reads under the user's profile and writes under dest, never
 // the reverse, and that is fixed here rather than left to whoever calls it:
 // a sandbox able to write back into the files its own credentials came from
 // could rewrite them, which is the hole this exists to close.
-func Copy(dest string) ([]string, error) {
+func Copy(dest string, previously []string) ([]string, error) {
 	// Asked for before anything else, because the next thing this does is
-	// delete. Clearing dest of what the list no longer names is right when
-	// dest is a sandbox's own profile and catastrophic when it is a relative
-	// path, or the drive, or a directory that was never ours -- and the
-	// difference between those is one mistaken argument. A caller that has
-	// not made the directory yet has not decided where it is either.
+	// delete. Clearing is right when dest is a sandbox's own profile and
+	// catastrophic when it is a relative path, or the drive, or a directory
+	// that was never ours -- and the difference between those is one mistaken
+	// argument. A caller that has not made the directory yet has not decided
+	// where it is either.
 	if !filepath.IsAbs(dest) {
 		return nil, fmt.Errorf("the profile to fill must be named in full, and %q is not", dest)
 	}
@@ -44,13 +51,71 @@ func Copy(dest string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := forget(dest, previously, rules.Profile); err != nil {
+		return nil, err
+	}
 	return copyEntries(paths.Home(), dest, rules.Profile)
 }
 
-func copyEntries(home, dest string, entries []string) ([]string, error) {
-	if err := prune(dest, entries); err != nil {
-		return nil, fmt.Errorf("clearing %s of entries no longer named: %w", dest, err)
+// Clear takes back everything an earlier Copy placed under dest, without
+// reading the rules file at all.
+//
+// This is what a sandbox built with --no-ai needs: the rules file's
+// `profile:` list is not consulted for that flag, and should not be, since a
+// sandbox told to skip the agent preset must not go on holding what it
+// already copied simply because that section still names it. dest itself is
+// left exactly as an empty thin profile would be.
+func Clear(dest string, previously []string) error {
+	if !filepath.IsAbs(dest) {
+		return fmt.Errorf("the profile to clear must be named in full, and %q is not", dest)
 	}
+	return forget(dest, previously, nil)
+}
+
+// forget takes away what a previous copy put under a name the list no longer
+// names, and nothing else.
+//
+// This is the whole of the pruning, and it is deliberately not what the
+// obvious version does. Clearing dest of everything the list does not name
+// reads as the tidier rule and is wrong here: dest is a profile, so what the
+// list does not name includes NTUSER.DAT, the Temp directory and whatever
+// the profile service built under AppData. Deleting those is deleting the
+// sandbox's registry. Nothing is removed that wuserbox did not put there.
+func forget(dest string, previously, current []string) error {
+	keep := make(map[string]bool, len(current))
+	for _, entry := range current {
+		keep[strings.ToLower(filepath.ToSlash(entry))] = true
+	}
+	for _, entry := range previously {
+		if keep[strings.ToLower(filepath.ToSlash(entry))] {
+			continue
+		}
+		stale, err := inside(dest, entry)
+		if err != nil {
+			// A recorded name that does not land inside the profile is one
+			// nothing here wrote. Refusing is the only safe reading: the
+			// alternative is deleting whatever it does point at.
+			return err
+		}
+		if err := os.RemoveAll(stale); err != nil {
+			return fmt.Errorf("clearing %s, which the rules file no longer names: %w", entry, err)
+		}
+	}
+	return nil
+}
+
+// inside turns a recorded entry into the path it names under dest, and
+// refuses anything that climbs out.
+func inside(dest, entry string) (string, error) {
+	full := filepath.Join(dest, filepath.FromSlash(entry))
+	within, err := filepath.Rel(dest, full)
+	if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%q does not name anything inside the profile", entry)
+	}
+	return full, nil
+}
+
+func copyEntries(home, dest string, entries []string) ([]string, error) {
 	var copied []string
 	for _, entry := range entries {
 		src := filepath.Join(home, filepath.FromSlash(entry))
@@ -149,66 +214,4 @@ func mirrorFile(src, dst string) error {
 		return err
 	}
 	return out.Close()
-}
-
-// node is one step of the tree of paths the current list names, used to
-// prune dest without disturbing a listed entry's own subtree: mirror already
-// reconciles what is under a leaf exactly against its source, so pruning
-// stops there and leaves it alone.
-type node struct {
-	leaf     bool
-	children map[string]*node
-}
-
-func tree(entries []string) *node {
-	root := &node{children: map[string]*node{}}
-	for _, entry := range entries {
-		cur := root
-		for _, part := range strings.Split(filepath.ToSlash(entry), "/") {
-			key := strings.ToLower(part)
-			child, ok := cur.children[key]
-			if !ok {
-				child = &node{children: map[string]*node{}}
-				cur.children[key] = child
-			}
-			cur = child
-		}
-		cur.leaf = true
-	}
-	return root
-}
-
-// prune drops whatever dest holds under a name that is not on the path to
-// any entry the current list names, so dropping an entry from the rules file
-// also drops what a past copy left behind under it, and nothing else ever
-// ends up in dest by another route. It stops descending at a leaf: mirror
-// reconciles what is under a listed entry itself, entry by entry.
-func prune(dest string, entries []string) error {
-	return pruneNode(dest, tree(entries))
-}
-
-func pruneNode(dir string, n *node) error {
-	items, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	for _, item := range items {
-		child, known := n.children[strings.ToLower(item.Name())]
-		if !known {
-			if err := os.RemoveAll(filepath.Join(dir, item.Name())); err != nil {
-				return err
-			}
-			continue
-		}
-		if child.leaf {
-			continue
-		}
-		if err := pruneNode(filepath.Join(dir, item.Name()), child); err != nil {
-			return err
-		}
-	}
-	return nil
 }

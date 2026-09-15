@@ -47,15 +47,30 @@ func read(t *testing.T, path string) string {
 	return string(data)
 }
 
+// lastCopied remembers what the previous Copy reported for a destination.
+// Threading that list into the next call is the caller's job in a real run --
+// it is how Copy knows what to clear, and it deliberately lives outside the
+// profile, where the sandbox cannot edit it into an instruction to delete
+// something else. A test that passed nil every time would be testing
+// something no run does.
+var lastCopied = map[string][]string{}
+
+func fill(t *testing.T, dest string) []string {
+	t.Helper()
+	copied, err := Copy(dest, lastCopied[dest])
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastCopied[dest] = copied
+	return copied
+}
+
 func TestCopyPlacesListedEntriesAtTheSameRelativeSpot(t *testing.T) {
 	home, dest := useProfile(t, []string{".claude", ".gitconfig"})
 	write(t, filepath.Join(home, ".claude", "settings.json"), `{"a":1}`)
 	write(t, filepath.Join(home, ".gitconfig"), "[user]\n")
 
-	copied, err := Copy(dest)
-	if err != nil {
-		t.Fatal(err)
-	}
+	copied := fill(t, dest)
 	sort.Strings(copied)
 	if !reflect.DeepEqual(copied, []string{".claude", ".gitconfig"}) {
 		t.Errorf("reported %v", copied)
@@ -72,10 +87,7 @@ func TestCopySkipsMissingEntriesWithoutError(t *testing.T) {
 	home, dest := useProfile(t, []string{".claude", ".codex"})
 	write(t, filepath.Join(home, ".claude", "settings.json"), "{}")
 
-	copied, err := Copy(dest)
-	if err != nil {
-		t.Fatal(err)
-	}
+	copied := fill(t, dest)
 	if !reflect.DeepEqual(copied, []string{".claude"}) {
 		t.Errorf("reported %v, the missing entry should have been left out silently", copied)
 	}
@@ -91,14 +103,10 @@ func TestCopyNeverTouchesTheSource(t *testing.T) {
 	home, dest := useProfile(t, []string{".gitconfig"})
 	write(t, filepath.Join(home, ".gitconfig"), "[user]\n\tname = real\n")
 
-	if _, err := Copy(dest); err != nil {
-		t.Fatal(err)
-	}
+	fill(t, dest)
 	write(t, filepath.Join(dest, ".gitconfig"), "[user]\n\tname = tampered\n")
 
-	if _, err := Copy(dest); err != nil {
-		t.Fatal(err)
-	}
+	fill(t, dest)
 	if got := read(t, filepath.Join(home, ".gitconfig")); got != "[user]\n\tname = real\n" {
 		t.Errorf("the source changed to %q", got)
 	}
@@ -111,16 +119,12 @@ func TestCopyNeverTouchesTheSource(t *testing.T) {
 func TestCopyReconcilesADirectoryToMatchItsSource(t *testing.T) {
 	home, dest := useProfile(t, []string{".claude"})
 	write(t, filepath.Join(home, ".claude", "settings.json"), `{"v":1}`)
-	if _, err := Copy(dest); err != nil {
-		t.Fatal(err)
-	}
+	fill(t, dest)
 
 	write(t, filepath.Join(dest, ".claude", "settings.json"), `{"v":"tampered"}`)
 	write(t, filepath.Join(dest, ".claude", "stray.txt"), "left behind by a run")
 
-	if _, err := Copy(dest); err != nil {
-		t.Fatal(err)
-	}
+	fill(t, dest)
 	if got := read(t, filepath.Join(dest, ".claude", "settings.json")); got != `{"v":1}` {
 		t.Errorf("the edited copy was kept: %q", got)
 	}
@@ -146,15 +150,11 @@ func TestCopyDropsEntriesRemovedFromTheList(t *testing.T) {
 	if err := (&config.Config{Profile: []string{".claude", ".gitconfig"}}).Save(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Copy(dest); err != nil {
-		t.Fatal(err)
-	}
+	fill(t, dest)
 	if err := (&config.Config{Profile: []string{".gitconfig"}}).Save(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Copy(dest); err != nil {
-		t.Fatal(err)
-	}
+	fill(t, dest)
 	if _, err := os.Stat(filepath.Join(dest, ".claude")); !os.IsNotExist(err) {
 		t.Error(".claude was dropped from the list but its copy is still there")
 	}
@@ -183,16 +183,12 @@ func TestCopyKeepsSiblingsUnderASharedTopLevelDirectory(t *testing.T) {
 	if err := (&config.Config{Profile: both}).Save(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Copy(dest); err != nil {
-		t.Fatal(err)
-	}
+	fill(t, dest)
 
 	if err := (&config.Config{Profile: []string{"AppData/Roaming/two"}}).Save(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Copy(dest); err != nil {
-		t.Fatal(err)
-	}
+	fill(t, dest)
 	if _, err := os.Stat(filepath.Join(dest, "AppData", "Local", "one")); !os.IsNotExist(err) {
 		t.Error("the dropped sibling is still there")
 	}
@@ -206,7 +202,7 @@ func TestCopyKeepsSiblingsUnderASharedTopLevelDirectory(t *testing.T) {
 // mistaken argument is not a copy into the wrong place but a deletion of one.
 func TestCopyRefusesADestinationItWasNotGiven(t *testing.T) {
 	for _, dest := range []string{"", ".", "profile"} {
-		if _, err := Copy(dest); err == nil {
+		if _, err := Copy(dest, nil); err == nil {
 			t.Errorf("a profile at %q was accepted, and clearing it would have run", dest)
 		}
 	}
@@ -214,11 +210,61 @@ func TestCopyRefusesADestinationItWasNotGiven(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Copy(file); err == nil {
+	if _, err := Copy(file, nil); err == nil {
 		t.Error("a file was accepted as a profile to fill")
 	}
 	missing := filepath.Join(t.TempDir(), "never-made")
-	if _, err := Copy(missing); err == nil {
+	if _, err := Copy(missing, nil); err == nil {
 		t.Error("a directory that does not exist was accepted as a profile to fill")
+	}
+}
+
+// TestCopyLeavesTheProfilesOwnBelongingsAlone is the guard on the rule this
+// nearly got wrong, and the reason the tidier-sounding one is not used.
+//
+// "Clear dest of everything the list does not name" reads well until dest is
+// a profile: what the list does not name there is NTUSER.DAT, the Temp
+// directory and whatever the profile service built under AppData. Clearing
+// those is deleting the sandbox's registry. Nothing is removed that wuserbox
+// did not put there.
+func TestCopyLeavesTheProfilesOwnBelongingsAlone(t *testing.T) {
+	home, dest := useProfile(t, []string{".claude"})
+	write(t, filepath.Join(home, ".claude", "settings.json"), "{}")
+	// What a thin profile actually holds, none of it ever on the list.
+	write(t, filepath.Join(dest, "NTUSER.DAT"), "a hive")
+	write(t, filepath.Join(dest, "Temp", "scratch.tmp"), "work in progress")
+	write(t, filepath.Join(dest, "AppData", "Local", "Microsoft", "UsrClass.dat"), "classes")
+
+	fill(t, dest)
+
+	for _, kept := range []string{
+		"NTUSER.DAT",
+		filepath.Join("Temp", "scratch.tmp"),
+		filepath.Join("AppData", "Local", "Microsoft", "UsrClass.dat"),
+	} {
+		if _, err := os.Stat(filepath.Join(dest, kept)); err != nil {
+			t.Errorf("%s was deleted, and it is the sandbox's own, not ours: %v", kept, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dest, ".claude", "settings.json")); err != nil {
+		t.Errorf("the listed entry was not copied, so this test proves nothing: %v", err)
+	}
+}
+
+// A recorded name is read back from disk and turned into something to delete,
+// so it has to be refused where it does not land inside the profile. The list
+// is kept where a sandbox cannot write it, which is the first defense; this
+// is what stands behind that one.
+func TestCopyRefusesARecordedNameThatClimbsOutOfTheProfile(t *testing.T) {
+	_, dest := useProfile(t, []string{".claude"})
+	outside := filepath.Join(filepath.Dir(dest), "not-the-profile")
+	precious := filepath.Join(outside, "precious.txt")
+	write(t, precious, "somebody else's")
+
+	if _, err := Copy(dest, []string{"../not-the-profile"}); err == nil {
+		t.Error("a recorded name pointing outside the profile was acted on")
+	}
+	if _, err := os.Stat(precious); err != nil {
+		t.Errorf("it deleted something outside the profile: %v", err)
 	}
 }

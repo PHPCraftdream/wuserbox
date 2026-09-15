@@ -237,7 +237,10 @@ func discardRecord(name string) error {
 
 // bookkeeping is every file wuserbox keeps about one sandbox.
 func bookkeeping(name string) []string {
-	return []string{state.Path(name), state.PreviousPath(name), facts.UsedMarker(name), facts.SizeCache(name)}
+	return []string{
+		state.Path(name), state.PreviousPath(name),
+		facts.UsedMarker(name), facts.SizeCache(name), facts.CopiedList(name),
+	}
 }
 
 // clearOrphans takes a sandbox's entries off the directory its group belongs

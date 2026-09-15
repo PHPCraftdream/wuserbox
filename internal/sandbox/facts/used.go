@@ -16,6 +16,7 @@ package facts
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -85,4 +86,44 @@ func Times(name string) (*Life, error) {
 		life.Made = time.Unix(0, data.CreationTime.Nanoseconds())
 	}
 	return life, nil
+}
+
+// CopiedList is where the last list of what was copied into a sandbox's own
+// profile is kept.
+//
+// Beside the temp directory, like the rest of what is recorded here, and
+// deliberately not inside the profile it describes. That list is read back as
+// a list of things to delete, and the sandbox may write its own profile: kept
+// in there, it would be an instruction the sandbox could edit.
+func CopiedList(name string) string {
+	return filepath.Join(paths.StateDir(), "tmp", name+".copied")
+}
+
+// Copied reads that list. A sandbox whose profile has never been filled has
+// none, which is not an error -- it means nothing was put there, so there is
+// nothing to take away.
+func Copied(name string) ([]string, error) {
+	raw, err := os.ReadFile(CopiedList(name))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var entries []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			entries = append(entries, line)
+		}
+	}
+	return entries, nil
+}
+
+// RecordCopied writes it back, one entry to a line.
+func RecordCopied(name string, entries []string) error {
+	path := CopiedList(name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(strings.Join(entries, "\n")+"\n"), 0o644)
 }

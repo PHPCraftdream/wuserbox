@@ -11,11 +11,30 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/facts"
 )
+
+// TestMain loads the ktav parser before any test moves LOCALAPPDATA. The
+// parser caches a native library under that directory and keeps it open for
+// the life of this binary, which would otherwise leave whichever test's
+// temporary directory it landed in undeletable -- the same fix
+// internal/sandbox/grants carries, for the same reason.
+func TestMain(m *testing.M) {
+	warm, err := os.CreateTemp("", "wuserbox-warm-*.ktav")
+	if err == nil {
+		_, _ = warm.WriteString("projects: [\n]\n")
+		warm.Close()
+		os.Setenv(config.EnvPath, warm.Name())
+		_, _ = config.Load() // reaches the parser, which loads its library once
+		os.Remove(warm.Name())
+		os.Unsetenv(config.EnvPath)
+	}
+	os.Exit(m.Run())
+}
 
 func TestElevateRefusesWhenPromptsAreOff(t *testing.T) {
 	t.Setenv(EnvNonInteractive, "1")
@@ -32,10 +51,10 @@ func TestElevateRefusesWhenPromptsAreOff(t *testing.T) {
 }
 
 // TestReconcilePresetHonoursTheSandboxsOwnDecision is the regression guard
-// for a decision that lapsed the moment nobody repeated it. A run never
-// carries --no-ai — configuring is not something a run does — so reading
-// options.NoAI to decide whether to reapply the preset meant a plain run
-// right after `init --no-ai` silently handed the agent directories back.
+// for a legacy grant on a real agent directory -- the kind a sandbox built
+// before profile copying existed still carries -- surviving past the flag
+// that should take it back. Nothing hands the real directory out any more:
+// a sandbox's own profile is filled by copying, not by granting it.
 func TestReconcilePresetHonoursTheSandboxsOwnDecision(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("USERPROFILE", home)
@@ -50,26 +69,20 @@ func TestReconcilePresetHonoursTheSandboxsOwnDecision(t *testing.T) {
 		SID:   "S-1-5-21-1111111111-2222222222-3333333333-303030",
 		Dir:   t.TempDir(),
 		Temp:  t.TempDir(),
-		NoAI:  true, // what `init --no-ai` leaves behind
+	}
+	if err := s.Add(agent, grant.RW); err != nil {
+		t.Fatal(err) // the legacy grant this test is about
 	}
 
-	// A plain run's options never carry the flag; nothing here does.
+	// A plain run with the preset wanted retires it: nothing hands real
+	// agent directories out any more, so a sandbox from before that changed
+	// must not go on holding one.
 	plainRun := sandbox.Options{Dir: s.Dir}
 	if err := reconcilePreset(s, plainRun); err != nil {
 		t.Fatal(err)
 	}
 	if s.Has(agent) {
-		t.Error("a plain run handed the agent directory back, although --no-ai was never repeated")
-	}
-
-	// An explicit init without --no-ai is what is supposed to change the
-	// sandbox's mind, and it does so by clearing the field before this runs.
-	s.NoAI = false
-	if err := reconcilePreset(s, plainRun); err != nil {
-		t.Fatal(err)
-	}
-	if !s.Has(agent) {
-		t.Error("clearing the decision did not bring the agent directory back")
+		t.Error("a plain run left a legacy agent-directory grant standing")
 	}
 }
 
@@ -199,5 +212,87 @@ func TestTheRunPathCallsAStateWhatTheListingCallsIt(t *testing.T) {
 	said := missing(name, &state.State{Group: name, Dir: t.TempDir(), Secret: "sealed"})
 	if !strings.Contains(said, string(facts.GroupGone)) {
 		t.Errorf("the run path says %q, where the listing would say %q", said, facts.GroupGone)
+	}
+}
+
+// TestRunFillsTheProfileFromTheRulesFile is the regression guard for the
+// wiring itself: policy/profile.Copy existed, was tested on its own, and
+// nothing in a run ever called it. A sandbox's own profile stayed empty of
+// anything the rules file named, no matter what that file said.
+func TestRunFillsTheProfileFromTheRulesFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	if err := os.WriteFile(filepath.Join(home, "credentials.json"), []byte(`{"token":"abc"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
+	if err := (&config.Config{Profile: []string{"credentials.json"}}).Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	profileDir := t.TempDir()
+	s := &state.State{Group: "wub-fill-test-00000000", Profile: profileDir}
+	if err := fillProfile(s); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(profileDir, "credentials.json"))
+	if err != nil {
+		t.Fatalf("the rules file named credentials.json and it was not copied in: %v", err)
+	}
+	if string(got) != `{"token":"abc"}` {
+		t.Errorf("copied %q, want the source's own content", got)
+	}
+
+	// And it is remembered for next time, in the bookkeeping fillProfile owns
+	// -- not in the profile itself, which the sandbox may write.
+	recorded, err := facts.Copied(s.Group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recorded) != 1 || recorded[0] != "credentials.json" {
+		t.Errorf("what was copied was not recorded: %v", recorded)
+	}
+}
+
+// TestRunClearsTheProfileWhenTheAgentPresetIsWithheld is the regression
+// guard for --no-ai meaning nothing at the profile-copy layer: the rules
+// file's `profile:` section is pre-filled with exactly the agent state
+// directories --no-ai exists to withhold, so consulting that section for
+// this flag would make it withhold nothing on every ordinary rules file.
+func TestRunClearsTheProfileWhenTheAgentPresetIsWithheld(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	if err := os.WriteFile(filepath.Join(home, "credentials.json"), []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
+	if err := (&config.Config{Profile: []string{"credentials.json"}}).Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	profileDir := t.TempDir()
+	s := &state.State{Group: "wub-clear-test-00000000", Profile: profileDir}
+	if err := fillProfile(s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(profileDir, "credentials.json")); err != nil {
+		t.Fatalf("nothing was copied in the first place, so this test proves nothing: %v", err)
+	}
+
+	s.NoAI = true
+	if err := fillProfile(s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(profileDir, "credentials.json")); !os.IsNotExist(err) {
+		t.Errorf("--no-ai left a copy of an agent credential in the profile: %v", err)
+	}
+	recorded, err := facts.Copied(s.Group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recorded) != 0 {
+		t.Errorf("the bookkeeping still lists %v after --no-ai cleared the profile", recorded)
 	}
 }

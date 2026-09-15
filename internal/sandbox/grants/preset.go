@@ -9,18 +9,53 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 )
 
-// DropPreset takes back every permission the agent preset handed out,
-// including the profile root. It runs when a sandbox that already exists is
-// started with the preset switched off, so the flag narrows the sandbox
-// instead of being quietly ignored on every run after the first.
+// DropPreset takes back the profile-root grant the agent preset hands out
+// when --home-writes is asked for. It runs when a sandbox that already
+// exists is started with the preset switched off, so the flag narrows the
+// sandbox instead of being quietly ignored on every run after the first.
+//
+// It no longer has real agent directories to take back: those are never
+// granted in the first place now that a sandbox's own profile is filled by
+// copying instead. RetireAIGrants is what clears a grant a sandbox built
+// before that existed still holds, and it runs regardless of this flag.
 func DropPreset(s *state.State) error {
 	unwanted := map[string]bool{strings.ToLower(preset.Home().Path): true}
-	for _, spec := range preset.AI() {
-		unwanted[strings.ToLower(spec.Path)] = true
-	}
 	// A project can sit inside one of those directories, and then the preset
 	// and the project name the same path. The project is why the sandbox
 	// exists, so it is never what a flag about agent directories takes away.
+	delete(unwanted, strings.ToLower(s.Dir))
+	delete(unwanted, strings.ToLower(s.Temp))
+	for _, granted := range append([]string(nil), pathsOf(s)...) {
+		if !unwanted[strings.ToLower(granted)] {
+			continue
+		}
+		if err := s.Remove(granted); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RetireAIGrants takes back direct write access to the real agent
+// directories a sandbox built before profile copying existed may still
+// hold.
+//
+// A sandbox's own profile is what supplies that state now, filled by a copy
+// -- see policy/profile.Copy, called on every run. Holding both would leave
+// the sandbox able to reach the real directories directly regardless of what
+// its profile was given, which is not a boundary at all; it is called
+// unconditionally, whether or not the agent preset is wanted, because the
+// question it answers -- does this sandbox still hold a grant nothing hands
+// out any more -- does not depend on that flag.
+func RetireAIGrants(s *state.State) error {
+	unwanted := make(map[string]bool, len(preset.AI()))
+	for _, spec := range preset.AI() {
+		unwanted[strings.ToLower(spec.Path)] = true
+	}
+	// A project can sit inside, or exactly at, one of those directories, and
+	// then the preset and the project name the same path. The project is why
+	// the sandbox exists, so it is never what retiring a preset grant takes
+	// away.
 	delete(unwanted, strings.ToLower(s.Dir))
 	delete(unwanted, strings.ToLower(s.Temp))
 	for _, granted := range append([]string(nil), pathsOf(s)...) {
@@ -60,14 +95,17 @@ func Reapply(s *state.State) error {
 	return state.ApplyTogether(s.SID, present)
 }
 
-// ApplyPreset hands over the agent directories, and the profile root when it
-// was asked for. It runs on every start, not only the first, so the flags mean
-// the same thing whenever they are used: a plain run after one with --no-ai
-// gets the directories back, and --home-writes reaches a sandbox that was
-// built without it.
+// ApplyPreset hands over the profile root, when it was asked for, and takes
+// back a legacy grant on the real agent directories if one is still held. It
+// runs on every start, not only the first, so --home-writes reaches a
+// sandbox that was built without it, the same as before.
+//
+// It no longer hands over the real agent directories themselves. A sandbox's
+// own profile is what supplies that state, filled by policy/profile.Copy on
+// every run; granting the real ones as well would let the sandbox reach them
+// directly; whatever its profile actually holds.
 func ApplyPreset(s *state.State, homeWrites bool) error {
-	// Handed over together: see State.OfferMany for why that matters.
-	if err := s.OfferMany(preset.AI()); err != nil {
+	if err := RetireAIGrants(s); err != nil {
 		return err
 	}
 	if !homeWrites {

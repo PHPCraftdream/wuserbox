@@ -77,23 +77,24 @@ a directory wuserbox builds, holding an empty registry hive and three folders,
 handed to the program as its `USERPROFILE`, `HOME`, `APPDATA`, `LOCALAPPDATA`
 and `TEMP`. It costs about two and a half megabytes.
 
-**Not finished, and worth being exact about.** The plan is that the files and
-directories named in the `profile:` section of the rules file are copied into
-that profile before each run, and nothing is ever copied back. The list is
-written and pre-filled, the copying is written and tested, and the two are
-**not yet wired together**.
+The files and directories named in the `profile:` section of the rules file
+are **copied in** from your profile before each run — that is where an
+agent's credentials and settings come from — and the list is pre-filled with
+the common agents' state directories when the rules file is created. Nothing
+on the sensitive list — `~/.ssh`, `~/.netrc`, `~/.npmrc`, `~/.gitconfig` — is
+in that default, and you can add what you need.
 
-What happens today is what happened before: the sandbox is handed your real
-`~/.claude`, `~/.config` and their neighbours, with write access, exactly as
-the "agent directories are shared" limit below describes. Until that changes,
-the thin profile is where a program's `HOME` points and not yet where its
-credentials come from.
+The real directories themselves are never handed over: a sandbox reaches
+`~/.claude` only through the copy in its own profile, and a legacy grant left
+by an older version of wuserbox is taken back the first time `--init` or an
+ordinary run reconciles the sandbox, whichever comes first.
 
-When it is wired, **nothing will be copied back**: a sandbox able to write into
-the files its own credentials came from could rewrite them, which is the shape
-of hole this exists to close. The cost of that is real and worth knowing in
-advance — an agent that refreshes a token inside the sandbox will refresh a
-copy, and the next run will start from your original again.
+**Nothing is copied back.** A sandbox able to write into the files its own
+credentials came from could rewrite them, which is the shape of hole this
+exists to close. The cost is real — an agent that refreshes a token inside
+the sandbox refreshes a copy, and the next run starts from your original
+again. Where that means logging in every run, log in once outside the
+sandbox so the refreshed file is in your own profile.
 
 This is the part that changed most recently, and it changed because MSYS2
 programs — `bash` and everything built on it — cannot start under a restricted
@@ -450,11 +451,6 @@ returned, so the code you read after it is the sandboxed program's own.
   `.bat` goes through the command interpreter, which replaces `%NAME%` before
   the script runs. Punctuation is quoted, so an argument cannot start a second
   command, but there is no escape for expansion on a command line.
-* **The agent directories are shared.** Every sandbox may write `~/.config`,
-  `~/.claude` and their neighbours, so a poisoned hook or setting there would
-  run with full rights the next time you start a tool outside wuserbox. Use
-  `--no-ai` if that matters, or narrow one of them: `wuserbox --grant
-  ~/.config --ro` outranks the preset and stays.
 * **Renaming the project directory** changes the group, leaving the old sandbox
   behind. `wuserbox --list` shows it, `wuserbox --rm --dir <old>` removes it.
 * **A file whose other name is outside stops a grant.** A hard link is not a

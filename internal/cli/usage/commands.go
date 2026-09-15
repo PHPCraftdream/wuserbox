@@ -80,7 +80,7 @@ permissions name its group and the account joins that group.`,
 			{"--dir <d>", "project directory (default: the current one)"},
 			{"--rw <d>", "hand over another directory for writing, repeatable"},
 			{"--ro <d>", "hand over another directory for reading, repeatable"},
-			{"--no-ai", "do not hand over the AI agent directories"},
+			{"--no-ai", "do not copy AI agent state into the sandbox's profile"},
 			{"--home-writes", "let the sandbox create files in the profile root"},
 			{"--allow-links", "hand a directory over even where a file in it has another name elsewhere"},
 			{"--dry-run", "show what would be handed over, hand over nothing"},
@@ -116,11 +116,7 @@ not only of the directory itself, so that no sandbox reaches it through
 a permission left lying about: anything letting "Everyone" or
 "BUILTIN\Users" change something is narrowed, above and below. That is
 why the first grant on a large tree takes a while. Reading is left as
-it was, and nothing is opened up that was not open before.
-
-What you ask for here outranks the agent preset. Narrowing one of the
-directories the preset hands over, say "--grant ~/.claude --ro", stays
-narrow: later runs apply the preset again and leave your decision alone.`,
+it was, and nothing is opened up that was not open before.`,
 		Options: []Option{
 			{"--ro", "read access only, no writing"},
 			{"--allow-links", "hand a directory over even where a file in it has another name elsewhere"},

@@ -15,7 +15,13 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/win/access"
 )
 
-func TestDropPresetTakesBackTheAgentDirectories(t *testing.T) {
+// TestRetireAIGrantsTakesBackTheAgentDirectories is the regression guard for
+// a sandbox built before a profile of its own existed: it may still hold a
+// direct grant on the real agent directories, and RetireAIGrants -- called
+// from ApplyPreset on every start, migration rather than a flag -- is what
+// takes it back. ApplyPreset itself never grants these any more; a sandbox's
+// own profile supplies that state now, filled by policy/profile.Copy.
+func TestRetireAIGrantsTakesBackTheAgentDirectories(t *testing.T) {
 	home := tempDir(t)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "Local"))
@@ -36,14 +42,14 @@ func TestDropPresetTakesBackTheAgentDirectories(t *testing.T) {
 		}
 	}
 	if !s.Has(agent) {
-		t.Fatal("the preset did not grant the agent directory")
+		t.Fatal("the legacy grant this test is about was not applied")
 	}
 
-	if err := DropPreset(s); err != nil {
+	if err := RetireAIGrants(s); err != nil {
 		t.Fatal(err)
 	}
 	if s.Has(agent) {
-		t.Error("the agent directory survived --no-ai")
+		t.Error("the legacy agent directory grant survived")
 	}
 	if !s.Has(project) {
 		t.Error("the project directory was taken away as well")
@@ -57,48 +63,10 @@ func TestDropPresetTakesBackTheAgentDirectories(t *testing.T) {
 	}
 }
 
-func TestDropPresetIsHarmlessWhenNothingWasGranted(t *testing.T) {
-	t.Setenv("USERPROFILE", tempDir(t))
-	s := newState(t)
-	if err := DropPreset(s); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestDropPresetIsWhatWithholdingMeans is the regression guard for a sandbox
-// that kept its agent directories when the flag said to withhold them:
-// skipping the preset is not the same as taking it back.
-func TestDropPresetIsWhatWithholdingMeans(t *testing.T) {
-	home := tempDir(t)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("LOCALAPPDATA", filepath.Join(home, "Local"))
-	t.Setenv("APPDATA", filepath.Join(home, "Roaming"))
-	agent := filepath.Join(home, ".claude")
-	if err := os.Mkdir(agent, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	s := newState(t)
-	for _, spec := range preset.AI() {
-		if err := s.Add(spec.Path, spec.Kind); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if !s.Has(agent) {
-		t.Fatal("the preset did not grant the agent directory")
-	}
-	// Applying the preset with it switched off has to leave nothing behind.
-	if err := DropPreset(s); err != nil {
-		t.Fatal(err)
-	}
-	if s.Has(agent) {
-		t.Error("the agent directory survived; a later run would still reach it")
-	}
-}
-
-// TestDropPresetKeepsTheProjectItself covers a sandbox whose project sits in
-// one of the agent directories: withholding the preset must not take away the
-// one permission the sandbox exists for.
-func TestDropPresetKeepsTheProjectItself(t *testing.T) {
+// TestRetireAIGrantsKeepsTheProjectItself covers a sandbox whose project sits
+// exactly at one of the agent directories: retiring a legacy grant must not
+// take away the one permission the sandbox exists for.
+func TestRetireAIGrantsKeepsTheProjectItself(t *testing.T) {
 	home := tempDir(t)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "Local"))
@@ -107,7 +75,6 @@ func TestDropPresetKeepsTheProjectItself(t *testing.T) {
 	if err := os.Mkdir(project, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("LOCALAPPDATA", tempDir(t))
 	s := &state.State{
 		Group: "wub-inside-preset",
 		SID:   "S-1-5-21-1111111111-2222222222-3333333333-151515",
@@ -117,18 +84,82 @@ func TestDropPresetKeepsTheProjectItself(t *testing.T) {
 	if err := s.Add(project, grant.RW); err != nil {
 		t.Fatal(err)
 	}
-	if err := DropPreset(s); err != nil {
+	if err := RetireAIGrants(s); err != nil {
 		t.Fatal(err)
 	}
 	if !s.Has(project) {
+		t.Error("retiring the legacy grant took away the project directory itself")
+	}
+}
+
+func TestDropPresetIsHarmlessWhenNothingWasGranted(t *testing.T) {
+	t.Setenv("USERPROFILE", tempDir(t))
+	s := newState(t)
+	if err := DropPreset(s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDropPresetOnlyTakesBackTheProfileRoot is the regression guard for the
+// split this file's other tests document: DropPreset answers --no-ai, and
+// --no-ai is about the profile root only now, not the agent directories.
+// Those are never granted by ApplyPreset any more, so there is nothing left
+// for --no-ai to take back there; a legacy grant reached through some other
+// route is RetireAIGrants's concern, not this one's, and DropPreset must
+// leave it alone.
+func TestDropPresetOnlyTakesBackTheProfileRoot(t *testing.T) {
+	home := tempDir(t)
+	t.Setenv("USERPROFILE", home)
+	agent := filepath.Join(home, ".claude")
+	if err := os.Mkdir(agent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := newState(t)
+	if err := s.Add(home, grant.HomeTop); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(agent, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if err := DropPreset(s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Has(home) {
+		t.Error("the profile root survived --no-ai")
+	}
+	if !s.Has(agent) {
+		t.Error("DropPreset reached past the profile root, which is not its job any more")
+	}
+}
+
+// TestDropPresetKeepsTheProjectItself covers a sandbox whose project
+// directory is the profile root itself: taking the preset's profile-root
+// grant back must not take away the one permission the sandbox exists for.
+func TestDropPresetKeepsTheProjectItself(t *testing.T) {
+	home := tempDir(t)
+	t.Setenv("USERPROFILE", home)
+	s := &state.State{
+		Group: "wub-is-the-profile-root",
+		SID:   "S-1-5-21-1111111111-2222222222-3333333333-161616",
+		Dir:   home,
+		Temp:  tempDir(t),
+	}
+	if err := s.Add(home, grant.HomeTop); err != nil {
+		t.Fatal(err)
+	}
+	if err := DropPreset(s); err != nil {
+		t.Fatal(err)
+	}
+	if !s.Has(home) {
 		t.Error("--no-ai took away the project directory itself")
 	}
 }
 
-// TestApplyPresetBringsASandboxInLineWithTheFlags is the regression guard for
-// flags that only counted on the run that built the sandbox. A plain run after
-// one with --no-ai left the agent directories withheld, and --home-writes did
-// nothing at all for a sandbox created without it.
+// TestApplyPresetBringsASandboxInLineWithTheFlags is the regression guard
+// for --home-writes only counting on the run that built the sandbox, and for
+// a legacy grant on a real agent directory surviving past the version that
+// stopped handing those out -- ApplyPreset must retire it on the very next
+// plain run, not only at init.
 func TestApplyPresetBringsASandboxInLineWithTheFlags(t *testing.T) {
 	home := tempDir(t)
 	t.Setenv("USERPROFILE", home)
@@ -140,21 +171,15 @@ func TestApplyPresetBringsASandboxInLineWithTheFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := newState(t)
-
-	// A run with the preset withheld leaves nothing behind.
-	if err := DropPreset(s); err != nil {
+	if err := s.Add(agent, grant.RW); err != nil {
 		t.Fatal(err)
 	}
-	if s.Has(agent) {
-		t.Fatal("the agent directory was not withheld")
-	}
 
-	// The next plain run puts it back.
 	if err := ApplyPreset(s, false); err != nil {
 		t.Fatal(err)
 	}
-	if !s.Has(agent) {
-		t.Error("a plain run did not restore the agent directories")
+	if s.Has(agent) {
+		t.Error("a plain run left a legacy agent-directory grant standing")
 	}
 	if s.Has(home) {
 		t.Error("the profile root was handed over without being asked for")
@@ -166,83 +191,6 @@ func TestApplyPresetBringsASandboxInLineWithTheFlags(t *testing.T) {
 	}
 	if !s.Has(home) {
 		t.Error("--home-writes did not reach an existing sandbox")
-	}
-}
-
-// TestApplyPresetLeavesANarrowedDirectoryNarrow is the regression guard for a
-// preset that ran on every start and applied its own idea of the access. A
-// directory narrowed by hand with `grant ~/.claude --ro` was writable again
-// after the next plain run, and nothing said so.
-func TestApplyPresetLeavesANarrowedDirectoryNarrow(t *testing.T) {
-	home := tempDir(t)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("LOCALAPPDATA", filepath.Join(home, "Local"))
-	t.Setenv("APPDATA", filepath.Join(home, "Roaming"))
-	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
-	agent := filepath.Join(home, ".claude")
-	if err := os.Mkdir(agent, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	s := newState(t)
-	if err := ApplyPreset(s, false); err != nil {
-		t.Fatal(err)
-	}
-	if kind, _ := s.Kind(agent); kind != grant.RW {
-		t.Fatalf("the preset handed the agent directory over as %q", kind)
-	}
-
-	// The user narrows it by hand, the way `grant <dir> --ro` does.
-	if err := s.Add(agent, grant.RO); err != nil {
-		t.Fatal(err)
-	}
-	refused, err := access.Check(testAccount, agent, access.Create)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if refused.Allowed {
-		t.Fatalf("narrowing the directory did not refuse creation: %s", refused.Reason)
-	}
-
-	// Every later run applies the preset again, and must leave that alone.
-	for i := 0; i < 2; i++ {
-		if err := ApplyPreset(s, false); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if kind, _ := s.Kind(agent); kind != grant.RO {
-		t.Errorf("the preset widened the directory back to %q", kind)
-	}
-	answer, err := access.Check(testAccount, agent, access.Create)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if answer.Allowed {
-		t.Errorf("the sandbox can create files in a directory the user narrowed: %s", answer.Reason)
-	}
-}
-
-// TestApplyPresetStillReachesADirectoryNobodyAskedAbout keeps the preset
-// working where no one has said anything: an agent directory that appears
-// after the sandbox was built is still handed over.
-func TestApplyPresetStillReachesADirectoryNobodyAskedAbout(t *testing.T) {
-	home := tempDir(t)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("LOCALAPPDATA", filepath.Join(home, "Local"))
-	t.Setenv("APPDATA", filepath.Join(home, "Roaming"))
-	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
-	s := newState(t)
-	if err := ApplyPreset(s, false); err != nil {
-		t.Fatal(err)
-	}
-	agent := filepath.Join(home, ".codex")
-	if err := os.Mkdir(agent, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := ApplyPreset(s, false); err != nil {
-		t.Fatal(err)
-	}
-	if kind, found := s.Kind(agent); !found || kind != grant.RW {
-		t.Errorf("a new agent directory was not handed over: kind %q, found %v", kind, found)
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	acct "github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
@@ -280,23 +279,22 @@ func applyPreset(s *state.State, o Options) error {
 	// --no-ai, and reads this instead of taking a fresh run's silence for
 	// "presets are wanted again."
 	s.NoAI = o.NoAI
-	if o.NoAI {
-		// Skipping is not enough for a sandbox that already holds these
-		// directories: the flag has to take them back, or a later run would
-		// still reach them.
-		return grants.DropPreset(s)
-	}
-	// Together rather than one after another: each of these is a whole
-	// directory tree whose files all have their permissions rewritten, and
-	// they have nothing to do with one another.
-	handing := preset.AI()
-	note(o, "handing over %d agent directories; Windows writes the permission "+
-		"into every file already in them, which is why a first run waits", len(handing))
-	started := time.Now()
-	if err := s.OfferMany(handing); err != nil {
+	// A sandbox built before a profile of its own existed may still hold a
+	// direct grant on the real agent directories. Nothing hands those out
+	// any more -- a sandbox's own profile supplies that state now, filled by
+	// a copy on every run, see internal/cli/setup/run.go's fillProfile --
+	// and this runs whichever way --no-ai is set, because the question it
+	// answers does not depend on that flag: does this sandbox still hold a
+	// grant nothing hands out any more.
+	if err := grants.RetireAIGrants(s); err != nil {
 		return err
 	}
-	note(o, "handed over in %s", time.Since(started).Round(time.Millisecond))
+	if o.NoAI {
+		// Skipping is not enough for a sandbox that already holds the
+		// profile root: the flag has to take it back, or a later run would
+		// still reach it.
+		return grants.DropPreset(s)
+	}
 	if !o.HomeWrites {
 		return nil
 	}

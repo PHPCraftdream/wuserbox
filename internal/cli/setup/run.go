@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/profile"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/exec"
@@ -48,6 +49,9 @@ func Run(args []string) error {
 	if err := refuseWithoutAccount(s); err != nil {
 		return err
 	}
+	if err := fillProfile(s); err != nil {
+		return err
+	}
 	// Failing to write this is not a reason to refuse the run: it costs a
 	// listing one accurate moment, and the run itself is what was asked for.
 	if err := facts.MarkUsed(s.Group); err != nil {
@@ -78,6 +82,70 @@ func refuseWithoutAccount(s *state.State) error {
 		"sandbox %s has no account of its own, and programs that need one -- a shell among them -- "+
 			"will not start in it; run `wuserbox --init --dir %s` to give it one",
 		s.Group, s.Dir)
+}
+
+// fillProfile puts what the rules file names into the sandbox's own profile,
+// before the program starts and on every run -- unless the sandbox was told
+// to skip the agent preset, in which case it takes back whatever an earlier
+// run copied instead.
+//
+// A failure filling the profile stops the run rather than being reported and
+// passed over, which is the opposite of how the timestamp above is treated,
+// and for a reason: what this copies is where a program inside finds its
+// credentials and settings. Missing, the program starts and then fails as
+// though it were not logged in, somewhere far from here and with nothing
+// pointing back.
+//
+// NoAI is checked here rather than left to the rules file's own list,
+// because the two answer different questions. The `profile:` section says
+// what to copy when copying is wanted at all; it is not asked whether a
+// sandbox that already holds a copy should go on holding it after being told
+// to skip the preset. Reading the rules file for that would make --no-ai
+// mean nothing the moment a rules file still lists agent directories, which
+// is every rules file, since that section is pre-filled with exactly that
+// list.
+func fillProfile(s *state.State) error {
+	if s.Profile == "" {
+		return nil // no profile of its own; nothing to fill
+	}
+	previously, err := facts.Copied(s.Group)
+	if err != nil {
+		return err
+	}
+	if s.NoAI {
+		if err := profile.Clear(s.Profile, previously); err != nil {
+			return err
+		}
+		return facts.RecordCopied(s.Group, nil)
+	}
+	copied, copyErr := profile.Copy(s.Profile, previously)
+	// Written down whatever happened. What did land has to be findable next
+	// time or nothing will ever clear it, and on a failure the union is the
+	// safe reading: naming something already gone costs one attempt that
+	// finds nothing, while forgetting something still there leaves it in the
+	// sandbox's profile for good.
+	if err := facts.RecordCopied(s.Group, union(previously, copied, copyErr != nil)); err != nil {
+		return err
+	}
+	return copyErr
+}
+
+// union is what to record: exactly what was copied where the copy finished,
+// and everything either list mentions where it did not.
+func union(previously, copied []string, partial bool) []string {
+	if !partial {
+		return copied
+	}
+	seen := make(map[string]bool, len(previously)+len(copied))
+	var all []string
+	for _, entry := range append(append([]string{}, previously...), copied...) {
+		if seen[entry] {
+			continue
+		}
+		seen[entry] = true
+		all = append(all, entry)
+	}
+	return all
 }
 
 // onlyRunning refuses the options that describe what a sandbox is, rather than
