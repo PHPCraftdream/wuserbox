@@ -29,7 +29,7 @@ func TestNarrowingADirectoryTakesBackWhatIsInsideIt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	allowed, err := access.Check(s.SID, child, access.Create)
+	allowed, err := access.Check(access.Sandbox{Group: s.SID}, child, access.Create)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestNarrowingADirectoryTakesBackWhatIsInsideIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, dir := range []string{parent, child} {
-		answer, err := access.Check(s.SID, dir, access.Create)
+		answer, err := access.Check(access.Sandbox{Group: s.SID}, dir, access.Create)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -75,7 +75,7 @@ func TestNarrowingKeepsTheProjectItself(t *testing.T) {
 	if !s.Has(project) {
 		t.Fatal("the project lost its own permission")
 	}
-	answer, err := access.Check(s.SID, project, access.Create)
+	answer, err := access.Check(access.Sandbox{Group: s.SID}, project, access.Create)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestAnInterruptedNarrowingIsFinished(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writable, err := access.Check(interrupted.SID, dir, access.Create)
+	writable, err := access.Check(access.Sandbox{Group: interrupted.SID}, dir, access.Create)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestAnInterruptedNarrowingIsFinished(t *testing.T) {
 	if err := interrupted.Add(dir, grant.RO); err != nil {
 		t.Fatal(err)
 	}
-	answer, err := access.Check(interrupted.SID, dir, access.Create)
+	answer, err := access.Check(access.Sandbox{Group: interrupted.SID}, dir, access.Create)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestFinishPendingRepairsWithoutBeingAsked(t *testing.T) {
 	if err := reread.FinishPending(); err != nil {
 		t.Fatal(err)
 	}
-	answer, err := access.Check(reread.SID, dir, access.Create)
+	answer, err := access.Check(access.Sandbox{Group: reread.SID}, dir, access.Create)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestFinishingTwoMarkedChangesDoesNotUndoOneOfThem(t *testing.T) {
 	if err := s.FinishPending(); err != nil {
 		t.Fatal(err)
 	}
-	answer, err := access.Check(s.SID, child, access.Create)
+	answer, err := access.Check(access.Sandbox{Group: s.SID}, child, access.Create)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestAnInterruptedNarrowingKeepsItsMark(t *testing.T) {
 	if err := reread.FinishPending(); err != nil {
 		t.Fatal(err)
 	}
-	answer, err := access.Check(reread.SID, child, access.Create)
+	answer, err := access.Check(access.Sandbox{Group: reread.SID}, child, access.Create)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestNarrowingLeavesAChildsOwnRefusalAlone(t *testing.T) {
 	if kind, held := s.Kind(child); !held || kind != grant.RO {
 		t.Fatalf("the child's own restriction is recorded as %q (held: %v)", kind, held)
 	}
-	answer, err := access.Check(s.SID, child, access.Create)
+	answer, err := access.Check(access.Sandbox{Group: s.SID}, child, access.Create)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestNarrowingFinishesAChildsUnappliedRefusal(t *testing.T) {
 	if err := s.Save(); err != nil {
 		t.Fatal(err)
 	}
-	writable, err := access.Check(s.SID, child, access.Create)
+	writable, err := access.Check(access.Sandbox{Group: s.SID}, child, access.Create)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestNarrowingFinishesAChildsUnappliedRefusal(t *testing.T) {
 	if err := s.Add(parent, grant.RO); err != nil {
 		t.Fatal(err)
 	}
-	answer, err := access.Check(s.SID, child, access.Create)
+	answer, err := access.Check(access.Sandbox{Group: s.SID}, child, access.Create)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +365,7 @@ func TestNarrowingHandlesANestedPendingChildRemovingAGrandchild(t *testing.T) {
 	if index, found := s.find(parent); !found || s.Grants[index].Pending {
 		t.Error("the parent's own change is still marked as unfinished")
 	}
-	answer, err := access.Check(s.SID, leaf, access.Create)
+	answer, err := access.Check(access.Sandbox{Group: s.SID}, leaf, access.Create)
 	if err != nil {
 		t.Fatal(err)
 	}

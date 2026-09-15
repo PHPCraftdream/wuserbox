@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"unsafe"
 
@@ -16,8 +15,6 @@ var (
 	procGetNamedSecurityInfo = w32.Advapi32.NewProc("GetNamedSecurityInfoW")
 	procAccessCheck          = w32.Advapi32.NewProc("AccessCheck")
 	procMapGenericMask       = w32.Advapi32.NewProc("MapGenericMask")
-	procImpersonate          = w32.Advapi32.NewProc("ImpersonateLoggedOnUser")
-	procRevertToSelf         = w32.Advapi32.NewProc("RevertToSelf")
 	procDuplicateTokenEx     = w32.Advapi32.NewProc("DuplicateTokenEx")
 )
 
@@ -33,17 +30,93 @@ type Result struct {
 	Reason string `json:"reason"`
 }
 
-// Check asks Windows whether a sandbox could perform an operation.
+// Sandbox is who a question is about: the group every permission it holds
+// names, and the account a run of it logs on as.
 //
-// The answer comes from a token carrying the sandbox's group, not from the
-// account a run actually uses -- logging that account on would need its
-// password, and this has to be answerable without one. It is the same answer
-// either way: every permission wuserbox writes names the group, and the
-// account's only way to any of them is being a member of it.
+// Password is here because the only way to hold the token a run gets, from
+// outside that run, is to log the account on -- and the only way to log an
+// account on is with its password. It is already unsealed by the time it
+// arrives: opening the seal is the caller's business, since only the account
+// that made it can.
+//
+// Account empty means a sandbox from before sandboxes had accounts, which
+// runs as a restricted copy of the caller's own token and is answered with
+// exactly that.
+// Inside says the process doing the asking is this very sandbox, which
+// answers the question without any of the above: the token it is already
+// running under is the one being asked about. It is also the only way such a
+// process can be answered at all, since the seal on the password belongs to
+// whoever is outside.
+type Sandbox struct {
+	Group    string
+	Account  string
+	Password string
+	Inside   bool
+}
+
+// token builds the one a run of this sandbox gets.
+func (s Sandbox) token() (syscall.Token, error) {
+	switch {
+	case s.Inside:
+		return token.Own()
+	case s.Account == "":
+		return token.Restricted(s.Group)
+	default:
+		return token.OfSandbox(s.Account, s.Password, s.Group)
+	}
+}
+
+// Asking holds a sandbox's token open across as many questions as a caller
+// has.
+//
+// Building one logs the sandbox's account on, which is not free, so it is
+// done once per Asking rather than once per question: --explain puts up to
+// four questions to every directory a sandbox holds, and a sandbox can hold
+// twenty.
+type Asking struct {
+	// restricted is the token a run gets; client is the impersonation-level
+	// copy of it AccessCheck insists on being handed. Both are this type's to
+	// close.
+	restricted syscall.Token
+	client     syscall.Token
+}
+
+// Ask takes the sandbox's token out, ready to answer questions about it.
+func Ask(s Sandbox) (*Asking, error) {
+	restricted, err := s.token()
+	if err != nil {
+		return nil, err
+	}
+	client, err := impersonationCopy(restricted)
+	if err != nil {
+		restricted.Close()
+		return nil, err
+	}
+	return &Asking{restricted: restricted, client: client}, nil
+}
+
+// Close puts the token down and ends the logon that produced it.
+func (a *Asking) Close() {
+	a.client.Close()
+	a.restricted.Close()
+}
+
+// Check asks Windows whether a sandbox could perform an operation, and puts
+// the token down again. Callers with more than one question should use Ask.
 //
 // Nothing is opened for writing and nothing is created, so asking is free of
 // consequences.
-func Check(group string, path string, operation Operation) (Result, error) {
+func Check(s Sandbox, path string, operation Operation) (Result, error) {
+	asking, err := Ask(s)
+	if err != nil {
+		return Result{Path: path, Operation: operation, Checked: path}, err
+	}
+	defer asking.Close()
+	return asking.Can(path, operation)
+}
+
+// Can answers one question with the token already in hand.
+func (a *Asking) Can(path string, operation Operation) (Result, error) {
 	result := Result{Path: path, Operation: operation, Checked: path}
 
 	target := path
@@ -65,19 +138,7 @@ func Check(group string, path string, operation Operation) (Result, error) {
 	}
 	defer w32.Free(descriptor)
 
-	restricted, err := token.Restricted(group)
-	if err != nil {
-		return result, err
-	}
-	defer restricted.Close()
-
-	impersonation, err := impersonationCopy(restricted)
-	if err != nil {
-		return result, err
-	}
-	defer impersonation.Close()
-
-	granted, allowed, err := accessCheck(impersonation, descriptor, operation.mask())
+	granted, allowed, err := accessCheck(a.client, descriptor, operation.mask())
 	if err != nil {
 		return result, err
 	}
@@ -88,7 +149,7 @@ func Check(group string, path string, operation Operation) (Result, error) {
 	// removed from it, and an answer that knew only the first would promise a
 	// refusal that does not happen.
 	if !allowed && operation == Delete {
-		throughParent, err := deleteThroughParent(group, target)
+		throughParent, err := a.deleteThroughParent(target)
 		if err != nil {
 			return result, fmt.Errorf("asking whether %s may be removed from the directory holding it: %w",
 				target, err)
@@ -143,38 +204,19 @@ func impersonationCopy(source syscall.Token) (syscall.Token, error) {
 	return copied, nil
 }
 
-// accessCheck wears the token for the length of one question.
+// accessCheck asks Windows what a token may do to an object.
 //
-// Impersonation is a property of an operating-system thread, not of a
-// goroutine. Without pinning, the runtime is free to move the goroutine to
-// another thread, and the token would be taken off the wrong one, leaving the
-// first thread restricted for whatever runs on it next. That would show up
-// later as an unrelated operation failing for no visible reason.
-func accessCheck(impersonation syscall.Token, descriptor uintptr, wanted uint32) (granted uint32, allowed bool, err error) {
-	runtime.LockOSThread()
-	pinned := true
-	defer func() {
-		if pinned {
-			runtime.UnlockOSThread()
-		}
-	}()
-
-	if r, _, callErr := procImpersonate.Call(uintptr(impersonation)); r == 0 {
-		return 0, false, fmt.Errorf("taking on the sandbox token: %w", callErr)
-	}
-	defer func() {
-		if r, _, revertErr := procRevertToSelf.Call(); r == 0 {
-			// The thread still wears the sandbox token. It must not go back
-			// into the pool, so it stays locked to this goroutine and the
-			// runtime retires it when the goroutine ends.
-			pinned = false
-			if err == nil {
-				err = fmt.Errorf("could not put the sandbox token down again: %w", revertErr)
-				granted, allowed = 0, false
-			}
-		}
-	}()
-
+// The thread is deliberately not made to wear the token. AccessCheck takes
+// one as an argument and compares it against the descriptor; it never reads
+// the thread's own. Wearing it was how this started, and it cost three
+// things: the goroutine had to be pinned to its operating-system thread, a
+// failure to take the token off again had to retire that thread rather than
+// hand it back, and -- what settled it -- whether a token may be worn at all
+// turns on privileges and on where the token came from, neither of which has
+// anything to do with the question being asked. Now that the token asked
+// about belongs to another account, that is a dependency worth not having.
+// Measured: the answers are the same either way.
+func accessCheck(client syscall.Token, descriptor uintptr, wanted uint32) (granted uint32, allowed bool, err error) {
 	mapping := [4]uint32{
 		0x120089, // generic read
 		0x120116, // generic write
@@ -187,7 +229,7 @@ func accessCheck(impersonation syscall.Token, descriptor uintptr, wanted uint32)
 	privileges := make([]byte, 1024)
 	privilegeSize := uint32(len(privileges))
 	var status int32
-	r, _, callErr := procAccessCheck.Call(descriptor, uintptr(impersonation), uintptr(desired),
+	r, _, callErr := procAccessCheck.Call(descriptor, uintptr(client), uintptr(desired),
 		uintptr(unsafe.Pointer(&mapping)), uintptr(unsafe.Pointer(&privileges[0])),
 		uintptr(unsafe.Pointer(&privilegeSize)), uintptr(unsafe.Pointer(&granted)),
 		uintptr(unsafe.Pointer(&status)))
@@ -214,7 +256,7 @@ func readOnlyAttribute(path string) bool {
 
 // deleteThroughParent reports whether the directory holding a path lets the
 // sandbox remove what is inside it.
-func deleteThroughParent(group, path string) (bool, error) {
+func (a *Asking) deleteThroughParent(path string) (bool, error) {
 	parent := filepath.Dir(path)
 	if parent == path {
 		return false, nil
@@ -225,18 +267,6 @@ func deleteThroughParent(group, path string) (bool, error) {
 	}
 	defer w32.Free(descriptor)
 
-	restricted, err := token.Restricted(group)
-	if err != nil {
-		return false, err
-	}
-	defer restricted.Close()
-
-	impersonation, err := impersonationCopy(restricted)
-	if err != nil {
-		return false, err
-	}
-	defer impersonation.Close()
-
-	_, allowed, err := accessCheck(impersonation, descriptor, DeleteChild)
+	_, allowed, err := accessCheck(a.client, descriptor, DeleteChild)
 	return allowed, err
 }

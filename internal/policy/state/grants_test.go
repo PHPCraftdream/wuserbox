@@ -223,7 +223,7 @@ func TestAPermissionIsNotHandedOverWhenItCannotBeRecorded(t *testing.T) {
 	if s.Has(target) {
 		t.Error("the permission stayed in the record although it was never written")
 	}
-	answer, err := access.Check(s.SID, target, access.Write)
+	answer, err := access.Check(access.Sandbox{Group: s.SID}, target, access.Write)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestOfferManyRecordsAndAppliesEveryDirectory(t *testing.T) {
 		if !held || kind != grant.RW {
 			t.Errorf("%s came back as %q (held: %v)", spec.Path, kind, held)
 		}
-		answer, err := access.Check(s.SID, spec.Path, access.Create)
+		answer, err := access.Check(access.Sandbox{Group: s.SID}, spec.Path, access.Create)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -294,7 +294,7 @@ func TestOfferManyYieldsToWhatSomebodyAskedFor(t *testing.T) {
 	if kind, _ := s.Kind(ordinary); kind != grant.RW {
 		t.Errorf("the other directory was not handed over: %q", kind)
 	}
-	answer, err := access.Check(s.SID, narrowed, access.Create)
+	answer, err := access.Check(access.Sandbox{Group: s.SID}, narrowed, access.Create)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +322,7 @@ func TestOfferManyNarrowsOneAtATime(t *testing.T) {
 	if s.Has(child) {
 		t.Error("narrowing the parent left the entry inside it")
 	}
-	answer, err := access.Check(s.SID, child, access.Create)
+	answer, err := access.Check(access.Sandbox{Group: s.SID}, child, access.Create)
 	if err != nil {
 		t.Fatal(err)
 	}

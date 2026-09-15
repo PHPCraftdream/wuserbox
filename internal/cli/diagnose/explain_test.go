@@ -168,6 +168,20 @@ func TestExplainJudgesAPermissionByItsOwnKind(t *testing.T) {
 	}
 }
 
+// asking opens a token for a sandbox that is a group and nothing else, which
+// is what every sandbox in this file is: a made-up identifier no account is a
+// member of, so the token is a restricted copy of the caller's own and needs
+// no administrator rights to build.
+func asking(t *testing.T, group string) *access.Asking {
+	t.Helper()
+	a, err := access.Ask(access.Sandbox{Group: group})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+	return a
+}
+
 // TestExplainNoticesCreationUnderAReadOnlyRecord is the regression guard for a
 // check that asked only about a plain write. A permission that creates files
 // without creating subdirectories is refused a write and allowed a create, so
@@ -184,7 +198,7 @@ func TestExplainNoticesCreationUnderAReadOnlyRecord(t *testing.T) {
 	}
 	s.Grants = []grant.Spec{{Path: dir, Kind: grant.RO}}
 
-	inForce, note := inForce(account, s.Grants[0])
+	inForce, note := inForce(asking(t, account), s.Grants[0])
 	if inForce {
 		t.Fatal("a directory the sandbox can create files in was reported as read-only")
 	}
@@ -210,7 +224,7 @@ func TestExplainAcceptsAReadOnlyRecordThatHoldsUp(t *testing.T) {
 	if err := s.Add(inner, grant.RO); err != nil {
 		t.Fatal(err)
 	}
-	if ok, note := inForce(account, grant.Spec{Path: inner, Kind: grant.RO}); !ok {
+	if ok, note := inForce(asking(t, account), grant.Spec{Path: inner, Kind: grant.RO}); !ok {
 		t.Errorf("a sound read-only permission was called broken: %s", note)
 	}
 }
@@ -234,12 +248,12 @@ func TestExplainJudgesAReadOnlyFileByTheFileItself(t *testing.T) {
 	if err := s.Add(guarded, grant.RO); err != nil {
 		t.Fatal(err)
 	}
-	if ok, note := inForce(account, grant.Spec{Path: guarded, Kind: grant.RO}); !ok {
+	if ok, note := inForce(asking(t, account), grant.Spec{Path: guarded, Kind: grant.RO}); !ok {
 		t.Errorf("a file that is genuinely read-only was called broken: %s", note)
 	}
 
 	// Writing it must still be refused, or the check would say nothing at all.
-	writable, err := access.Check(account, guarded, access.Write)
+	writable, err := access.Check(access.Sandbox{Group: account}, guarded, access.Write)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +271,7 @@ func TestExplainStillAsksADirectoryAboutCreating(t *testing.T) {
 	if err := grant.Apply(account, dir, grant.HomeTop); err != nil {
 		t.Fatal(err)
 	}
-	if ok, note := inForce(account, grant.Spec{Path: dir, Kind: grant.RO}); ok {
+	if ok, note := inForce(asking(t, account), grant.Spec{Path: dir, Kind: grant.RO}); ok {
 		t.Error("a directory the sandbox can create files in was reported as read-only")
 	} else if !strings.Contains(note, "create") {
 		t.Errorf("the note does not name the operation that is allowed: %s", note)

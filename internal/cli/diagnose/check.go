@@ -10,12 +10,14 @@ import (
 	"os"
 	"strings"
 
+	acct "github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 	"github.com/PHPCraftdream/wuserbox/internal/win/access"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
 // Check answers whether a sandbox could do something to a path, by asking
@@ -46,7 +48,11 @@ func Check(args []string) error {
 	if err != nil {
 		return err
 	}
-	result, err := access.Check(s.SID, path, wanted)
+	who, err := whoToAsk(s)
+	if err != nil {
+		return err
+	}
+	result, err := access.Check(who, path, wanted)
 	if err != nil {
 		return err
 	}
@@ -97,6 +103,53 @@ func printCheck(result access.Result, asJSON bool) error {
 	}
 	fmt.Printf("  %s\n", result.Reason)
 	return nil
+}
+
+// whoToAsk turns a sandbox's record into the thing every question here is
+// put to: its group, its account, and that account's password with the seal
+// off.
+//
+// The password is opened here rather than deeper down because opening it is
+// this process's privilege and nothing else's -- it was sealed to the account
+// that built the sandbox, so a record that reached this machine by some other
+// route cannot be opened at all, and that is worth saying plainly rather than
+// leaving as a DPAPI error about data that is perfectly fine.
+func whoToAsk(s *state.State) (access.Sandbox, error) {
+	who := access.Sandbox{Group: s.SID, Account: s.Account}
+	if s.Account == "" {
+		return who, nil // older sandbox: no account to log on as
+	}
+	if runningAsIt(s.Account) {
+		// Asked from inside the sandbox itself, where the token is already in
+		// hand and the seal on the password is not this account's to open.
+		who.Inside = true
+		return who, nil
+	}
+	password, err := acct.Unprotect(s.Secret)
+	if err != nil {
+		return who, exit.Errorf(exit.Failed,
+			"the password for %s was sealed by a different account, so this one cannot ask "+
+				"what %s may do; rebuild the sandbox with `wuserbox --init --dir %s`: %v",
+			s.Account, s.Group, s.Dir, err)
+	}
+	who.Password = password
+	return who, nil
+}
+
+// runningAsIt reports whether this process is the account it is being asked
+// about.
+//
+// By identifier and not by the general "am I in a sandbox" test, because the
+// two questions are different: a sandbox for one project asking about
+// another's must not be answered with its own token, which would describe the
+// wrong sandbox entirely.
+func runningAsIt(account string) bool {
+	me, err := sid.CurrentUser()
+	if err != nil {
+		return false
+	}
+	value, err := sid.Lookup(account)
+	return err == nil && strings.EqualFold(value.String(), me)
 }
 
 // sandboxOf loads the bookkeeping of the sandbox a command is asking about.

@@ -79,6 +79,17 @@ func build(s *state.State) (Report, error) {
 	if err != nil {
 		return report, err
 	}
+	who, err := whoToAsk(s)
+	if err != nil {
+		return report, err
+	}
+	// One token for the whole report. Building it logs the sandbox's account
+	// on, and there are up to four questions per directory below.
+	asking, err := access.Ask(who)
+	if err != nil {
+		return report, err
+	}
+	defer asking.Close()
 	for _, held := range s.Grants {
 		account := Account{
 			Path:   held.Path,
@@ -88,7 +99,7 @@ func build(s *state.State) (Report, error) {
 		if account.Source == "" {
 			account.Source = "given once"
 		}
-		account.InForce, account.Note = inForce(s.SID, held)
+		account.InForce, account.Note = inForce(asking, held)
 		report.Accounts = append(report.Accounts, account)
 		if !account.InForce {
 			report.Drifted = append(report.Drifted, held.Path)
@@ -120,8 +131,8 @@ func sourcesFor(s *state.State) (map[string]plan.Source, error) {
 // written down as readable that the sandbox can in fact write to is exactly
 // the situation this tool exists to prevent, and it would otherwise be
 // reported as being in good order.
-func inForce(account string, held grant.Spec) (bool, string) {
-	readable, err := access.Check(account, held.Path, access.Read)
+func inForce(asking *access.Asking, held grant.Spec) (bool, string) {
+	readable, err := asking.Can(held.Path, access.Read)
 	if err != nil {
 		return false, err.Error()
 	}
@@ -136,7 +147,7 @@ func inForce(account string, held grant.Spec) (bool, string) {
 	if err != nil {
 		return false, err.Error()
 	}
-	granted, err := access.Check(account, held.Path, proving)
+	granted, err := asking.Can(held.Path, proving)
 	if err != nil {
 		return false, err.Error()
 	}
@@ -170,7 +181,7 @@ func inForce(account string, held grant.Spec) (bool, string) {
 	// right down, and a read-only entry does not promise what it cannot
 	// deliver.
 	for _, changing := range changingOperations(held.Path) {
-		answer, err := access.Check(account, held.Path, changing)
+		answer, err := asking.Can(held.Path, changing)
 		if err != nil {
 			return false, err.Error()
 		}

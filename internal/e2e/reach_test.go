@@ -172,7 +172,7 @@ func TestHomeTopHoldsWhereTheMachineHandsOutNothing(t *testing.T) {
 	}
 
 	target := filepath.Join(top, "new.txt")
-	answer, err := access.Check(box.state.SID, target, access.Create)
+	answer, err := access.Check(access.Sandbox{Group: box.state.SID}, target, access.Create)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -32,16 +32,22 @@ type sidAndAttributes struct {
 
 // Restricted derives a fully restricted token from the caller's own token.
 //
-// This was how a sandbox ran, and is no longer: MSYS2 programs cannot start
-// under one at all, which is what moved a sandbox onto an account of its own
-// -- see docs/investigations/msys-under-a-restricted-token.md. It is kept,
-// and still carries weight, in three places. A sandbox built by an older
-// version runs this way until `--init` gives it an account. `--check`
-// answers with it, because it needs no password. And the boundary tests
-// reach it with a made-up group, which is what lets them prove the boundary
-// on a machine with no administrator rights at all -- the NTFS check a real
-// account's token faces is the same one this faces, since what every
-// permission names is the group, and both carry it.
+// This was the whole of a sandbox once. It is now one half of one: a run is
+// the sandbox's own account and a token restricted to that account's
+// identities, which AsSandbox builds from inside. What is left for this is a
+// sandbox built by an older version, which runs this way until `--init`
+// gives it an account, and `--check` on such a sandbox -- for any other,
+// access asks with the account's own token by logging it on.
+//
+// The boundary tests reach it with a made-up group, which is what lets them
+// prove the boundary on a machine with no administrator rights at all. What
+// that arrangement cannot show is worth naming, because it reads as though it
+// could: the caller's token carries the caller's memberships and not the
+// sandbox's group, so the first of the two checks passes by way of the
+// caller's own access rather than the sandbox's. A permission this token
+// reaches is therefore one a real account reaches as well, and a refusal here
+// may be the caller's rather than the sandbox's. Closing that gap is what the
+// account tests in internal/e2e are for.
 //
 // Every access, not only writes, is checked a second time against the
 // restricting identifiers, so it succeeds only where the sandbox group — or
@@ -64,7 +70,12 @@ func Restricted(sandboxGroup string) (syscall.Token, error) {
 	if err != nil {
 		return 0, err
 	}
-	return restrict(sandboxGroup, group.ReadGroupFor(caller), false)
+	self, err := ownToken()
+	if err != nil {
+		return 0, err
+	}
+	defer self.Close()
+	return restrict(self, sandboxGroup, group.ReadGroupFor(caller), false)
 }
 
 // AsSandbox restricts the token of a process that is already running as the
@@ -89,16 +100,36 @@ func Restricted(sandboxGroup string) (syscall.Token, error) {
 // current user is the sandbox account, so asking which read group belongs to
 // "the caller" would name a group for the wrong person.
 func AsSandbox(sandboxGroup, readGroup string) (syscall.Token, error) {
-	return restrict(sandboxGroup, readGroup, true)
+	self, err := ownToken()
+	if err != nil {
+		return 0, err
+	}
+	defer self.Close()
+	return restrict(self, sandboxGroup, readGroup, true)
 }
 
-func restrict(sandboxGroup, readGroup string, ownIdentityToo bool) (syscall.Token, error) {
+// Own hands back this process's own token, for the one caller that is already
+// the thing being asked about: wuserbox running inside a sandbox, asked what
+// that sandbox may do. Nothing has to be modeled there, and nothing can be --
+// the password is sealed to the person outside -- because the token the
+// question is about is the one this process is running under.
+func Own() (syscall.Token, error) {
+	return ownToken()
+}
+
+// ownToken is this process's own, the one every restriction starts from
+// except the one OfSandbox builds by logging an account on.
+func ownToken() (syscall.Token, error) {
 	var self syscall.Token
 	if err := syscall.OpenProcessToken(syscall.Handle(^uintptr(0)), syscall.TOKEN_ALL_ACCESS, &self); err != nil {
 		return 0, fmt.Errorf("opening the process token: %w", err)
 	}
-	defer self.Close()
+	return self, nil
+}
 
+// restrict cuts self down to the identities named here. self stays open and
+// belongs to the caller; what comes back is a new token.
+func restrict(self syscall.Token, sandboxGroup, readGroup string, ownIdentityToo bool) (syscall.Token, error) {
 	userBuf, err := information(self, syscall.TokenUser)
 	if err != nil {
 		return 0, err

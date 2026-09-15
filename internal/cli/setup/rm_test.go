@@ -173,7 +173,7 @@ func TestClearGrantsReachesWhatANestedGrantPinned(t *testing.T) {
 	if err := grant.Apply(other, inner, grant.RW); err != nil {
 		t.Fatal(err)
 	}
-	writable, err := access.Check(removed, filepath.Join(inner, "f.txt"), access.Create)
+	writable, err := access.Check(access.Sandbox{Group: removed}, filepath.Join(inner, "f.txt"), access.Create)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestClearGrantsReachesWhatANestedGrantPinned(t *testing.T) {
 		t.Fatalf("clearing the grants did not finish: %v", left)
 	}
 
-	after, err := access.Check(removed, filepath.Join(inner, "f.txt"), access.Create)
+	after, err := access.Check(access.Sandbox{Group: removed}, filepath.Join(inner, "f.txt"), access.Create)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestClearGrantsReachesWhatANestedGrantPinned(t *testing.T) {
 		t.Error("a deleted sandbox still reaches inside what a nested grant pinned")
 	}
 	// The sandbox the inner directory belongs to is untouched by any of it.
-	kept, err := access.Check(other, filepath.Join(inner, "f.txt"), access.Create)
+	kept, err := access.Check(access.Sandbox{Group: other}, filepath.Join(inner, "f.txt"), access.Create)
 	if err != nil {
 		t.Fatal(err)
 	}

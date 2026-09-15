@@ -346,7 +346,7 @@ func TestPruneIsNotHeldUpByAnOpenFile(t *testing.T) {
 
 	allowed := func(path string, operation access.Operation) bool {
 		t.Helper()
-		result, err := access.Check(account, path, operation)
+		result, err := access.Check(access.Sandbox{Group: account}, path, operation)
 		if err != nil {
 			t.Fatal(err)
 		}

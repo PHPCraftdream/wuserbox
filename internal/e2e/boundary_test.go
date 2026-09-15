@@ -255,7 +255,7 @@ func TestTheDiagnosticAgreesWithWhatHappens(t *testing.T) {
 		filepath.Join(outside, "theirs.txt"),
 	} {
 		place(t, target, "data")
-		answer, err := access.Check(b.state.SID, target, access.Delete)
+		answer, err := access.Check(access.Sandbox{Group: b.state.SID}, target, access.Delete)
 		if err != nil {
 			t.Fatalf("%s: %v", target, err)
 		}
