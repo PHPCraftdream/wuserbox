@@ -74,14 +74,31 @@ func writeBeside(path string, content []byte) (string, error) {
 
 // patiently repeats an attempt that failed only because the file was being
 // published or read at that moment.
+//
+// The limit is a deadline rather than a count of tries, and it is generous,
+// because the thing being waited for is not this program. A rename takes no
+// time at all on an idle machine and can take far longer on a busy one, where
+// the moment another process holds the file stretches with everything else --
+// and the difference between a wait of a hundred milliseconds and one of two
+// seconds is invisible to somebody running a command, while the difference
+// between waiting and reporting a failure is not. A count of fifty tries was
+// a hundred milliseconds of patience, and a full test run on a loaded machine
+// found the end of it.
+//
+// It is still bounded: a file held open for good is a real failure, and this
+// says so rather than hanging.
 func patiently(attempt func() error) error {
-	const attempts = 50
-	for round := 0; ; round++ {
+	const (
+		limit = 2 * time.Second
+		pause = 2 * time.Millisecond
+	)
+	giveUp := time.Now().Add(limit)
+	for {
 		err := attempt()
-		if err == nil || round == attempts-1 || !inTheMiddleOfAPublication(err) {
+		if err == nil || !inTheMiddleOfAPublication(err) || time.Now().After(giveUp) {
 			return err
 		}
-		time.Sleep(2 * time.Millisecond)
+		time.Sleep(pause)
 	}
 }
 
