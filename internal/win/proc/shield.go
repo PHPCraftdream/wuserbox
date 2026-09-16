@@ -11,6 +11,7 @@
 package proc
 
 import (
+	"errors"
 	"fmt"
 	"syscall"
 	"unsafe"
@@ -46,6 +47,8 @@ const (
 	snapshotOfThreads   = 0x00000004
 	invalidHandle       = ^uintptr(0)
 	sizeOfThreadEntry32 = 28
+	errNoMoreItems      = 18
+	errInvalidParameter = 87
 	// THREADENTRY32: dwSize, cntUsage, th32ThreadID, th32OwnerProcessID, ...
 	offsetOfThreadID     = 8
 	offsetOfOwnerProcess = 12
@@ -152,10 +155,17 @@ func shutFutureThreads(dacl uintptr) error {
 // already has. The runtime made them before any of this ran, so they carry
 // the list the account was given at logon and nothing else would reach them.
 //
-// A thread that cannot be opened for this is passed over rather than failing
-// the run: it is a thread that has ended between being listed and being
-// reached, which is ordinary, and the alternative is a sandbox that refuses
-// to start because a goroutine finished at the wrong moment.
+// One thread is passed over and only one: the one that ended between being
+// listed and being reached, which Windows answers with "invalid parameter"
+// because the identifier now names nothing. Everything else is a failure and
+// stops the run.
+//
+// That distinction is the whole of this function's care. It did not draw it
+// once: any failure to list ended the walk as though the list were finished,
+// any failure to open was skipped, and the result of the setting was not
+// looked at. A thread that was alive and could not be shut was then
+// indistinguishable from one that had ended, and the program started anyway
+// -- under a shield with a hole in it, reported as a shield.
 func shutThreadsAlreadyRunning(dacl uintptr) error {
 	snapshot, _, callErr := procCreateToolhelp32Snapshot.Call(snapshotOfThreads, 0)
 	if snapshot == 0 || snapshot == invalidHandle {
@@ -166,20 +176,39 @@ func shutThreadsAlreadyRunning(dacl uintptr) error {
 	mine := uint32(syscall.Getpid())
 	entry := make([]byte, sizeOfThreadEntry32)
 	*(*uint32)(unsafe.Pointer(&entry[0])) = sizeOfThreadEntry32
+	shut := 0
 	for step := procThread32First; ; step = procThread32Next {
-		if r, _, _ := step.Call(snapshot, uintptr(unsafe.Pointer(&entry[0]))); r == 0 {
-			return nil
+		r, _, listErr := step.Call(snapshot, uintptr(unsafe.Pointer(&entry[0])))
+		if r == 0 {
+			if errors.Is(listErr, syscall.Errno(errNoMoreItems)) {
+				break
+			}
+			return fmt.Errorf("walking this process's own threads: %w", listErr)
 		}
 		if *(*uint32)(unsafe.Pointer(&entry[offsetOfOwnerProcess])) != mine {
 			continue
 		}
 		id := *(*uint32)(unsafe.Pointer(&entry[offsetOfThreadID]))
-		handle, _, _ := procOpenThread.Call(writeDac, 0, uintptr(id))
+		handle, _, openErr := procOpenThread.Call(writeDac, 0, uintptr(id))
 		if handle == 0 {
-			continue
+			if errors.Is(openErr, syscall.Errno(errInvalidParameter)) {
+				continue // ended while this was being written down
+			}
+			return fmt.Errorf("opening thread %d to shut it: %w", id, openErr)
 		}
-		procSetSecurityInfo.Call(handle, seKernelObject,
+		r, _, _ = procSetSecurityInfo.Call(handle, seKernelObject,
 			daclSecurityInformation|protectedDaclSecurityInformation, 0, 0, dacl, 0)
 		syscall.CloseHandle(syscall.Handle(handle))
+		if r != 0 {
+			return fmt.Errorf("shutting thread %d: error %d", id, r)
+		}
+		shut++
 	}
+	// A walk that shut nothing found no thread of its own, which cannot be
+	// true of a running process and means the listing answered about somebody
+	// else. Better to refuse than to report a shield over an empty set.
+	if shut == 0 {
+		return fmt.Errorf("no thread of this process was found to shut")
+	}
+	return nil
 }
