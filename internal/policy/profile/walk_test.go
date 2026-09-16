@@ -346,3 +346,62 @@ func TestTakingAnEntryWithExclusionsBackSparesWhatTheyProtected(t *testing.T) {
 		t.Errorf("what the entry's exclusion protected was taken back with it: %v", got)
 	}
 }
+
+// TestAnExclusionProtectsWhatSitsUnderADirectoryTheSourceHasLost is the
+// nesting the stray check used to miss: it asks the exclusion about a stray
+// directory's own relative path and then removes the directory whole, so
+// with exclude: ["**/*.db"] a database at agent/local-only/history.db died
+// with local-only the moment the source lost local-only -- the exact damage
+// the exclusion exists to prevent, one level deeper than the guard looked.
+func TestAnExclusionProtectsWhatSitsUnderADirectoryTheSourceHasLost(t *testing.T) {
+	home, dest := useLimitedProfile(t, []config.Entry{{Path: "agent", Exclude: config.Masks([]string{"**/*.db"})}})
+	write(t, filepath.Join(home, "agent", "keep.json"), "{}")
+
+	fill(t, dest)
+	// What the agent running inside the sandbox wrote, in a directory the
+	// source has never had: one file the exclusion names, and one it does
+	// not, to show the directory is cleared around the protected file
+	// rather than kept whole out of blindness.
+	write(t, filepath.Join(dest, "agent", "local-only", "history.db"), "the agent's db")
+	write(t, filepath.Join(dest, "agent", "local-only", "notes.txt"), "a stray the source lost too")
+
+	fill(t, dest)
+	if got := read(t, filepath.Join(dest, "agent", "local-only", "history.db")); got != "the agent's db" {
+		t.Errorf("an excluded database was wiped with the directory the source lost: %v", got)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "agent", "local-only", "notes.txt")); !os.IsNotExist(err) {
+		t.Error("a stray file the exclusion does not name survived under the same lost directory")
+	}
+	if got := read(t, filepath.Join(dest, "agent", "keep.json")); got != "{}" {
+		t.Errorf("the copy itself stopped happening: %v", got)
+	}
+}
+
+// TestTakingADepthBoundedEntryBackSparesWhatSitsBelowItsDepth is the same
+// promise as the test above it, arrived at from the other limit: depth 0
+// spares an agent's sessions on every ordinary run, because the mirroring
+// declines to empty a directory the walk will not enter -- and then taking
+// the entry off the list removed the whole tree anyway, sessions and all.
+// Clearing has to respect the boundary the copying respected: an entry that
+// never reached below its depth never put anything there, and what is
+// there is the sandbox's.
+func TestTakingADepthBoundedEntryBackSparesWhatSitsBelowItsDepth(t *testing.T) {
+	home, dest := useLimitedProfile(t, []config.Entry{{Path: ".agent", Depth: depthPtr(0)}})
+	write(t, filepath.Join(home, ".agent", "config.toml"), "[a]\n")
+
+	fill(t, dest)
+	// What the agent running inside the sandbox wrote below the depth the
+	// entry ever reached -- present on every ordinary run, never ours.
+	write(t, filepath.Join(dest, ".agent", "sessions", "work.txt"), "the agent's own")
+
+	if err := (&config.Config{Profile: config.Entries([]string{})}).Save(); err != nil {
+		t.Fatal(err)
+	}
+	fill(t, dest)
+	if _, err := os.Stat(filepath.Join(dest, ".agent", "config.toml")); !os.IsNotExist(err) {
+		t.Error("the entry left the list but its copy is still there")
+	}
+	if got := read(t, filepath.Join(dest, ".agent", "sessions", "work.txt")); got != "the agent's own" {
+		t.Errorf("what sat below the entry's depth was taken back with it: %v", got)
+	}
+}

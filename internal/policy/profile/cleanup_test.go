@@ -240,3 +240,37 @@ func TestCleanupCannotReachOutOfTheProfileThroughAJunction(t *testing.T) {
 		t.Errorf("a file outside the profile was deleted through the junction: %v", err)
 	}
 }
+
+// TestCleanupRefusesAGlobNamingADirectoryTheHiveSitsUnder checks the shape
+// that used to slip past both reserved lists: a glob with no separator is
+// tested against the last segment of a path, so "AppData" never matches
+// AppData\Local\Microsoft\Windows\UsrClass.dat -- it ends in UsrClass.dat --
+// and yet the cleanup walk removes the AppData directory whole, hive and
+// all, with Copy reporting success. Naming an ancestor of a reserved path
+// is asking for something that cannot be granted, the same way naming the
+// path itself is, and gets the same refusal instead of a quiet clearing
+// around it.
+func TestCleanupRefusesAGlobNamingADirectoryTheHiveSitsUnder(t *testing.T) {
+	for _, glob := range []string{"AppData", "AppData/Local"} {
+		t.Run(glob, func(t *testing.T) {
+			_, dest := useCleanup(t, nil, []string{glob})
+			hive := filepath.Join(dest, "AppData", "Local", "Microsoft", "Windows", "UsrClass.dat")
+			write(t, hive, "classes")
+			write(t, filepath.Join(dest, "keep.txt"), "should not be reached either")
+
+			_, _, err := Copy(dest, nil, nil)
+			if err == nil {
+				t.Fatal("a glob naming a directory the hive sits under was accepted")
+			}
+			if exit.Of(err) != exit.BadConfig {
+				t.Errorf("the refusal carried exit code %v, want %v (bad-config)", exit.Of(err), exit.BadConfig)
+			}
+			if _, err := os.Stat(hive); err != nil {
+				t.Errorf("the hive is gone even though the run was refused: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(dest, "keep.txt")); err != nil {
+				t.Errorf("cleanup cleared other files before refusing the run entirely: %v", err)
+			}
+		})
+	}
+}

@@ -164,17 +164,25 @@ func forget(root *os.Root, previously []config.Entry, current []config.Entry) er
 }
 
 // clearEntry takes back one stale entry: what a previous copy put under a
-// name the rules file no longer names. An entry carrying no exclusions --
-// the common case -- goes the way it always has, RemoveAll, which is cheaper
-// than any walk. An entry carrying exclusions is walked instead, and only
-// what its exclusions do not protect is removed, leaving the excluded paths
-// and the directories on the way to them: taking the entry off the list
-// said something about copying, and the exclusions it carried were never
+// name the rules file no longer names. A bare entry -- no depth, no masks,
+// the common case -- goes the way it always has, RemoveAll, which is
+// cheaper than any walk. An entry carrying any limit is walked instead, and
+// only what the copy would have touched is removed, leaving the excluded
+// paths and everything below the entry's depth: taking the entry off the
+// list said something about copying, and the limits it carried were never
 // about copying. They name what the sandbox keeps -- the sessions the agent
 // inside wrote, for one -- and nobody editing the list has said anything
 // against those.
+//
+// The depth bound belongs to that same promise, and it was missed once:
+// depth 0 spares an agent's sessions on every ordinary run, because the
+// mirroring declines to empty a directory the walk will not enter, and then
+// removing the entry -- or a --no-ai run, which reads no rules file at all
+// -- deleted the whole tree, sessions and all. An entry that never reached
+// below its depth never put anything there, and what is there is the
+// sandbox's.
 func clearEntry(root *os.Root, stale string, entry config.Entry) error {
-	if len(entry.Exclude) == 0 {
+	if entry.Bare() {
 		return root.RemoveAll(stale)
 	}
 	// A junction sitting where the entry itself landed is removed as the
@@ -190,7 +198,7 @@ func clearEntry(root *os.Root, stale string, entry config.Entry) error {
 		return root.RemoveAll(stale)
 	}
 	var kept bool
-	if err := clearKeeping(root, stale, "", entry, &kept); err != nil {
+	if err := clearKeeping(root, stale, "", newWalk(entry), &kept); err != nil {
 		return err
 	}
 	if kept {
@@ -203,16 +211,19 @@ func clearEntry(root *os.Root, stale string, entry config.Entry) error {
 	return root.RemoveAll(stale)
 }
 
-// clearKeeping removes the unprotected part of one directory of a stale
-// entry's subtree, through the root, and reports through kept whether
-// anything under it was spared. A child an exclusion protects is left with
-// everything below it and no questions asked: the mask was written against
-// the child's own relative path, and the sandbox's claim does not stop at
-// its first level. A directory with nothing protected under it goes once
-// its children have gone -- a directory is kept only while it is the way to
-// something protected -- so the clearing takes the entry's shape apart
-// rather than leaving empty frames behind.
-func clearKeeping(root *os.Root, dir, rel string, entry config.Entry, kept *bool) error {
+// clearKeeping removes what one directory of a stale entry's subtree holds
+// that the entry's own walk would have touched, through the root, and
+// reports through kept whether anything under it was spared. The questions
+// are asked of w, so the same rules govern the copy and the taking-back: a
+// directory the walk would not enter -- one an exclusion names, or one past
+// the depth that governed the copy -- is left with everything below it and
+// no questions asked, and a file an exclusion names is left the same way.
+// The mask was written against the child's own relative path, and the
+// sandbox's claim does not stop at its first level. A directory with
+// nothing spared under it goes once its children have gone -- a directory
+// is kept only while it is the way to something kept -- so the clearing
+// takes the entry's shape apart rather than leaving empty frames behind.
+func clearKeeping(root *os.Root, dir, rel string, w *walk, kept *bool) error {
 	d, err := root.Open(dir)
 	if err != nil {
 		// The entry may never have landed, or is already gone; either way
@@ -232,24 +243,38 @@ func clearKeeping(root *os.Root, dir, rel string, entry config.Entry, kept *bool
 		if rel != "" {
 			childRel = rel + "/" + child.Name()
 		}
-		if protectedBy(entry, childRel) {
-			*kept = true
-			continue
-		}
 		childPath := filepath.Join(dir, child.Name())
-		if !child.IsDir() {
-			if err := root.Remove(childPath); err != nil && !os.IsNotExist(err) {
+		if child.IsDir() {
+			if !w.descends(childRel) {
+				*kept = true
+				continue
+			}
+			// Lstat before opening, the way cleanDir does: a junction the
+			// sandbox planted where a plain directory sits is removed as
+			// the link it is -- the root would refuse to open one leading
+			// out of the profile, and failing the whole clearing over an
+			// artifact the sandbox is entitled to leave lying around is
+			// worse than taking the link.
+			if info, readable := lookAt(root, childPath); !readable ||
+				info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+				if err := root.Remove(childPath); err != nil && !os.IsNotExist(err) {
+					return err
+				}
+				continue
+			}
+			var under bool
+			if err := clearKeeping(root, childPath, childRel, w, &under); err != nil {
 				return err
 			}
-			continue
-		}
-		var under bool
-		if err := clearKeeping(root, childPath, childRel, entry, &under); err != nil {
-			return err
-		}
-		if under {
-			*kept = true
-			continue
+			if under {
+				*kept = true
+				continue
+			}
+		} else {
+			if w.excludes(childRel) {
+				*kept = true
+				continue
+			}
 		}
 		if err := root.Remove(childPath); err != nil && !os.IsNotExist(err) {
 			return err

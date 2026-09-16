@@ -256,7 +256,11 @@ registry and deleting it is deleting `HKEY_CURRENT_USER`; `UsrClass.dat` and
 its own companion files, the per-user class registration hive the profile
 service builds beside the registry once the account first logs on, at
 `AppData\Local\Microsoft\Windows`; the profile root itself; and anything that
-resolves outside the profile. A person who writes `cleanup: [**]` gets told
+resolves outside the profile. A glob naming a directory one of those files
+sits under is refused the same way — `AppData` alone, not only `AppData/**` —
+because a name-only glob is matched against a path's last segment: `AppData`
+matched neither reserved list, and clearing the directory still took the hive
+with it. A person who writes `cleanup: [**]` gets told
 what is wrong with it, not a sandbox that fails to start next run for reasons
 pointing nowhere near the rules file.
 
@@ -314,7 +318,8 @@ not its business.
 than the expanded list of files. Bounded in size, exact about what was asked
 for, and — the part that matters — it carries the exclusions forward. When an
 entry is removed from the rules file, the next run clears what that entry
-brought in *while still sparing what its exclusions protected*. A person who
+brought in *while still sparing what its exclusions protected and what lay
+below the depth the copy stopped at*. A person who
 takes `~/.codex` out of the list has said something about copying, not about
 the agent's sessions, and the sandbox should not lose them to a change that
 was never about them.
@@ -326,7 +331,7 @@ bare entries, which is measured (probe 3 above) and needs no version field.
 
 1. **Cleanup.** The `cleanup:` globs, cleared from the profile.
 2. **Forget.** What the recorded entries brought in and the current list no
-   longer names, honoring each recorded entry's own exclusions.
+   longer names, honoring each recorded entry's own limits.
 3. **Copy.** Each entry in the current list, within its depth, its includes
    and its excludes, against the 64 MB ceiling.
 4. **Record.** The current entries, written whatever happened — a copy that

@@ -305,7 +305,37 @@ func removeStrayChildren(root *os.Root, dst, rel string, present map[string]bool
 		if e.IsDir() && !w.descends(childRel) {
 			continue
 		}
-		if err := root.RemoveAll(filepath.Join(dst, e.Name())); err != nil {
+		// The guard above spares a directory the walk declines to enter. But
+		// a directory the walk WOULD have entered, and the source has since
+		// lost, used to go whole -- the exclusion was asked only about the
+		// directory's own relative path, so with exclude: ["**/*.db"] the
+		// database at agent/local-only/history.db died with local-only the
+		// moment the source lost local-only. What is inside has to be asked
+		// before the tree goes, and clearKeeping already knows how to ask:
+		// it is the walk the entry's own taking-back uses, sparing excluded
+		// paths and everything past the entry's depth, and keeping the
+		// directory only while it is the way to something spared. An entry
+		// with neither exclusions nor a depth can spare nothing below, and
+		// keeps the RemoveAll, which is cheaper than any walk.
+		childPath := filepath.Join(dst, e.Name())
+		if e.IsDir() && (w.bound != nil || len(w.entry.Exclude) > 0) {
+			// A junction where the lost directory sat is removed as the
+			// link it is, the way clearKeeping and cleanDir both treat
+			// one: the root would refuse to open a link leading out of
+			// the profile, and failing the mirror over an artifact the
+			// sandbox may leave is worse than taking the link.
+			if info, readable := lookAt(root, childPath); readable &&
+				info.IsDir() && info.Mode()&(os.ModeSymlink|os.ModeIrregular) == 0 {
+				var under bool
+				if err := clearKeeping(root, childPath, childRel, w, &under); err != nil {
+					return err
+				}
+				if under {
+					continue
+				}
+			}
+		}
+		if err := root.RemoveAll(childPath); err != nil {
 			return err
 		}
 	}

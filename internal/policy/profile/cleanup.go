@@ -3,6 +3,7 @@ package profile
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
@@ -245,6 +246,18 @@ var reservedProfilePaths = []string{
 	"AppData/Local/Microsoft/Windows/UsrClass.dat{a0876e4c-1cb1-11d9-9669-0800200c9a66}.TMContainer00000000000000000001.regtrans-ms",
 }
 
+// CleanupNamesSomethingReserved answers whether any cleanup glob in the list
+// would be refused for reaching the registry hive, what the profile service
+// keeps beside it, or the profile root itself, and if so, the exact message
+// a run would give when the same check stopped it. Exported so validation
+// asks this package the question rather than re-deciding it with a copy of
+// the reserved names and the matching rules: two answers to "would this
+// cleanup line be refused" are exactly how a rules file comes to pass
+// validation and then fail the run.
+func CleanupNamesSomethingReserved(cleanup []config.Mask) error {
+	return refuseReservedCleanup(cleanup)
+}
+
 // refuseReservedCleanup refuses the whole run if any cleanup glob can match
 // the registry hive, what the profile service keeps beside it, or the
 // profile root itself, checked against the glob as written rather than
@@ -259,18 +272,15 @@ var reservedProfilePaths = []string{
 // says -- clearing an entire profile apart from one file nobody who wrote
 // that line was thinking about -- and that is a worse outcome than refusing
 // the run.
-// CleanupNamesSomethingReserved answers whether any cleanup glob in the list
-// would be refused for reaching the registry hive, what the profile service
-// keeps beside it, or the profile root itself, and if so, the exact message
-// a run would give when the same check stopped it. Exported so validation
-// asks this package the question rather than re-deciding it with a copy of
-// the reserved names and the matching rules: two answers to "would this
-// cleanup line be refused" are exactly how a rules file comes to pass
-// validation and then fail the run.
-func CleanupNamesSomethingReserved(cleanup []config.Mask) error {
-	return refuseReservedCleanup(cleanup)
-}
-
+//
+// A glob naming a directory a reserved file sits under is refused the same
+// way, though it matches none of the reserved paths: matchMask tests a
+// name-only glob against the last segment, so "AppData" never matches
+// AppData\Local\Microsoft\Windows\UsrClass.dat -- that path ends in
+// UsrClass.dat -- and yet the walk removes the AppData directory whole,
+// hive and all, with Copy reporting success. Removing the directory is the
+// same destruction with one name fewer, so every ancestor of a reserved
+// path is tested exactly as the path itself is.
 func refuseReservedCleanup(cleanup []config.Mask) error {
 	for _, mask := range cleanup {
 		if namesTheProfileRootItself(mask.Pattern) {
@@ -293,6 +303,15 @@ func refuseReservedCleanup(cleanup []config.Mask) error {
 						"cleanup clears what the sandbox wrote, not what Windows keeps beside its registry",
 					mask.Pattern, path)
 			}
+			for _, dir := range ancestorsOf(path) {
+				if matchMask(mask.Pattern, dir) {
+					return exit.Errorf(exit.BadConfig,
+						"cleanup glob %q matches %s, the directory %s sits under -- clearing the "+
+							"directory clears the hive with it, which is the same destruction with "+
+							"one name fewer. Name what the sandbox wrote instead",
+						mask.Pattern, dir, path)
+				}
+			}
 		}
 	}
 	return nil
@@ -305,4 +324,17 @@ func refuseReservedCleanup(cleanup []config.Mask) error {
 // is already anchored to, so this is the whole of what could ever name it.
 func namesTheProfileRootItself(pattern string) bool {
 	return filepath.Clean(filepath.FromSlash(pattern)) == "."
+}
+
+// ancestorsOf lists the directories a reserved path sits under, nearest the
+// reserved file first, as forward-slash paths relative to the profile root.
+// Pure string work on the forward-slash form the reserved paths are written
+// in: filepath.Dir would swap the separators under this platform's rules,
+// and matchMask reads forward slashes only.
+func ancestorsOf(path string) []string {
+	var dirs []string
+	for i := strings.LastIndexByte(path, '/'); i >= 0; i = strings.LastIndexByte(path[:i], '/') {
+		dirs = append(dirs, path[:i])
+	}
+	return dirs
 }
