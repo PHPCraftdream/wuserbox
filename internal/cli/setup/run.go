@@ -11,7 +11,6 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/exec"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/facts"
-	"github.com/PHPCraftdream/wuserbox/internal/sandbox/grants"
 )
 
 // Run starts a command in the sandbox, creating the sandbox on first use, and
@@ -42,12 +41,6 @@ func Run(args []string) error {
 			fmt.Fprintf(os.Stderr, "would run: %s\n", commandLine)
 		}
 		return nil
-	}
-	// Before the sandbox is prepared, because preparing reads this file and a
-	// missing one reads as "copy nothing into the profile" rather than as
-	// something to put back.
-	if err := grants.EnsureRules(); err != nil {
-		return err
 	}
 	s, err := prepare(options)
 	if err != nil {
