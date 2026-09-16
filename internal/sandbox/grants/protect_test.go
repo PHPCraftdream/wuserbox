@@ -327,3 +327,39 @@ func TestReserveSensitiveNamesLeavesAnExistingDirectoryAlone(t *testing.T) {
 		t.Errorf("an existing key was lost: %v", err)
 	}
 }
+
+// TestARunWritesTheRulesFileBackIfItIsGone is the half of that request which
+// does not depend on what the file says.
+//
+// It is written on every run and not only when a sandbox is built, so a
+// machine where one already exists -- or where somebody deleted the file --
+// still has it, still filled, rather than a missing file that reads as
+// "copy nothing" and gives no sign there was anything to read.
+func TestARunWritesTheRulesFileBackIfItIsGone(t *testing.T) {
+	home := tempDir(t)
+	rules := filepath.Join(tempDir(t), "rules.ktav")
+	t.Setenv(config.EnvPath, rules)
+	t.Setenv("USERPROFILE", home)
+	// Something for the profile section to name, so "filled" can be measured
+	// rather than assumed.
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := EnsureRules(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(rules); err != nil {
+		t.Fatalf("a run left no rules file behind: %v", err)
+	}
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("the file it wrote does not parse: %v", err)
+	}
+	if len(loaded.Profile) == 0 {
+		t.Error("the profile section was left empty, so a sandbox would start logged in to nothing")
+	}
+}

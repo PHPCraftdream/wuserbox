@@ -53,11 +53,26 @@ func ProtectSettings(s *state.State) error {
 	return nil
 }
 
-// ensureRules writes a rules file when there is none, its profile section
-// pre-filled from the agent preset, so the common agents' credentials are
-// copied into a sandbox without anybody composing that list by hand. It is
-// held while doing so, like every other change to that file, so it cannot
-// overwrite a rule another command is writing at the same moment.
+// EnsureRules writes a rules file when there is none, its profile section
+// pre-filled from the agent preset and its header explaining both sections,
+// so the file exists and says what it is for before anybody goes looking for
+// it. It is held while doing so, like every other change to that file, so it
+// cannot overwrite a rule another command is writing at the same moment.
+//
+// Every run calls this, not only the runs that build a sandbox. The file used
+// to appear when a sandbox was first made and never again, so anybody who
+// deleted it -- or who arrived at a machine where a sandbox already existed --
+// had nothing to open and no sign that there was anything to open. A run that
+// finds it missing now writes it back, which also puts the profile section
+// back rather than quietly copying nothing.
+//
+// It must be written by whoever owns the machine and never by a sandbox: a
+// sandbox that could create this file could grant itself directories in it
+// and have the next run read them.
+func EnsureRules() error {
+	return ensureRules()
+}
+
 func ensureRules() error {
 	if _, err := os.Stat(config.Path()); err == nil {
 		return nil
