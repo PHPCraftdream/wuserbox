@@ -21,10 +21,12 @@ import (
 )
 
 var (
-	procStringToSecurityDescriptor = w32.Advapi32.NewProc("ConvertStringSecurityDescriptorToSecurityDescriptorW")
-	procGetSecurityDescriptorDacl  = w32.Advapi32.NewProc("GetSecurityDescriptorDacl")
-	procSetSecurityInfo            = w32.Advapi32.NewProc("SetSecurityInfo")
-	procSetTokenInformation        = w32.Advapi32.NewProc("SetTokenInformation")
+	procStringToSecurityDescriptor   = w32.Advapi32.NewProc("ConvertStringSecurityDescriptorToSecurityDescriptorW")
+	procGetSecurityDescriptorDacl    = w32.Advapi32.NewProc("GetSecurityDescriptorDacl")
+	procSetSecurityInfo              = w32.Advapi32.NewProc("SetSecurityInfo")
+	procGetSecurityInfo              = w32.Advapi32.NewProc("GetSecurityInfo")
+	procGetSecurityDescriptorControl = w32.Advapi32.NewProc("GetSecurityDescriptorControl")
+	procSetTokenInformation          = w32.Advapi32.NewProc("SetTokenInformation")
 
 	procCreateToolhelp32Snapshot = w32.Kernel32.NewProc("CreateToolhelp32Snapshot")
 	procThread32First            = w32.Kernel32.NewProc("Thread32First")
@@ -41,8 +43,12 @@ const (
 	seKernelObject                   = 6
 	daclSecurityInformation          = 0x4
 	protectedDaclSecurityInformation = 0x80000000
-	classDefaultDacl                 = 6
-	writeDac                         = 0x40000
+	// seDaclProtected is the control bit SetSecurityInfo leaves behind when
+	// it is told to protect the list, and the one thing Shielded can read
+	// back to tell a shielded process from an ordinary one.
+	seDaclProtected  = 0x1000
+	classDefaultDacl = 6
+	writeDac         = 0x40000
 
 	snapshotOfThreads   = 0x00000004
 	invalidHandle       = ^uintptr(0)
@@ -146,6 +152,37 @@ func Shield() error {
 		return fmt.Errorf("shutting this process to %s: error %d", me, r)
 	}
 	return shutThreadsAlreadyRunning(dacl)
+}
+
+// Shielded reports whether this process is carrying the list Shield installs,
+// by reading the one thing about it that no privilege can talk its way past:
+// whether its permission list is protected, which is to say cut off from
+// anything a parent object would otherwise hand down. Windows gives a process
+// its token's default list, unprotected; Shield replaces it with a protected
+// one. Nothing else in a run sets that bit.
+//
+// Asked this way, and not by trying to open the process and seeing whether
+// Windows refuses, because that answer is not about the list at all. An
+// administrator holding SeDebugPrivilege opens any process whatever its list
+// says, so the open-and-see test answers "not shielded" on an elevated
+// machine and "shielded" on an ordinary desk, for the same shielded process.
+// That is exactly how it passed here and failed on CI.
+func Shielded() (bool, error) {
+	var descriptor, dacl uintptr
+	if r, _, _ := procGetSecurityInfo.Call(currentProcess, seKernelObject,
+		daclSecurityInformation, 0, 0, uintptr(unsafe.Pointer(&dacl)), 0,
+		uintptr(unsafe.Pointer(&descriptor))); r != 0 {
+		return false, fmt.Errorf("reading this process's own permission list: error %d", r)
+	}
+	defer w32.Free(descriptor)
+
+	var control uint16
+	var revision uint32
+	if r, _, callErr := procGetSecurityDescriptorControl.Call(descriptor,
+		uintptr(unsafe.Pointer(&control)), uintptr(unsafe.Pointer(&revision))); r == 0 {
+		return false, fmt.Errorf("reading the control bits of this process's own descriptor: %w", callErr)
+	}
+	return control&seDaclProtected != 0, nil
 }
 
 // shutFutureThreads puts the list on this process's token, which is what

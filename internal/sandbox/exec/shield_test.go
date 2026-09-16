@@ -16,8 +16,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"syscall"
 	"testing"
+
+	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
 )
 
 const probeFlag = "-wuserbox-exec-probe-shielded"
@@ -36,27 +37,31 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-const processQueryInformation = 0x0400
-
 // runProbe calls Stub exactly as --init's own probe does: a group, a read
-// group, and no command line. Once Stub returns, it asks whether this
-// process can still open itself by its own pid -- a real access check,
-// unlike the pseudo-handle every process has to itself, and the same check
-// Shield's own doc names as never being checked against a list. If Shield
-// ran, that access is refused; if Stub returned before Shield ran, this
-// process is exactly as open as it was when it started, and the open
-// succeeds.
+// group, and no command line. Once Stub returns it asks proc.Shielded
+// whether this process is carrying the list Shield installs.
+//
+// It used to ask a different question -- whether the process could still
+// open itself by its own pid -- and that question has a second answer
+// nobody wants: an administrator holding SeDebugPrivilege opens any process
+// whatever its list says. So the old probe reported one thing on an ordinary
+// desk and the opposite on an elevated CI runner, for the same correctly
+// shielded process, and the test failed there having passed here. Reading
+// the list itself has one answer on both.
 func runProbe() int {
 	if err := Stub([]string{nobodysGroup, ""}); err != nil {
 		fmt.Fprintln(os.Stderr, "probe: Stub:", err)
 		return 90
 	}
-	h, err := syscall.OpenProcess(processQueryInformation, false, uint32(os.Getpid()))
+	shielded, err := proc.Shielded()
 	if err != nil {
-		return 1 // refused: Shield ran
+		fmt.Fprintln(os.Stderr, "probe: reading this process's own list:", err)
+		return 91
 	}
-	syscall.CloseHandle(h)
-	return 0 // opened: Shield did not run
+	if shielded {
+		return 1 // Shield ran
+	}
+	return 0 // Shield did not run
 }
 
 // TestTheInitProbeShieldsItselfToo asks that question of today's code.
@@ -68,15 +73,15 @@ func TestTheInitProbeShieldsItselfToo(t *testing.T) {
 	cmd := exec.Command(exe, probeFlag)
 	err = cmd.Run()
 	if err == nil {
-		t.Fatal("the probe could still open itself by pid after Stub returned with no command line, " +
-			"so proc.Shield never ran -- --init would report a sandbox working when a real run's own " +
-			"Shield call could still fail")
+		t.Fatal("the probe's own permission list was still the ordinary one after Stub returned with " +
+			"no command line, so proc.Shield never ran -- --init would report a sandbox working when a " +
+			"real run's own Shield call could still fail")
 	}
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
 		t.Fatalf("the probe subprocess failed in an unexpected way: %v", err)
 	}
 	if code := exitErr.ExitCode(); code != 1 {
-		t.Fatalf("the probe subprocess reported %d, not the refusal Shield having run would produce", code)
+		t.Fatalf("the probe subprocess reported %d, not the protected list Shield having run would leave", code)
 	}
 }
