@@ -1,10 +1,17 @@
 # Filling a sandbox's profile
 
-**Status:** built, apart from the cleanup section and the validation. The
-`profile:` section used to name flat paths and copy each one whole; it now
-carries depth, masks and exclusions, the shipped default uses them, and a run
-skips what has not changed. What is still only designed here is `cleanup:`
-(#162) and the validation and preview of the new shapes (#163).
+**Status:** built, cleanup and validation included. The `profile:` section
+used to name flat paths and copy each one whole; it now carries depth, masks
+and exclusions, the shipped default uses them, and a run skips what has not
+changed — a comparison of the source's size and modification time
+(`internal/policy/profile/print.go`), accepted knowing it can miss an edit
+that lands on the same size and is then given the original modification time
+back. `cleanup:` is built in `internal/policy/profile/cleanup.go`: its globs
+are cleared from the sandbox's own profile before a copy runs, through the
+same `os.Root` everything else in this package writes through. The validation
+and preview of the new shapes is built in `internal/cli/diagnose/profile.go`,
+which answers what a hand-edited `profile:` or `cleanup:` section gets wrong
+before a run does.
 
 Follows [a sandbox with an account of its own](an-account-of-its-own.md),
 which established what a sandbox's profile is and why it is ours rather than
@@ -107,8 +114,35 @@ nothing.
 ### `path`
 
 Where the entry lives, relative to the user's profile root, with forward
-slashes. Absolute paths and paths that climb out of the profile are refused —
-that check exists (`within`) and stays. Required.
+slashes. Absolute paths, paths that climb out of the profile, and paths that
+land on the profile root itself — `.`, or `foo/..`, or anything else
+`filepath.Clean` turns into `.` — are all refused. That check exists
+(`within`) and stays, and it runs in the copier itself rather than only at
+validation: an entry of `.` makes the source the user's whole profile and
+the destination the sandbox's whole profile, and `Copy` would mirror one
+onto the other — copying everything the user owns into the sandbox, and
+deleting from the sandbox everything the user's profile does not have, the
+sandbox's own registry hive among it. Required.
+
+### Repeating a path
+
+A path may appear more than once in `profile:` only when every repetition
+says exactly the same thing — the same `depth`, and the same `include` and
+`exclude` masks. That case is harmless: the second copy lands on the first
+and changes nothing, and validation reports it as the waste it is, not as
+breakage.
+
+A path repeated with different limits is refused outright, by the copier as
+well as by validation, rather than given an order in which one entry wins.
+`{ path: .codex, exclude: [sessions/**] }` followed by the bare `.codex`
+reads as two ways of saying the same thing and is not: the second entry
+copies `.codex` whole, and the mirroring behind it deletes what the first
+entry's exclusion was protecting, because the mirror sees no exclusion the
+second time around and the excluded path is not in the source. That is real
+data loss arriving from a rules file that only looks redundant, and refusing
+it is preferred over defining which entry wins — a rules file that quietly
+means something other than what it reads like is worse than one that is
+refused.
 
 ### `depth`
 
@@ -216,12 +250,15 @@ Everything it deletes goes through the destination's `os.Root`, like every
 other write in that package, so a junction the sandbox planted cannot lead it
 out of the profile.
 
-**Three things it may never match, refused at validation rather than skipped
-at run time:** `NTUSER.DAT` and its companion files, because that is the
-sandbox's registry and deleting it is deleting `HKEY_CURRENT_USER`; the
-profile root itself; and anything that resolves outside the profile. A person
-who writes `cleanup: [**]` gets told what is wrong with it, not a sandbox that
-fails to start next run for reasons pointing nowhere near the rules file.
+**What it may never match, refused at validation rather than skipped at run
+time:** `NTUSER.DAT` and its companion files, because that is the sandbox's
+registry and deleting it is deleting `HKEY_CURRENT_USER`; `UsrClass.dat` and
+its own companion files, the per-user class registration hive the profile
+service builds beside the registry once the account first logs on, at
+`AppData\Local\Microsoft\Windows`; the profile root itself; and anything that
+resolves outside the profile. A person who writes `cleanup: [**]` gets told
+what is wrong with it, not a sandbox that fails to start next run for reasons
+pointing nowhere near the rules file.
 
 ## What a mask is
 
