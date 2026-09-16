@@ -102,9 +102,9 @@ func ensureRules() error {
 // from then on too.
 func RetireWholeDirectoryProfileRules() ([]string, error) {
 	var retired []string
-	err := lock.Hold(lock.Rules, func() error {
+	err := lock.Hold(lock.Rules, func() (err error) {
 		done := alreadyRetired()
-		if _, err := os.Stat(done); err == nil {
+		if _, statErr := os.Stat(done); statErr == nil {
 			return nil
 		}
 		rules, err := config.Load()
@@ -112,9 +112,19 @@ func RetireWholeDirectoryProfileRules() ([]string, error) {
 			return err
 		}
 		defer func() {
-			// After the work and whatever came of it: a migration that ran and
-			// changed nothing is as finished as one that changed everything.
-			if err := os.MkdirAll(filepath.Dir(done), 0o755); err == nil {
+			// Only once the migration actually finished -- either by finding
+			// nothing of its own to retire, or by saving the trimmed rules.
+			// A migration that ran and changed nothing is as finished as one
+			// that changed everything, and still writes the marker. But a
+			// Save that failed leaves the rules file exactly as it was, and
+			// writing the marker anyway would tell every later --init the
+			// migration is done when the machine is still copying whole
+			// agent directories into every sandbox on every run -- the
+			// 72,320-file, 19,436 MB behavior this migration exists to end.
+			if err != nil {
+				return
+			}
+			if mkErr := os.MkdirAll(filepath.Dir(done), 0o755); mkErr == nil {
 				_ = os.WriteFile(done, nil, 0o644)
 			}
 		}()

@@ -195,6 +195,88 @@ func TestRetiringLeavesADirectoryThatCarriesLimits(t *testing.T) {
 	}
 }
 
+// TestRetiringIsRetriedWhenSaveFails is the regression guard on the marker's
+// own defer, which used to write the marker after any outcome, a failed
+// Save among them. A migration whose Save could not run leaves the rules
+// file exactly as it was -- the old default's whole directories still on
+// it -- and the marker must not say the migration is done, or every later
+// --init would skip it for good while the machine keeps copying those
+// directories whole into every sandbox on every run.
+func TestRetiringIsRetriedWhenSaveFails(t *testing.T) {
+	rulesPath := filepath.Join(tempDir(t), "rules.ktav")
+	t.Setenv(config.EnvPath, rulesPath)
+	t.Setenv("USERPROFILE", tempDir(t))
+	t.Setenv("LOCALAPPDATA", tempDir(t))
+
+	old := preset.RetiredProfileEntries()
+	if len(old) == 0 {
+		t.Fatal("no old default entries are derivable here, so this test can measure nothing")
+	}
+	if err := (&config.Config{Profile: config.Entries(old)}).Save(); err != nil {
+		t.Fatal(err)
+	}
+	// Read-only, so Save's own rename over this path is refused by Windows --
+	// standing in for whatever makes a real Save fail, without needing one.
+	if err := os.Chmod(rulesPath, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	// Safety net for an early Fatal above; the happy path clears it explicitly
+	// before the retry, and doing it twice costs nothing.
+	defer func() { _ = os.Chmod(rulesPath, 0o644) }()
+
+	if _, err := RetireWholeDirectoryProfileRules(); err == nil {
+		t.Fatal("a Save that could not run was reported as having succeeded")
+	}
+	if _, statErr := os.Stat(alreadyRetired()); statErr == nil {
+		t.Error("the marker was written even though Save failed; the migration will never run again")
+	}
+	after, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Profile) != len(old) {
+		t.Errorf("the rules file changed even though Save failed: %v", after.Profile)
+	}
+
+	if err := os.Chmod(rulesPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	retired, err := RetireWholeDirectoryProfileRules()
+	if err != nil {
+		t.Fatalf("the retry, now that Save can run, failed too: %v", err)
+	}
+	if len(retired) != len(old) {
+		t.Errorf("the retry took out %d of the %d entries, want all of them", len(retired), len(old))
+	}
+}
+
+// TestRetiringMarksItselfDoneWhenThereIsNothingToRetire is the other half of
+// the same defer: a migration that ran and found none of the old default's
+// entries is as finished as one that took some out, and has to write the
+// marker too, or every --init would redo the same no-op walk of the rules
+// file forever. Guards against fixing the failure case above by making the
+// marker conditional on retired being non-empty instead of on err being nil.
+func TestRetiringMarksItselfDoneWhenThereIsNothingToRetire(t *testing.T) {
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
+	t.Setenv("USERPROFILE", tempDir(t))
+	t.Setenv("LOCALAPPDATA", tempDir(t))
+
+	if err := (&config.Config{Profile: config.Entries([]string{"my-own-directory"})}).Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	retired, err := RetireWholeDirectoryProfileRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retired) != 0 {
+		t.Fatalf("this rules file names nothing the old default wrote, took out %v", retired)
+	}
+	if _, statErr := os.Stat(alreadyRetired()); statErr != nil {
+		t.Errorf("a migration that found nothing to change did not write the marker: %v", statErr)
+	}
+}
+
 func TestProtectSettingsCreatesTheRulesFile(t *testing.T) {
 	// A sandbox that may create files in the profile root must not be able to
 	// write the rules file first: it would grant itself directories on the
