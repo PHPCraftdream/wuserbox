@@ -18,8 +18,23 @@ From the moment `CreateProcessWithLogonW` returns until the stub's own code
 reaches `Shield`, the stub is an ordinary process of that account: the
 account's unrestricted token, and the default security descriptor, which
 grants its owner everything. Anything already running as that account can open
-it in that window with `PROCESS_ALL_ACCESS`, duplicate the unrestricted token,
-and wear it. A reviewer reproduced every step.
+it in that window with `PROCESS_ALL_ACCESS`.
+
+**What it does with that is put code inside the stub, not wear the stub's
+token.** This was measured after being got wrong twice, here and in a review,
+and the correction matters because it says which door has to be shut. A
+restricted process can duplicate the unrestricted token — that part works —
+but wearing it gets it only to *identification* level, which answers "who is
+this" and opens nothing: measured against a directory granted to `INTERACTIVE`
+and nobody else, the restricted attacker wrote nothing, and the same attack
+from an unrestricted process reached impersonation level and wrote. Handing
+the stolen token to `CreateProcessAsUser` is refused for want of a privilege.
+
+So the live mechanism is `PROCESS_VM_WRITE`, `PROCESS_CREATE_THREAD` and
+`THREAD_SET_CONTEXT`: the attacker's code runs *inside* the newborn stub,
+where the unrestricted token is the process's own and nothing has to be worn
+at all. That is exactly the door `narrowBeforeResume` cannot shut, and the
+doors it does shut were the weaker half.
 
 Two things make it unfixable where it stands. `CreateProcessWithLogonW` takes
 no `lpProcessAttributes`, so the initial descriptor is not ours to set. And a
@@ -185,3 +200,124 @@ visible rather than somewhere useless.
 The connection this design adds is the thing that carries it back. That is not
 a bonus feature to be added later: a run that cannot show its program's output
 is not finished, and the mechanism is the same mechanism.
+
+## What else was measured, and why nothing else is left
+
+Four other ways out were tried with a probe rather than argued about. All four
+are closed, and two of them are closed by something worth knowing on its own.
+
+**`STARTUPINFOEX` is not accepted.** `CreateProcessWithLogonW` refuses the
+extended form before it even reaches the logon — the plain call gets as far as
+"the user name or password is incorrect" against a nonexistent account, the
+extended one is rejected with "the parameter is incorrect". So there is no
+`PROC_THREAD_ATTRIBUTE_*` of any kind here: no job list, no parent process, no
+security capabilities, and no pseudo-console either.
+
+**A job cannot filter the token of what is put into it.**
+`SetInformationJobObject(JobObjectSecurityLimitInformation)` answers "the
+request is not supported". `JOB_OBJECT_SECURITY_FILTER_TOKENS` would have
+restricted the stub at assignment, before it was ever resumed. It is gone.
+
+**An integrity label closes every door, and takes MSYS with it.** Lower the
+program's token below Medium and the newborn stub becomes untouchable —
+mandatory policy denies write-up before the list is consulted, and ownership
+does not override it. Every door measured shut, the thread included, with no
+window at all because the label is on the token at birth. Then: the same token
+at low integrity cannot start bash, which dies on
+`NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0…)` because that directory
+is Medium and machine-wide. Making it work would mean labeling
+`\BaseNamedObjects`, which is weakening the machine to strengthen one tool on
+it. An account is what made MSYS start in the first place; an integrity label
+takes it straight back.
+
+**Taking the account's own SID out of the restricting list closes it, and
+takes MSYS and PowerShell.** bash dies on `CreateFileMapping … Win32 error 5`,
+PowerShell on "requested registry access is not allowed". The account SID has
+to stay. One fact fell out of that measurement and is worth keeping: with the
+account SID *not* a restricting one, `WRITE_DAC` closed too — the owner's
+implicit `READ_CONTROL|WRITE_DAC` does not survive the restricted second
+check. That is precisely why `sid.OwnerRights` is load-bearing today.
+
+So the statement of the problem is exhaustive rather than a list of things
+tried:
+
+> A run is safe from a concurrent run if and only if either no process of that
+> account can execute during the window, or the newborn's account is not the
+> account any running program holds.
+
+Serializing and the resident stub are the first branch. A separate account per
+concurrent run is the second. There is no third.
+
+## The recommendation: lease a slot
+
+Give each concurrent run **an account of its own from a small pool the sandbox
+already owns**, and arbitrate with one exclusive file handle.
+
+`--init` creates `wub-<8hex>` and `wub-<8hex>-1..n`, all in the sandbox group
+and the read group, all hidden from sign-in. A run leases a slot by opening
+`%LOCALAPPDATA%\wuserbox\<group>.slot<n>` with no sharing; the first opener
+wins, and the kernel releases it when that process dies by any cause, so there
+is no stale state and nothing to time out. It lives in the user's own profile,
+where the sandbox reads and cannot write, so unlike a pipe or a `Local\` object
+it cannot be squatted.
+
+**The closure is structural rather than timed.** Run A's program holds
+`{group, Everyone, Users, logonA, account-1, read group}`. Run B's newborn stub
+is owned by account-2 and carries account-2's default list, which names
+`SYSTEM` and account-2 and not the group. The first access check fails on
+membership; the owner grant fails because the owner is not the attacker's user.
+There is no window to be early for and no invariant to maintain across a
+process death.
+
+**And it is one mechanism, not two.** `n = 1` *is* "serialize whole runs". The
+smallest correct step is to ship the lease with one slot, which closes the
+escape; raising `n` later is `--init` creating more accounts and a loop over
+slot files. The two candidates weighed above turn out to be the same code with
+a different number in it.
+
+What it costs, plainly: `n` local accounts per sandbox, and `--rm` has `n` of
+everything to undo. `HKEY_CURRENT_USER` becomes per slot — the profile
+directory is shared through the group, so files are shared, but two concurrent
+runs will not see each other's registry, and anything keeping state there will
+look forgetful. A cap: run `n+1` waits. `--check` and `access.Check` have to
+name a slot rather than "the account". And it does not fix output.
+
+## Where the resident-stub design above is wrong
+
+Kept rather than deleted, because the three errors are each worth not making
+again.
+
+**The invariant is stated on the wrong quantity.** "No stub alive implies no
+process of that account alive" is true only once the job has finished killing.
+The stub exits, the handle closes, the job terminates the program — and for
+that interval a new run sees no stub while a program still lives. The decision
+has to be made on *no process of the account*, under a lock taken before the
+check. Which is the lease, so the resident design needs it too.
+
+**The pipe reasoning does not hold.** `Shield` protects the stub *from* the
+account and says nothing about who may impersonate a pipe client. What actually
+protects it is that a restricted process cannot impersonate above
+identification level — measured — and that the client can insist with
+`SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`. Build the second; do not
+rest on the first.
+
+**The control pipe puts the squat back.** Making wuserbox the server fixed
+squatting on the run pipe. On the control pipe the stub is the server, and a
+squatting sandboxed program is *the same account* as the real stub: same SID,
+so a connecting wuserbox cannot tell them apart. The name would have to be an
+unguessable nonce minted by the user and passed on the stub's command line —
+not in the sandbox record, which is readable from inside.
+
+## Output, which is separable after all
+
+The design above claimed the resident's connection is what carries a program's
+output back. It is not the only thing that can, and tying the two together was
+an argument for the resident that does not survive.
+
+wuserbox creates two named pipes with nonce names *before* starting the stub —
+so it is the server and the name cannot be squatted — and passes the names on
+the command line; the stub opens them as a client and hands them to the program
+as its standard handles. That works under a slot pool, under serialization and
+under a resident alike, and it keeps the output path out of the thing being
+contained. A real ConPTY would have to be built by the stub from those pipes,
+since the pseudo-console attribute is unreachable here.
