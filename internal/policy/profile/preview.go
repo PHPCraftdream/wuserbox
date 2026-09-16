@@ -63,7 +63,23 @@ func Plan(dest string, prints map[string]Print) ([]CleanupPlan, []EntryPlan, err
 // the right answer here and would be the wrong one for openProfile.
 func openForPreview(dest string) (*os.Root, error) {
 	info, err := os.Stat(dest)
-	if err != nil || !info.IsDir() {
+	// Not there at all is the expected answer for a sandbox this run would
+	// be building, and it is not a failure: there is nothing yet to preview
+	// a fill against.
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	// Anything else is worth reporting rather than reading as an empty
+	// profile. A preview that cannot look at the destination should say so;
+	// answering "nothing would be skipped" because the directory could not
+	// be read would be a preview quietly describing a run that is not the
+	// one about to happen.
+	if err != nil {
+		return nil, err
+	}
+	// Something there that is not a directory: the real fill will refuse it
+	// loudly, and a preview has nothing useful to add before it does.
+	if !info.IsDir() {
 		return nil, nil
 	}
 	return os.OpenRoot(dest)
