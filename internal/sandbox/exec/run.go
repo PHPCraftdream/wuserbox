@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/account"
+	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
@@ -95,7 +96,8 @@ func runAsAccount(s *state.State, commandLine string) (int, error) {
 	if err != nil {
 		return -1, err
 	}
-	code, err := proc.RunAsAccount(s.Account, password, line, s.Dir, childEnv(s, profileOf(s)))
+	code, err := proc.RunAsAccountWithLease(s.Account, password, line, s.Dir,
+		childEnv(s, profileOf(s)), lock.SlotPath(s.Group))
 	if err != nil {
 		return -1, cannotStart(s, self, err)
 	}

@@ -27,8 +27,10 @@ package e2e
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	acct "github.com/PHPCraftdream/wuserbox/internal/account"
@@ -172,6 +174,72 @@ func (b *realBox) ends(t *testing.T, commandLine, dir string) int {
 		t.Fatalf("starting %q as %s: %v", commandLine, b.account, err)
 	}
 	return code
+}
+
+// streams runs the real account-to-stub chain with temporary pipes as its
+// standard streams. It keeps the pipes on the caller side and reads them only
+// after the process has ended; the command writes a few bytes, so no writer
+// can fill while the run is waiting.
+func (b *realBox) streams(t *testing.T, stub, dir string) (string, string) {
+	t.Helper()
+	inRead, inWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outRead, outWrite, err := os.Pipe()
+	if err != nil {
+		inRead.Close()
+		inWrite.Close()
+		t.Fatal(err)
+	}
+	errRead, errWrite, err := os.Pipe()
+	if err != nil {
+		inRead.Close()
+		inWrite.Close()
+		outRead.Close()
+		outWrite.Close()
+		t.Fatal(err)
+	}
+
+	oldIn, oldOut, oldErr := os.Stdin, os.Stdout, os.Stderr
+	os.Stdin, os.Stdout, os.Stderr = inRead, outWrite, errWrite
+	restore := func() {
+		os.Stdin, os.Stdout, os.Stderr = oldIn, oldOut, oldErr
+	}
+	defer restore()
+
+	if _, err := inWrite.WriteString("from-stdin\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := inWrite.Close(); err != nil {
+		t.Fatal(err)
+	}
+	line := b.throughTheStub(t, stub, `cmd.exe /c "(more & echo stdout & echo stderr 1>&2)"`)
+	code, runErr := proc.RunAsAccount(b.account, b.password, line, dir, os.Environ())
+	if err := outWrite.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := errWrite.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stdout, readOutErr := io.ReadAll(outRead)
+	stderr, readErrErr := io.ReadAll(errRead)
+	_ = inRead.Close()
+	_ = outRead.Close()
+	_ = errRead.Close()
+	if runErr != nil {
+		t.Fatalf("running through the account and stub: %v", runErr)
+	}
+	if code != 0 {
+		t.Fatalf("stream probe ended with exit code %d", code)
+	}
+	if readOutErr != nil {
+		t.Fatalf("reading stdout pipe: %v", readOutErr)
+	}
+	if readErrErr != nil {
+		t.Fatalf("reading stderr pipe: %v", readErrErr)
+	}
+	return string(stdout), string(stderr)
 }
 
 // openToEveryone makes a directory readable the way Program Files is, so a
@@ -419,6 +487,30 @@ func TestTheExitCodeComesBackFromInsideTheSandbox(t *testing.T) {
 
 	if code := box.ends(t, box.throughTheStub(t, stub, `cmd.exe /c exit 7`), root); code != 7 {
 		t.Errorf("the run ended with %d, and the program inside ended with 7", code)
+	}
+}
+
+// TestTheStreamsComeBackFromInsideTheSandbox checks all three standard
+// handles through the real account -> stub -> restricted program chain. A
+// command that reads stdin and writes both output streams makes a successful
+// exit alone insufficient evidence that the handles were wired correctly.
+func TestTheStreamsComeBackFromInsideTheSandbox(t *testing.T) {
+	requireAdministrator(t)
+	root, err := paths.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	openToEveryone(t, root)
+	stub := stubBinary(t, root)
+	box := newRealBox(t, firstSandbox, root)
+	box.hand(t, root, grant.RW)
+
+	stdout, stderr := box.streams(t, stub, root)
+	if !strings.Contains(stdout, "from-stdin") || !strings.Contains(stdout, "stdout") {
+		t.Errorf("sandbox stdout was %q, want stdin and stdout markers", stdout)
+	}
+	if !strings.Contains(stderr, "stderr") {
+		t.Errorf("sandbox stderr was %q, want stderr marker", stderr)
 	}
 }
 

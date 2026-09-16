@@ -261,6 +261,13 @@ is no stale state and nothing to time out. It lives in the user's own profile,
 where the sandbox reads and cannot write, so unlike a pipe or a `Local\` object
 it cannot be squatted.
 
+The write handle is handed to the suspended stub before it is resumed. The
+stub adopts that duplicate and the program inherits it through the stub's
+job. If the command dies while Windows is still tearing down its jobs, the
+duplicate remains held by the stub or one of its descendants, so the next
+writer still cannot start. If the handoff never happens, the stub has not run
+and the outer job can end it without a program having been born.
+
 **The closure is structural rather than timed.** Run A's program holds
 `{group, Everyone, Users, logonA, account-1, read group}`. Run B's newborn stub
 is owned by account-2 and carries account-2's default list, which names

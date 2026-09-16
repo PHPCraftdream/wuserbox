@@ -24,6 +24,7 @@ import (
 
 	"github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
+	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
@@ -57,6 +58,27 @@ func Stub(args []string) error {
 	if len(args) != 2 && len(args) != 3 {
 		return exit.Errorf(exit.Usage,
 			"%s takes a group, a read group and a command line", StubFlag)
+	}
+	// The outer command duplicates its write lease into this suspended stub
+	// before resuming it. Adopt that handle and let proc.Run inherit it into
+	// the job's first child. If the outer command is killed, its handle closes
+	// immediately but this handle (and the child's copy) keeps a new run from
+	// starting until the job has gone away. Direct unit probes omit the
+	// variable because they do not model the command-layer lease.
+	if handoff := os.Getenv(lock.TransferEnv); handoff != "" {
+		value, err := os.ReadFile(handoff)
+		if err != nil {
+			return fmt.Errorf("reading the slot handoff: %w", err)
+		}
+		release, err := lock.Adopt(string(value))
+		if err != nil {
+			return err
+		}
+		defer release()
+		// The program must not learn the path. It only needs the inherited
+		// handle, and keeping the path in its environment would disclose a
+		// protected state location to code inside the sandbox.
+		_ = os.Unsetenv(lock.TransferEnv)
 	}
 	restricted, err := token.AsSandbox(args[0], args[1])
 	if err != nil {
@@ -153,7 +175,8 @@ func ProveItStarts(s *state.State) error {
 	if err != nil {
 		return err
 	}
-	code, err := proc.RunAsAccount(s.Account, password, line, s.Dir, childEnv(s, profileOf(s)))
+	code, err := proc.RunAsAccountWithLease(s.Account, password, line, s.Dir,
+		childEnv(s, profileOf(s)), lock.SlotPath(s.Group))
 	if err != nil {
 		return fmt.Errorf("%s cannot start %s: %w", s.Account, self, err)
 	}

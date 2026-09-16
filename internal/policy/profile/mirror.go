@@ -315,10 +315,10 @@ func removeStrayChildren(root *os.Root, dst, rel string, present map[string]bool
 		// it is the walk the entry's own taking-back uses, sparing excluded
 		// paths and everything past the entry's depth, and keeping the
 		// directory only while it is the way to something spared. An entry
-		// with neither exclusions nor a depth can spare nothing below, and
+		// with no include, exclude, or depth can spare nothing below, and
 		// keeps the RemoveAll, which is cheaper than any walk.
 		childPath := filepath.Join(dst, e.Name())
-		if e.IsDir() && (w.bound != nil || len(w.entry.Exclude) > 0) {
+		if e.IsDir() && (w.bound != nil || len(w.entry.Include) > 0 || len(w.entry.Exclude) > 0) {
 			// A junction where the lost directory sat is removed as the
 			// link it is, the way clearKeeping and cleanDir both treat
 			// one: the root would refuse to open a link leading out of

@@ -8,6 +8,7 @@ import (
 
 	acct "github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
+	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/access"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/diagnose"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/inspect"
@@ -78,6 +79,9 @@ func Execute(args []string) error {
 	// read it as the name of a program to start in a sandbox -- which is the
 	// one thing it is not.
 	if args[0] == exec.StubFlag {
+		if os.Getenv(lock.TransferEnv) == "" {
+			return exit.Errorf(exit.Denied, "%s is an internal launch and needs the active sandbox lease", exec.StubFlag)
+		}
 		return exec.Stub(args[1:])
 	}
 	if isHelpRequest(args[0]) {

@@ -2,10 +2,13 @@ package proc
 
 import (
 	"fmt"
+	"os"
 	"runtime"
+	"strings"
 	"syscall"
 	"unsafe"
 
+	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
@@ -28,6 +31,68 @@ const (
 	// same-named account may not exist, or may be a different one.
 	local = "."
 )
+
+// inheritedStandardHandles makes inheritable duplicates of this process's
+// standard streams. CreateProcessWithLogonW has no bInheritHandles argument:
+// when STARTF_USESTDHANDLES is set, the handles in STARTUPINFO must already
+// be inheritable. Duplicating them avoids changing the inheritance flag on
+// the caller's handles and passes exactly the three streams to the stub.
+type inheritedStandardHandles struct {
+	input  syscall.Handle
+	output syscall.Handle
+	errout syscall.Handle
+}
+
+func duplicateStandardHandles() (inheritedStandardHandles, error) {
+	current, err := syscall.GetCurrentProcess()
+	if err != nil {
+		return inheritedStandardHandles{}, fmt.Errorf("opening the current process for standard handles: %w", err)
+	}
+
+	var out inheritedStandardHandles
+	var made []syscall.Handle
+	closeMade := func() {
+		for _, handle := range made {
+			syscall.CloseHandle(handle)
+		}
+	}
+	duplicate := func(label string, file *os.File) (syscall.Handle, error) {
+		if file == nil {
+			return 0, fmt.Errorf("standard %s is nil", label)
+		}
+		source := syscall.Handle(file.Fd())
+		if source == 0 || source == syscall.InvalidHandle {
+			return 0, fmt.Errorf("standard %s is invalid", label)
+		}
+		var copy syscall.Handle
+		if err := syscall.DuplicateHandle(current, source, current, &copy, 0, true, syscall.DUPLICATE_SAME_ACCESS); err != nil {
+			return 0, fmt.Errorf("duplicating standard %s: %w", label, err)
+		}
+		made = append(made, copy)
+		return copy, nil
+	}
+
+	var duplicateErr error
+	if out.input, duplicateErr = duplicate("input", os.Stdin); duplicateErr != nil {
+		closeMade()
+		return inheritedStandardHandles{}, duplicateErr
+	}
+	if out.output, duplicateErr = duplicate("output", os.Stdout); duplicateErr != nil {
+		closeMade()
+		return inheritedStandardHandles{}, duplicateErr
+	}
+	if out.errout, duplicateErr = duplicate("error", os.Stderr); duplicateErr != nil {
+		closeMade()
+		return inheritedStandardHandles{}, duplicateErr
+	}
+	return out, nil
+}
+
+func (handles inheritedStandardHandles) close() {
+	syscall.CloseHandle(handles.input)
+	syscall.CloseHandle(handles.output)
+	syscall.CloseHandle(handles.errout)
+}
 
 // RunAsAccount starts commandLine logged on as a local account, in the same
 // job object and with the same interrupt handling as Run, but through
@@ -73,6 +138,34 @@ const (
 // knows how wide. See holdSlot in internal/cli/setup; the design is
 // docs/design/one-stub-for-a-sandbox.md with n = 1, serialize whole runs.
 func RunAsAccount(username, password, commandLine, directory string, env []string) (int, error) {
+	return runAsAccount(username, password, commandLine, directory, env, "", "")
+}
+
+// RunAsAccountWithLease transfers the sandbox's lease into the suspended stub
+// before it can execute. The stub and its child then keep the lease alive if
+// this process dies while the job is still running.
+func RunAsAccountWithLease(username, password, commandLine, directory string, env []string, slotPath string) (int, error) {
+	if slotPath == "" {
+		return -1, fmt.Errorf("the sandbox slot path is empty")
+	}
+	transferPath, cleanup, err := lock.PrepareTransfer(slotPath)
+	if err != nil {
+		return -1, err
+	}
+	defer cleanup()
+	filtered := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && strings.EqualFold(key, lock.TransferEnv) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	filtered = append(filtered, lock.TransferEnv+"="+transferPath)
+	return runAsAccount(username, password, commandLine, directory, filtered, slotPath, transferPath)
+}
+
+func runAsAccount(username, password, commandLine, directory string, env []string, slotPath, transferPath string) (int, error) {
 	accountSID, err := sid.Lookup(username)
 	if err != nil {
 		return -1, fmt.Errorf("looking up %s to narrow its own stub before it runs: %w", username, err)
@@ -86,6 +179,15 @@ func RunAsAccount(username, password, commandLine, directory string, env []strin
 	var startup syscall.StartupInfo
 	var created syscall.ProcessInformation
 	startup.Cb = uint32(unsafe.Sizeof(startup))
+	streams, err := duplicateStandardHandles()
+	if err != nil {
+		return -1, err
+	}
+	defer streams.close()
+	startup.Flags = syscall.STARTF_USESTDHANDLES
+	startup.StdInput = streams.input
+	startup.StdOutput = streams.output
+	startup.StdErr = streams.errout
 	line, err := syscall.UTF16FromString(commandLine)
 	if err != nil {
 		return -1, err
@@ -137,6 +239,12 @@ func RunAsAccount(username, password, commandLine, directory string, env []strin
 	if err := j.assign(created.Process); err != nil {
 		procTerminateProcess.Call(uintptr(created.Process), 1)
 		return -1, err
+	}
+	if slotPath != "" {
+		if err := lock.PassTo(slotPath, created.Process, transferPath); err != nil {
+			procTerminateProcess.Call(uintptr(created.Process), 1)
+			return -1, err
+		}
 	}
 	// Before ResumeThread and not after: the stub has not executed one
 	// instruction of its own yet, so this is the earliest anything in this

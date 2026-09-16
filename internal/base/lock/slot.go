@@ -12,17 +12,26 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
 // ErrSlotHeld says the slot was still held when the wait ran out. Callers
 // match it with errors.Is, to say "another run is going" rather than "the
 // slot could not be opened", which is what any other failure means.
 var ErrSlotHeld = errors.New("the sandbox's slot is already leased")
+
+// TransferEnv is the environment variable passed only to the stub. It names
+// a protected handoff file containing a handle duplicated into the suspended
+// stub. The stub adopts that handle and proc.Run inherits it into the program
+// in the stub's job, so a process left behind while the parent is dying keeps
+// the slot held.
+const TransferEnv = "WUSERBOX_SLOT_TRANSFER"
 
 // slotCount is how many runs of one sandbox may go at once, and the number
 // the design calls n. One is "serialize whole runs", which is the smallest
@@ -37,11 +46,17 @@ const slotCount = 1
 // poll, and this says how often.
 const slotPoll = 100 * time.Millisecond
 
+var held = struct {
+	sync.Mutex
+	byPath map[string]syscall.Handle
+}{byPath: make(map[string]syscall.Handle)}
+
 // Lease holds one slot of the sandbox named name for the caller alone, and
 // returns how to let it go.
 //
-// A slot is one exclusive file handle: opened with no sharing, so the second
-// opener is refused by the kernel itself rather than queued, and given back
+// A slot is one exclusive write handle: writers share nothing, so the second
+// writer is refused by the kernel itself rather than queued, while the stub's
+// read handle can be inherited into the job. The slot is given back
 // by the kernel when its holder dies by any cause. That is the whole reason
 // it is a file handle and not a lock file with a pid in it or a named mutex:
 // there is no stale state after a crash, no timeout to tune, and no cleanup
@@ -77,15 +92,89 @@ func Lease(name string, wait time.Duration) (func(), error) {
 	}
 }
 
-// takeSlot opens the slot file once, with no sharing at all. The exclusion is
-// the sharing mode and nothing else: what the second opener gets back is the
-// kernel's own refusal, and what the file contains is nothing at all.
+// SlotPath returns the file whose exclusive write lease names one sandbox.
+func SlotPath(name string) string {
+	return filepath.Join(paths.StateDir(), name+".slot"+strconv.Itoa(slotCount))
+}
+
+// PrepareTransfer creates the protected file through which a suspended stub
+// receives its duplicated lease handle. The file is readable by the sandbox's
+// per-owner read group but writable only by the user who is launching it.
+func PrepareTransfer(slotPath string) (string, func(), error) {
+	if slotPath == "" {
+		return "", nil, fmt.Errorf("the slot path is empty")
+	}
+	f, err := os.CreateTemp(filepath.Dir(slotPath), ".wuserbox-slot-transfer-")
+	if err != nil {
+		return "", nil, fmt.Errorf("creating the slot handoff: %w", err)
+	}
+	path := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", nil, fmt.Errorf("closing the slot handoff: %w", err)
+	}
+	if err := acl.Protect(path); err != nil {
+		_ = os.Remove(path)
+		return "", nil, fmt.Errorf("protecting the slot handoff: %w", err)
+	}
+	var once sync.Once
+	return path, func() { once.Do(func() { _ = os.Remove(path) }) }, nil
+}
+
+// PassTo duplicates the lease's write handle into a suspended target process
+// and records the target-side handle value in transferPath. The target must
+// not be resumed until this returns: before it can execute, either it owns a
+// copy of the lease or it has not started a program at all.
+func PassTo(slotPath string, target syscall.Handle, transferPath string) error {
+	if slotPath == "" || transferPath == "" {
+		return fmt.Errorf("the slot handoff paths are empty")
+	}
+	held.Lock()
+	source, ok := held.byPath[slotPath]
+	held.Unlock()
+	if !ok {
+		return fmt.Errorf("the slot %s is not held by this process", slotPath)
+	}
+	current, err := syscall.GetCurrentProcess()
+	if err != nil {
+		return fmt.Errorf("getting the current process for the slot handoff: %w", err)
+	}
+	var duplicate syscall.Handle
+	if err := syscall.DuplicateHandle(current, source, target, &duplicate, 0, true,
+		syscall.DUPLICATE_SAME_ACCESS); err != nil {
+		return fmt.Errorf("duplicating the slot into the stub: %w", err)
+	}
+	if err := os.WriteFile(transferPath, []byte(strconv.FormatUint(uint64(duplicate), 10)), 0o600); err != nil {
+		return fmt.Errorf("writing the slot handoff: %w", err)
+	}
+	return nil
+}
+
+// Adopt takes ownership of a handle value duplicated into the current
+// process. The returned release function is deliberately idempotent because
+// Stub also has an error path before it starts a child.
+func Adopt(value string) (func(), error) {
+	n, err := strconv.ParseUint(strings.TrimSpace(value), 0, 64)
+	if err == nil && (n == 0 || n == ^uint64(0) ||
+		uint64(uintptr(n)) != n || uintptr(n) == ^uintptr(0)) {
+		err = fmt.Errorf("invalid handle value")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("adopting the slot handle: %w", err)
+	}
+	handle := syscall.Handle(uintptr(n))
+	var once sync.Once
+	return func() { once.Do(func() { _ = syscall.CloseHandle(handle) }) }, nil
+}
+
+// takeSlot opens the slot file once, with no sharing at all. The lease handle
+// is duplicated into the suspended stub before it is allowed to run.
 func takeSlot(name string) (func(), error) {
 	dir := paths.StateDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("preparing the state directory %s: %w", dir, err)
 	}
-	path := filepath.Join(dir, name+".slot"+strconv.Itoa(slotCount))
+	path := SlotPath(name)
 	wide, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, err
@@ -109,8 +198,16 @@ func takeSlot(name string) (func(), error) {
 	// free, and closing a number twice closes whatever holds it now -- the
 	// crash hold.go records against its own lock.
 	var once sync.Once
+	held.Lock()
+	held.byPath[path] = handle
+	held.Unlock()
 	return func() {
-		once.Do(func() { _ = syscall.CloseHandle(handle) })
+		once.Do(func() {
+			held.Lock()
+			delete(held.byPath, path)
+			held.Unlock()
+			_ = syscall.CloseHandle(handle)
+		})
 	}, nil
 }
 

@@ -347,6 +347,53 @@ func TestTakingAnEntryWithExclusionsBackSparesWhatTheyProtected(t *testing.T) {
 	}
 }
 
+// Removing an entry with an include list takes back only files that list
+// could have copied. An unrelated file written by the sandbox beside those
+// copies is its own, even though the entry itself is no longer present.
+func TestTakingAnIncludeEntryBackSparesAnUnmatchedSandboxFile(t *testing.T) {
+	home, dest := useLimitedProfile(t, []config.Entry{{
+		Path:    ".codex",
+		Include: config.Masks([]string{"*.json"}),
+	}})
+	write(t, filepath.Join(home, ".codex", "auth.json"), "{}")
+
+	fill(t, dest)
+	write(t, filepath.Join(dest, ".codex", "agent.log"), "the agent's own log")
+
+	if err := (&config.Config{Profile: []config.Entry{}}).Save(); err != nil {
+		t.Fatal(err)
+	}
+	fill(t, dest)
+	if _, err := os.Stat(filepath.Join(dest, ".codex", "auth.json")); !os.IsNotExist(err) {
+		t.Error("the file the include list copied survived removal of the entry")
+	}
+	if got := read(t, filepath.Join(dest, ".codex", "agent.log")); got != "the agent's own log" {
+		t.Errorf("an unmatched sandbox file was removed with the entry: %q", got)
+	}
+}
+
+// The mirror takes the same care when a source directory has disappeared:
+// its stale destination directory is walked with the entry's limits, so an
+// unmatched file under it is spared rather than removed as one stale tree.
+func TestMirrorPreservesAnUnmatchedFileUnderALostDirectoryForInclude(t *testing.T) {
+	home, dest := useLimitedProfile(t, []config.Entry{{
+		Path:    "agent",
+		Include: config.Masks([]string{"*.json"}),
+	}})
+	write(t, filepath.Join(home, "agent", "config.json"), "{}")
+
+	fill(t, dest)
+	write(t, filepath.Join(dest, "agent", "local-only", "agent.log"), "the agent's own log")
+
+	if err := os.Remove(filepath.Join(home, "agent", "config.json")); err != nil {
+		t.Fatal(err)
+	}
+	fill(t, dest)
+	if got := read(t, filepath.Join(dest, "agent", "local-only", "agent.log")); got != "the agent's own log" {
+		t.Errorf("an unmatched file under a lost source directory was removed: %q", got)
+	}
+}
+
 // TestAnExclusionProtectsWhatSitsUnderADirectoryTheSourceHasLost is the
 // nesting the stray check used to miss: it asks the exclusion about a stray
 // directory's own relative path and then removes the directory whole, so

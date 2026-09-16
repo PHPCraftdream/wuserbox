@@ -217,12 +217,13 @@ func clearEntry(root *os.Root, stale string, entry config.Entry) error {
 // are asked of w, so the same rules govern the copy and the taking-back: a
 // directory the walk would not enter -- one an exclusion names, or one past
 // the depth that governed the copy -- is left with everything below it and
-// no questions asked, and a file an exclusion names is left the same way.
-// The mask was written against the child's own relative path, and the
-// sandbox's claim does not stop at its first level. A directory with
-// nothing spared under it goes once its children have gone -- a directory
-// is kept only while it is the way to something kept -- so the clearing
-// takes the entry's shape apart rather than leaving empty frames behind.
+// no questions asked, and a file the entry would not have copied -- because
+// an exclusion or an include list left it out -- is left the same way. The
+// mask was written against the child's own relative path, and the sandbox's
+// claim does not stop at its first level. A directory with nothing spared
+// under it goes once its children have gone -- a directory is kept only
+// while it is the way to something kept -- so the clearing takes the entry's
+// shape apart rather than leaving empty frames behind.
 func clearKeeping(root *os.Root, dir, rel string, w *walk, kept *bool) error {
 	d, err := root.Open(dir)
 	if err != nil {
@@ -271,7 +272,12 @@ func clearKeeping(root *os.Root, dir, rel string, w *walk, kept *bool) error {
 				continue
 			}
 		} else {
-			if w.excludes(childRel) {
+			// A file outside the entry's include list was never ours to
+			// remove. This matters when an entry is removed entirely: the
+			// sandbox may have written an unrelated file beside the copies,
+			// and an include is a boundary on copying just as an exclusion is
+			// a boundary on taking back.
+			if !w.copiesFile(childRel) {
 				*kept = true
 				continue
 			}
