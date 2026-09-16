@@ -39,6 +39,35 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 )
 
+// stateDir is a directory to point LOCALAPPDATA at, taken away on the way out
+// but not by t.TempDir, whose cleanup is allowed to fail the test and here
+// does.
+//
+// Reading a rules file loads ktav's native library, and ktav extracts that
+// library under LOCALAPPDATA before loading it. A DLL a process has loaded
+// cannot be unlinked on Windows, and this process keeps it for as long as it
+// runs, so t.TempDir's removal of the directory it was extracted into is
+// refused -- "Access is denied" against ktav_cabi-windows-amd64.dll, and a
+// test that had already measured everything it was written to measure failed
+// on the way out.
+//
+// It failed in one selection of tests and not another, which is the part
+// worth keeping: whichever test reads a rules file first pays the extraction,
+// and in a whole-package run that was somebody else, under the real
+// LOCALAPPDATA, where nothing tries to remove it. Best-effort removal is the
+// honest answer rather than a cleanup that knows which file to spare -- what
+// is left behind is a few megabytes under the system's temp directory, and
+// only where this test was the first to touch ktav.
+func stateDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "wuserbox-lease")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 // leaseRunner drives the real command line against one project under one
 // standing environment: the rules file named by WUSERBOX_CONFIG, the profile
 // the rules copy from and the state directory are held fixed across calls,
@@ -68,10 +97,9 @@ func leaseRunner(t *testing.T, project, rules string) func(args ...string) (stri
 // the shared profile first, and only then reach the launch and be refused.
 func TestARunRefusedByTheSlotLeavesTheProfileAlone(t *testing.T) {
 	requireAdministrator(t)
-	home := t.TempDir()      // the profile the rules file copies from
-	stateRoot := t.TempDir() // LOCALAPPDATA: the record, the facts and the slot
+	home := t.TempDir() // the profile the rules file copies from
 	t.Setenv("USERPROFILE", home)
-	t.Setenv("LOCALAPPDATA", stateRoot)
+	t.Setenv("LOCALAPPDATA", stateDir(t)) // the record, the facts and the slot
 
 	const entry = "wub-lease-source.txt"
 	const content = "the copy a first run holds"
@@ -156,7 +184,7 @@ func TestARunRefusedByTheSlotLeavesTheProfileAlone(t *testing.T) {
 func TestInitProbesTheStubWhileHoldingTheLeaseItself(t *testing.T) {
 	requireAdministrator(t)
 	t.Setenv("USERPROFILE", t.TempDir())
-	t.Setenv("LOCALAPPDATA", t.TempDir())
+	t.Setenv("LOCALAPPDATA", stateDir(t))
 	rules := filepath.Join(t.TempDir(), "rules.ktav")
 	// Both here and on the command, for the reason the test above gives: the
 	// file is written from this process and read by that one.
