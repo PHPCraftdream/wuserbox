@@ -30,6 +30,25 @@ func useProfile(t *testing.T, entries []string) (home, dest string) {
 	return home, dest
 }
 
+// useProfileEntries is useProfile's twin for a test that needs an entry
+// carrying depth, include or exclude -- config.Entries only wraps bare
+// paths, and a duplicate that differs only in its limits cannot be written
+// that way.
+func useProfileEntries(t *testing.T, entries []config.Entry) (home, dest string) {
+	t.Helper()
+	home = t.TempDir()
+	dest = filepath.Join(t.TempDir(), "sandbox-profile")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("USERPROFILE", home)
+	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
+	if err := (&config.Config{Profile: entries}).Save(); err != nil {
+		t.Fatal(err)
+	}
+	return home, dest
+}
+
 func write(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -480,5 +499,76 @@ func TestAStoppedCopyIsStillOnTheListToClear(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dest, "big")); err == nil {
 		t.Error("what the stopped copy left behind is still in the profile")
+	}
+}
+
+// TestCopyRefusesAnEntryNamingTheProfileRoot is the regression guard for the
+// worst path a rules file can spell. within accepts "." outright, and it
+// accepts "foo/.." too, because filepath.Clean turns both into ".": an
+// entry of "." makes the source the user's whole profile and dst -- inside
+// the root -- the sandbox's whole profile. Copy would then mirror one onto
+// the other: copy everything the user owns into the sandbox, and delete
+// from the sandbox everything the user's profile does not have, the
+// sandbox's own registry hive among it.
+//
+// Written to show that actually happening on the unfixed code, not merely
+// that an error comes back: a file elsewhere in the user's profile lands in
+// the sandbox's, and a file that is the sandbox's own -- never on any list,
+// the way NTUSER.DAT never is -- gets removed for not being in the source.
+func TestCopyRefusesAnEntryNamingTheProfileRoot(t *testing.T) {
+	for _, path := range []string{".", "foo/.."} {
+		t.Run(path, func(t *testing.T) {
+			home, dest := useProfile(t, []string{path})
+			write(t, filepath.Join(home, "elsewhere-in-the-profile.txt"), "not meant for any sandbox")
+			write(t, filepath.Join(dest, "NTUSER.DAT"), "the sandbox's own registry hive")
+
+			_, _, err := Copy(dest, nil, nil)
+			if err == nil {
+				t.Fatalf("path %q: an entry naming the profile root was accepted", path)
+			}
+
+			if _, statErr := os.Stat(filepath.Join(dest, "NTUSER.DAT")); statErr != nil {
+				t.Errorf("path %q: the sandbox's own registry hive was removed: %v", path, statErr)
+			}
+			if _, statErr := os.Stat(filepath.Join(dest, "elsewhere-in-the-profile.txt")); statErr == nil {
+				t.Errorf("path %q: the whole user profile was mirrored into the sandbox's", path)
+			}
+		})
+	}
+}
+
+// TestCopyRefusesProfileEntriesRepeatedWithDifferentLimits is the guard
+// against the duplicate that reads as merely redundant and is not: {path:
+// .codex, exclude: [sessions/**]} followed by the bare ".codex" names the
+// same path twice, but the second entry carries no exclusion, so its own
+// mirroring deletes what the first entry's exclusion was protecting -- the
+// sessions an agent running inside the sandbox actually wrote.
+//
+// Written to show that deletion actually happening on the unfixed code, not
+// merely that an error comes back.
+func TestCopyRefusesProfileEntriesRepeatedWithDifferentLimits(t *testing.T) {
+	protected := []config.Entry{{Path: ".codex", Exclude: config.Masks([]string{"sessions/**"})}}
+	home, dest := useProfileEntries(t, protected)
+	write(t, filepath.Join(home, ".codex", "auth.json"), `{"token":"real"}`)
+
+	copied := fill(t, dest)
+
+	// What an agent inside the sandbox actually wrote there -- never copied
+	// in by any entry, and exactly what the first entry's exclusion exists
+	// to protect.
+	write(t, filepath.Join(dest, ".codex", "sessions", "mysession.txt"), "a real session")
+
+	conflicting := append([]config.Entry{}, protected...)
+	conflicting = append(conflicting, config.Entry{Path: ".codex"})
+	if err := (&config.Config{Profile: conflicting}).Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := Copy(dest, copied, lastPrints[dest]); err == nil {
+		t.Fatal("profile: repeating .codex with different limits was accepted")
+	}
+
+	if got := read(t, filepath.Join(dest, ".codex", "sessions", "mysession.txt")); got != "a real session" {
+		t.Errorf("the session the first entry's exclusion protected did not survive: %q", got)
 	}
 }

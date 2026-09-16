@@ -38,7 +38,7 @@ func inspectProfile(entries []config.Entry, cleanup []config.Mask) []Complaint {
 // include/exclude half) and 4 (the mask half).
 func inspectProfileEntries(entries []config.Entry) []Complaint {
 	var complaints []Complaint
-	seen := map[string]string{}
+	seen := map[string]config.Entry{}
 	sensitive := sensitiveNames()
 
 	for _, entry := range entries {
@@ -74,13 +74,30 @@ func inspectProfileEntries(entries []config.Entry) []Complaint {
 
 		key := profilePathKey(entry.Path)
 		if first, repeated := seen[key]; repeated {
-			complaints = append(complaints, Complaint{
-				Kind: "profile-duplicate", Path: entry.Path,
-				Message: fmt.Sprintf("%s is listed twice in profile:; both are copied and the second "+
-					"lands on top of %s, so this is waste rather than breakage", entry.Path, first),
-			})
+			// EntriesSayTheSameThing is the copier's own answer, reused
+			// rather than re-decided here: it is also what conflictingProfileEntry
+			// asks before Copy touches dest, and two answers to "do these
+			// entries say the same thing" are exactly how a rules file comes
+			// to pass validation and then lose data on the run.
+			if profile.EntriesSayTheSameThing(first, entry) {
+				complaints = append(complaints, Complaint{
+					Kind: "profile-duplicate", Path: entry.Path,
+					Message: fmt.Sprintf("%s is listed twice in profile:; both are copied and the "+
+						"second lands on top of %s, so this is waste rather than breakage",
+						entry.Path, first.Path),
+				})
+			} else {
+				complaints = append(complaints, Complaint{
+					Kind: "profile-conflict", Path: entry.Path, Fatal: true,
+					Message: fmt.Sprintf("%s is listed twice in profile: with limits that differ "+
+						"from %s; the second entry's copy would land on top of the first, and its "+
+						"mirroring would then delete whatever the first entry's exclusions were "+
+						"protecting -- make the two entries say exactly the same thing, or remove one",
+						entry.Path, first.Path),
+				})
+			}
 		} else {
-			seen[key] = entry.Path
+			seen[key] = entry
 		}
 
 		// The first segment, not the whole path, which is the same rule

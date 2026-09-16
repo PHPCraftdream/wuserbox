@@ -57,6 +57,17 @@ func Copy(dest string, previously []config.Entry, prints map[string]Print) ([]co
 	if err != nil {
 		return nil, nil, err
 	}
+	// Checked before anything below touches dest, for the same reason the
+	// profile-root refusal in within is checked there and not only at
+	// validation: an ordinary run never calls --config validate.
+	if first, second, found := conflictingProfileEntry(rules.Profile); found {
+		return nil, nil, fmt.Errorf("profile: lists %q twice with different limits -- once as "+
+			"%s, and once as %s. The second entry's copy would land on top of the first, and its "+
+			"mirroring would then delete whatever the first entry's exclusions were protecting, "+
+			"which is data loss arriving from a rules file that only looks redundant. Make the "+
+			"two entries say exactly the same thing, or remove one",
+			first.Path, describeEntryLimits(first), describeEntryLimits(second))
+	}
 	// Cleanup runs first: a rule about what should not be there is applied
 	// before anything decides what to bring in. It is wired in here rather
 	// than in Clear, since --no-ai means this profile is not being filled at
@@ -255,12 +266,13 @@ func clearKeeping(root *os.Root, dir, rel string, entry config.Entry, kept *bool
 // wrongly in the rules file deserves to be told what is wrong with it,
 // rather than "path escapes from parent" about a path nobody typed.
 // EntryEscapesProfile answers whether a profile: entry's path, exactly as
-// the rules file spells it, would be refused by within for being absolute
-// or for climbing out of the profile with "..", and if so, within's own
-// message. Exported so validation asks this package the question rather
-// than re-deciding it with a copy of the same rule: two answers to "does
-// this path escape the profile" are exactly how a rules file comes to pass
-// validation and then fail the run.
+// the rules file spells it, would be refused by within for being absolute,
+// for climbing out of the profile with "..", or for naming the profile root
+// itself -- "." or anything filepath.Clean turns into it -- and if so,
+// within's own message. Exported so validation asks this package the
+// question rather than re-deciding it with a copy of the same rule: two
+// answers to "does this path escape the profile" are exactly how a rules
+// file comes to pass validation and then fail the run.
 func EntryEscapesProfile(path string) error {
 	_, err := within(path)
 	return err
@@ -272,7 +284,103 @@ func within(entry string) (string, error) {
 		strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("%q does not name anything inside the profile", entry)
 	}
+	// "." is a path too, and not a safe one: filepath.Clean turns both "."
+	// and "foo/.." into it, and either spelling would make the source the
+	// user's whole profile and dst the sandbox's whole profile. Copy would
+	// then mirror one onto the other -- copying everything the user owns in,
+	// and deleting from the sandbox everything the user's profile does not
+	// have, the sandbox's own registry hive among it. Refused here, not only
+	// at validation: an ordinary run never calls --config validate, so the
+	// copier is the only place this is always on the path.
+	if clean == "." {
+		return "", fmt.Errorf("%q names the profile root itself, and copying it would copy the "+
+			"user's whole profile into the sandbox's and delete from the sandbox everything the "+
+			"user's profile does not have -- name something inside it instead", entry)
+	}
 	return clean, nil
+}
+
+// conflictingProfileEntry finds two entries in the list that share a path
+// but do not say the same thing about what to copy under it, and reports
+// the first such pair.
+//
+// A path repeated with identical limits is redundant, not dangerous --
+// copying it twice lands the same result twice -- and validation reports it
+// as the waste it is. A path repeated with different limits is not
+// redundant: { path: .codex, exclude: [sessions/**] } followed by the bare
+// ".codex" reads as two ways of saying the same thing and is not one. The
+// second entry copies .codex whole, and the mirroring behind it deletes
+// whatever the first entry's exclusion protected, because the mirror sees
+// no exclusion the second time around and the excluded path is not in the
+// source. That is real data loss, arriving from a rules file that only
+// looks redundant, and there is no reading of "list this path twice with
+// different limits" that is safe to silently pick one side of -- see
+// EntriesSayTheSameThing for the comparison, and Copy's own use of this for
+// why it runs before anything below it touches dest.
+func conflictingProfileEntry(entries []config.Entry) (first, second config.Entry, found bool) {
+	seen := make(map[string]config.Entry, len(entries))
+	for _, entry := range entries {
+		key := strings.ToLower(filepath.ToSlash(filepath.Clean(filepath.FromSlash(entry.Path))))
+		prior, ok := seen[key]
+		if !ok {
+			seen[key] = entry
+			continue
+		}
+		if !EntriesSayTheSameThing(prior, entry) {
+			return prior, entry, true
+		}
+	}
+	return config.Entry{}, config.Entry{}, false
+}
+
+// EntriesSayTheSameThing reports whether two profile: entries that name the
+// same path describe exactly the same copy: the same depth, and the same
+// include and exclude masks in the same order. This is the only condition
+// under which a path repeated in the list is redundant rather than a silent
+// change of meaning, and it is exported so validation asks this package the
+// question rather than re-deciding it with a second comparison of the same
+// fields.
+func EntriesSayTheSameThing(a, b config.Entry) bool {
+	return sameDepth(a.Depth, b.Depth) && sameMasks(a.Include, b.Include) && sameMasks(a.Exclude, b.Exclude)
+}
+
+func sameDepth(a, b *int) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	return a == nil || *a == *b
+}
+
+func sameMasks(a, b []config.Mask) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Pattern != b[i].Pattern || !sameDepth(a[i].Depth, b[i].Depth) {
+			return false
+		}
+	}
+	return true
+}
+
+// describeEntryLimits renders one entry's limits for an error message --
+// terse enough to read in one line, specific enough to show what differs
+// between two entries sharing a path.
+func describeEntryLimits(e config.Entry) string {
+	if e.Bare() {
+		return "no limits, copied whole"
+	}
+	var parts []string
+	if e.Depth != nil {
+		parts = append(parts, fmt.Sprintf("depth %d", *e.Depth))
+	}
+	if len(e.Include) > 0 {
+		parts = append(parts, fmt.Sprintf("include %v", e.Include))
+	}
+	if len(e.Exclude) > 0 {
+		parts = append(parts, fmt.Sprintf("exclude %v", e.Exclude))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // Ceiling is how much one run may carry into a sandbox's profile before it is

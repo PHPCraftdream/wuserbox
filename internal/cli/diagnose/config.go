@@ -18,8 +18,8 @@ import (
 type Complaint struct {
 	// Kind is what sort of problem it is, so a script can sort them:
 	// "syntax", "conflict", "duplicate", "missing", "outside", "empty",
-	// "depth", "cleanup", "profile-duplicate", "sensitive" or
-	// "profile-limits".
+	// "depth", "cleanup", "profile-duplicate", "profile-conflict",
+	// "sensitive" or "profile-limits".
 	Kind    string `json:"kind"`
 	Project string `json:"project,omitempty"`
 	Path    string `json:"path,omitempty"`

@@ -163,6 +163,41 @@ func TestValidateReportsAPathListedTwiceInProfile(t *testing.T) {
 	}
 }
 
+// TestValidateRefusesProfileEntriesRepeatedWithDifferentLimits is the fatal
+// half of point 6: a path listed twice is waste only when both listings say
+// the same thing. { path: .codex, exclude: [sessions/**] } followed by the
+// bare ".codex" is not waste -- the second entry's mirroring would delete
+// what the first entry's exclusion protected -- so validate has to refuse
+// it rather than report it the same harmless way as a genuine repeat.
+func TestValidateRefusesProfileEntriesRepeatedWithDifferentLimits(t *testing.T) {
+	entries := []config.Entry{
+		{Path: ".codex", Exclude: []config.Mask{{Pattern: "sessions/**"}}},
+		{Path: ".codex"},
+	}
+	useRules(t, &config.Config{Profile: entries})
+	err := Config([]string{"validate"})
+	if got := exit.Of(err); got != exit.BadConfig {
+		t.Errorf("exit code is %v, want %v", got, exit.BadConfig)
+	}
+
+	complaints := inspectProfile(entries, nil)
+	var found bool
+	for _, c := range complaints {
+		if c.Kind == "profile-conflict" {
+			found = true
+			if !c.Fatal {
+				t.Error("a duplicate with different limits was not marked fatal")
+			}
+		}
+		if c.Kind == "profile-duplicate" {
+			t.Errorf("a duplicate with different limits was reported as merely waste: %+v", c)
+		}
+	}
+	if !found {
+		t.Error("the conflicting duplicate was not reported")
+	}
+}
+
 // TestValidateReportsAProfileEntryNamingASensitiveFile checks point 7:
 // somebody may name .ssh or its neighbors on purpose, and wuserbox has to
 // say so rather than either refuse it or stay silent.
