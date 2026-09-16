@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	acct "github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
@@ -228,7 +229,7 @@ func TestRunFillsTheProfileFromTheRulesFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
-	if err := (&config.Config{Profile: []string{"credentials.json"}}).Save(); err != nil {
+	if err := (&config.Config{Profile: config.Entries([]string{"credentials.json"})}).Save(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -251,8 +252,69 @@ func TestRunFillsTheProfileFromTheRulesFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recorded) != 1 || recorded[0] != "credentials.json" {
+	if len(recorded) != 1 || recorded[0].Path != "credentials.json" {
 		t.Errorf("what was copied was not recorded: %v", recorded)
+	}
+}
+
+// TestARunCopiesEverythingWhenTheFingerprintRecordIsUnreadable pins the safe
+// side of the skip-unchanged optimization. A fingerprint record that cannot
+// be read means no fingerprints, and no fingerprints means the run copies
+// everything; the failure mode being guarded against is a cache that quietly
+// skips files it has no right to skip.
+func TestARunCopiesEverythingWhenTheFingerprintRecordIsUnreadable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	if err := os.WriteFile(filepath.Join(home, "credentials.json"), []byte(`{"token":"abc"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
+	if err := (&config.Config{Profile: config.Entries([]string{"credentials.json"})}).Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	profileDir := t.TempDir()
+	s := &state.State{Group: "wub-bad-prints-00000000", Profile: profileDir}
+	if err := fillProfile(s); err != nil {
+		t.Fatal(err)
+	}
+
+	// Corrupt the record by appending a malformed line to its own content,
+	// so the test survives format changes.
+	record, err := os.ReadFile(facts.PrintsList(s.Group))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(facts.PrintsList(s.Group), append(record, []byte("and now something that is not a fingerprint\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make a skip observable: stamp the destination with a time no run could
+	// have written. If the run skips (bad), the stamp survives; if it copies
+	// (good), the stamp moves.
+	stale := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+	destination := filepath.Join(profileDir, "credentials.json")
+	if err := os.Chtimes(destination, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fillProfile(s); err != nil {
+		t.Fatalf("a record nobody could read must not stop the run: %v", err)
+	}
+	info, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ModTime().Equal(stale) {
+		t.Error("the run skipped credentials.json although the fingerprint record was unreadable")
+	}
+	got, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"token":"abc"}` {
+		t.Errorf("copied %q, want the source's own content", got)
 	}
 }
 
@@ -269,7 +331,7 @@ func TestRunClearsTheProfileWhenTheAgentPresetIsWithheld(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
-	if err := (&config.Config{Profile: []string{"credentials.json"}}).Save(); err != nil {
+	if err := (&config.Config{Profile: config.Entries([]string{"credentials.json"})}).Save(); err != nil {
 		t.Fatal(err)
 	}
 

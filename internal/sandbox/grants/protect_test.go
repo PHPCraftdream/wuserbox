@@ -57,7 +57,7 @@ func TestRetiringOldProfileRulesKeepsWhatSomebodyAdded(t *testing.T) {
 		t.Fatal("no old default entries are derivable here, so this test can measure nothing")
 	}
 	const mine = "my-own-directory"
-	rules := &config.Config{Profile: append([]string{mine}, old...)}
+	rules := &config.Config{Profile: config.Entries(append([]string{mine}, old...))}
 	if err := rules.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -75,12 +75,12 @@ func TestRetiringOldProfileRulesKeepsWhatSomebodyAdded(t *testing.T) {
 	}
 	kept := false
 	for _, entry := range after.Profile {
-		if entry == mine {
+		if entry.Path == mine {
 			kept = true
 		}
 		for _, gone := range old {
-			if entry == gone {
-				t.Errorf("%q is still listed, so a whole directory is still copied on every run", entry)
+			if entry.Path == gone {
+				t.Errorf("%q is still listed, so a whole directory is still copied on every run", entry.Path)
 			}
 		}
 	}
@@ -91,7 +91,7 @@ func TestRetiringOldProfileRulesKeepsWhatSomebodyAdded(t *testing.T) {
 	// And now the part that matters more than the migration itself: what
 	// somebody does to the file afterwards has to stick. They delete one of
 	// the entries this added and put a whole directory back on purpose.
-	edited := &config.Config{Profile: []string{mine, ".claude"}}
+	edited := &config.Config{Profile: config.Entries([]string{mine, ".claude"})}
 	if err := edited.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestRetiringOldProfileRulesKeepsWhatSomebodyAdded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(final.Profile) != 2 || final.Profile[0] != mine || final.Profile[1] != ".claude" {
+	if len(final.Profile) != 2 || final.Profile[0].Path != mine || final.Profile[1].Path != ".claude" {
 		t.Errorf("the edited section came back as %v, and nobody but its owner touched it", final.Profile)
 	}
 }
@@ -129,7 +129,7 @@ func TestRetiringLeavesACredentialFileThatIsInBothLists(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := (&config.Config{Profile: []string{".claude.json"}}).Save(); err != nil {
+	if err := (&config.Config{Profile: config.Entries([]string{".claude.json"})}).Save(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -144,8 +144,54 @@ func TestRetiringLeavesACredentialFileThatIsInBothLists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(after.Profile) != 1 || after.Profile[0] != ".claude.json" {
+	if len(after.Profile) != 1 || after.Profile[0].Path != ".claude.json" {
 		t.Errorf("the section became %v, and nothing in it needed changing", after.Profile)
+	}
+}
+
+// TestRetiringLeavesADirectoryThatCarriesLimits is the same bug one shape
+// further on. The old default wrote whole agent directories as plain paths,
+// which is all it could write -- limits did not exist then. So a directory
+// that names limits was typed by somebody who wanted that directory, minus
+// the part of it they named, and taking it out would be the migration undoing
+// a deliberate edit for the third time.
+//
+// It is narrow on purpose: the migration runs once per machine, so meeting
+// this needs a rules file edited by hand before that one run. Narrow is not
+// the same as impossible, and the cost of the guard is one condition.
+func TestRetiringLeavesADirectoryThatCarriesLimits(t *testing.T) {
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
+	t.Setenv("USERPROFILE", tempDir(t))
+	t.Setenv("LOCALAPPDATA", tempDir(t))
+
+	old := preset.RetiredProfileEntries()
+	if len(old) == 0 {
+		t.Fatal("no old default entries are derivable here, so this test can measure nothing")
+	}
+	// The same name the old default wrote, saying something it never could.
+	limited := config.Entry{Path: old[0], Exclude: config.Masks([]string{"sessions/**"})}
+	if err := (&config.Config{Profile: []config.Entry{limited}}).Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	retired, err := RetireWholeDirectoryProfileRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retired) != 0 {
+		t.Errorf("an entry carrying limits was taken for the old default's doing: %v", retired)
+	}
+	after, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Profile) != 1 {
+		t.Fatalf("the section became %d entries, and the one in it needed no changing", len(after.Profile))
+	}
+	kept := after.Profile[0]
+	if kept.Path != limited.Path || len(kept.Exclude) != 1 || kept.Exclude[0].Pattern != "sessions/**" {
+		t.Errorf("the entry came back as path %q exclude %v, and nobody but its owner touched it",
+			kept.Path, kept.Exclude)
 	}
 }
 

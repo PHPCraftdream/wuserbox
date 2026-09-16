@@ -262,6 +262,7 @@ func bookkeeping(name string) []string {
 	return []string{
 		state.Path(name), state.PreviousPath(name),
 		facts.UsedMarker(name), facts.SizeCache(name), facts.CopiedList(name),
+		facts.PrintsList(name),
 	}
 }
 

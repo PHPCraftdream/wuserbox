@@ -58,7 +58,7 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 // spelling would send it somewhere the user's own profile never had.
 func TestProfileRoundTripsAsRelativeForwardSlashPaths(t *testing.T) {
 	path := useTempConfig(t)
-	want := &Config{Profile: []string{`.claude`, `AppData\Local\claude-cli-nodejs`}}
+	want := &Config{Profile: []Entry{{Path: `.claude`}, {Path: `AppData\Local\claude-cli-nodejs`}}}
 	if err := want.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestProfileRoundTripsAsRelativeForwardSlashPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Profile) != 2 || got.Profile[1] != "AppData/Local/claude-cli-nodejs" {
+	if len(got.Profile) != 2 || got.Profile[1].Path != "AppData/Local/claude-cli-nodejs" {
 		t.Errorf("profile came back as %v", got.Profile)
 	}
 }

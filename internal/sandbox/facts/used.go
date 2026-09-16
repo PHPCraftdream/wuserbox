@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
+	ktav "github.com/ktav-lang/golang"
 )
 
 // UsedMarker is the empty file whose own two timestamps are the whole of
@@ -88,21 +90,34 @@ func Times(name string) (*Life, error) {
 	return life, nil
 }
 
-// CopiedList is where the last list of what was copied into a sandbox's own
-// profile is kept.
+// CopiedList is where the last record of what was copied into a sandbox's
+// own profile is kept.
 //
 // Beside the temp directory, like the rest of what is recorded here, and
-// deliberately not inside the profile it describes. That list is read back as
-// a list of things to delete, and the sandbox may write its own profile: kept
-// in there, it would be an instruction the sandbox could edit.
+// deliberately not inside the profile it describes. That record is read back
+// as a list of things to delete, and the sandbox may write its own profile:
+// kept in there, it would be an instruction the sandbox could edit.
 func CopiedList(name string) string {
 	return filepath.Join(paths.StateDir(), "tmp", name+".copied")
 }
 
-// Copied reads that list. A sandbox whose profile has never been filled has
-// none, which is not an error -- it means nothing was put there, so there is
-// nothing to take away.
-func Copied(name string) ([]string, error) {
+// Copied reads that record: the entries, in their full shape, that the last
+// run put into the sandbox's profile. A sandbox whose profile has never been
+// filled has none, which is not an error -- it means nothing was put there,
+// so there is nothing to take away.
+//
+// The entries whole rather than the paths they landed at, because with masks
+// on an entry one entry lands as however many files its include list
+// matches, and -- the part that matters -- its exclusions have to survive
+// with it. When the entry leaves the rules file, clearing what it brought in
+// has to go on sparing what its exclusions protected, and only the entry
+// itself remembers them.
+//
+// A record of one bare path per line -- every record written before entries
+// carried limits -- reads back unchanged: ktav renders a top-level array as
+// bare item-per-line, and a bare string unmarshals as a bare entry, so one
+// reader covers both shapes with no version field and no migration.
+func Copied(name string) ([]config.Entry, error) {
 	raw, err := os.ReadFile(CopiedList(name))
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -110,20 +125,38 @@ func Copied(name string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var entries []string
-	for _, line := range strings.Split(string(raw), "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			entries = append(entries, line)
-		}
+	// An empty record is a real state -- a --no-ai run writes one -- and an
+	// empty rendering is the same state. Neither goes to the parser, which
+	// would read an empty document as a mistake rather than as nothing.
+	if strings.TrimSpace(string(raw)) == "" {
+		return nil, nil
+	}
+	var entries []config.Entry
+	if err := ktav.LoadsInto(string(raw), &entries); err != nil {
+		return nil, err
 	}
 	return entries, nil
 }
 
-// RecordCopied writes it back, one entry to a line.
-func RecordCopied(name string, entries []string) error {
+// RecordCopied writes it back, stored as ktav exactly as the rules file is,
+// so the record and the file it mirrors speak one format. An empty list is
+// written as an empty file rather than handed to ktav: nothing was put
+// there, and the next run must read that back as nothing rather than as a
+// parse error.
+func RecordCopied(name string, entries []config.Entry) error {
 	path := CopiedList(name)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(strings.Join(entries, "\n")+"\n"), 0o644)
+	var text string
+	if len(entries) > 0 {
+		var err error
+		if text, err = ktav.Dumps(entries); err != nil {
+			return err
+		}
+		if !strings.HasSuffix(text, "\n") {
+			text += "\n"
+		}
+	}
+	return os.WriteFile(path, []byte(text), 0o644)
 }

@@ -41,6 +41,20 @@ var shadowing = [][]string{
 	{".bash_profile", ".bash_login", ".profile"},
 }
 
+// Names lists the sensitive entries' own names, independent of whether any
+// of them exist on this machine. Sensitive and Missing only ever answer for
+// what is already on disk; validation needs the list itself, since a rules
+// file can name one of these deliberately before it exists on the machine
+// that reads it, and the warning is about the name written down, not about
+// what happens to be there today.
+func Names() []string {
+	out := make([]string, 0, len(sensitive))
+	for _, entry := range sensitive {
+		out = append(out, entry.name)
+	}
+	return out
+}
+
 // Sensitive lists the entries that exist on this machine.
 func Sensitive() []string {
 	home := paths.Home()

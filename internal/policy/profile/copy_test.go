@@ -24,7 +24,7 @@ func useProfile(t *testing.T, entries []string) (home, dest string) {
 	}
 	t.Setenv("USERPROFILE", home)
 	t.Setenv(config.EnvPath, filepath.Join(t.TempDir(), "rules.ktav"))
-	if err := (&config.Config{Profile: entries}).Save(); err != nil {
+	if err := (&config.Config{Profile: config.Entries(entries)}).Save(); err != nil {
 		t.Fatal(err)
 	}
 	return home, dest
@@ -55,16 +55,31 @@ func read(t *testing.T, path string) string {
 // profile, where the sandbox cannot edit it into an instruction to delete
 // something else. A test that passed nil every time would be testing
 // something no run does.
-var lastCopied = map[string][]string{}
+//
+// lastPrints does the same for the fingerprints, kept by the caller for the
+// same reason.
+var lastCopied = map[string][]config.Entry{}
+var lastPrints = map[string]map[string]Print{}
 
-func fill(t *testing.T, dest string) []string {
+func fill(t *testing.T, dest string) []config.Entry {
 	t.Helper()
-	copied, err := Copy(dest, lastCopied[dest])
+	copied, prints, err := Copy(dest, lastCopied[dest], lastPrints[dest])
 	if err != nil {
 		t.Fatal(err)
 	}
 	lastCopied[dest] = copied
+	lastPrints[dest] = prints
 	return copied
+}
+
+// pathsOf is the entries' own paths, for tests that care what was copied
+// rather than the entries whole.
+func pathsOf(entries []config.Entry) []string {
+	paths := make([]string, len(entries))
+	for i, entry := range entries {
+		paths[i] = entry.Path
+	}
+	return paths
 }
 
 func TestCopyPlacesListedEntriesAtTheSameRelativeSpot(t *testing.T) {
@@ -73,8 +88,8 @@ func TestCopyPlacesListedEntriesAtTheSameRelativeSpot(t *testing.T) {
 	write(t, filepath.Join(home, ".gitconfig"), "[user]\n")
 
 	copied := fill(t, dest)
-	sort.Strings(copied)
-	if !reflect.DeepEqual(copied, []string{".claude", ".gitconfig"}) {
+	sort.Strings(pathsOf(copied))
+	if !reflect.DeepEqual(pathsOf(copied), []string{".claude", ".gitconfig"}) {
 		t.Errorf("reported %v", copied)
 	}
 	if got := read(t, filepath.Join(dest, ".claude", "settings.json")); got != `{"a":1}` {
@@ -90,7 +105,7 @@ func TestCopySkipsMissingEntriesWithoutError(t *testing.T) {
 	write(t, filepath.Join(home, ".claude", "settings.json"), "{}")
 
 	copied := fill(t, dest)
-	if !reflect.DeepEqual(copied, []string{".claude"}) {
+	if !reflect.DeepEqual(pathsOf(copied), []string{".claude"}) {
 		t.Errorf("reported %v, the missing entry should have been left out silently", copied)
 	}
 	if _, err := os.Stat(filepath.Join(dest, ".codex")); err == nil {
@@ -115,9 +130,11 @@ func TestCopyNeverTouchesTheSource(t *testing.T) {
 }
 
 // TestCopyReconcilesADirectoryToMatchItsSource covers the freshness rule:
-// copying is unconditional, so a directory's copy is remade to match its
-// source exactly on every call, discarding whatever was added to the copy
-// and restoring whatever the copy's own edits overwrote.
+// the copy still reconciles a directory's shape to its source on every call
+// -- stray files the source does not have are removed, and a copy whose size
+// no longer matches its source is rewritten -- while an edited file whose
+// size and source both still match now keeps the edit until the source
+// changes, which is the skip's stated trade.
 func TestCopyReconcilesADirectoryToMatchItsSource(t *testing.T) {
 	home, dest := useProfile(t, []string{".claude"})
 	write(t, filepath.Join(home, ".claude", "settings.json"), `{"v":1}`)
@@ -149,11 +166,11 @@ func TestCopyDropsEntriesRemovedFromTheList(t *testing.T) {
 	write(t, filepath.Join(home, ".claude", "settings.json"), "{}")
 	write(t, filepath.Join(home, ".gitconfig"), "[user]\n")
 
-	if err := (&config.Config{Profile: []string{".claude", ".gitconfig"}}).Save(); err != nil {
+	if err := (&config.Config{Profile: config.Entries([]string{".claude", ".gitconfig"})}).Save(); err != nil {
 		t.Fatal(err)
 	}
 	fill(t, dest)
-	if err := (&config.Config{Profile: []string{".gitconfig"}}).Save(); err != nil {
+	if err := (&config.Config{Profile: config.Entries([]string{".gitconfig"})}).Save(); err != nil {
 		t.Fatal(err)
 	}
 	fill(t, dest)
@@ -182,12 +199,12 @@ func TestCopyKeepsSiblingsUnderASharedTopLevelDirectory(t *testing.T) {
 	write(t, filepath.Join(home, "AppData", "Roaming", "two", "f"), "two")
 
 	both := []string{"AppData/Local/one", "AppData/Roaming/two"}
-	if err := (&config.Config{Profile: both}).Save(); err != nil {
+	if err := (&config.Config{Profile: config.Entries(both)}).Save(); err != nil {
 		t.Fatal(err)
 	}
 	fill(t, dest)
 
-	if err := (&config.Config{Profile: []string{"AppData/Roaming/two"}}).Save(); err != nil {
+	if err := (&config.Config{Profile: config.Entries([]string{"AppData/Roaming/two"})}).Save(); err != nil {
 		t.Fatal(err)
 	}
 	fill(t, dest)
@@ -204,7 +221,7 @@ func TestCopyKeepsSiblingsUnderASharedTopLevelDirectory(t *testing.T) {
 // mistaken argument is not a copy into the wrong place but a deletion of one.
 func TestCopyRefusesADestinationItWasNotGiven(t *testing.T) {
 	for _, dest := range []string{"", ".", "profile"} {
-		if _, err := Copy(dest, nil); err == nil {
+		if _, _, err := Copy(dest, nil, nil); err == nil {
 			t.Errorf("a profile at %q was accepted, and clearing it would have run", dest)
 		}
 	}
@@ -212,11 +229,11 @@ func TestCopyRefusesADestinationItWasNotGiven(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Copy(file, nil); err == nil {
+	if _, _, err := Copy(file, nil, nil); err == nil {
 		t.Error("a file was accepted as a profile to fill")
 	}
 	missing := filepath.Join(t.TempDir(), "never-made")
-	if _, err := Copy(missing, nil); err == nil {
+	if _, _, err := Copy(missing, nil, nil); err == nil {
 		t.Error("a directory that does not exist was accepted as a profile to fill")
 	}
 }
@@ -263,7 +280,7 @@ func TestCopyRefusesARecordedNameThatClimbsOutOfTheProfile(t *testing.T) {
 	precious := filepath.Join(outside, "precious.txt")
 	write(t, precious, "somebody else's")
 
-	if _, err := Copy(dest, []string{"../not-the-profile"}); err == nil {
+	if _, _, err := Copy(dest, []config.Entry{{Path: "../not-the-profile"}}, nil); err == nil {
 		t.Error("a recorded name pointing outside the profile was acted on")
 	}
 	if _, err := os.Stat(precious); err != nil {
@@ -311,7 +328,7 @@ func TestCopyCannotBeWalkedOutOfTheProfileThroughAJunction(t *testing.T) {
 	}
 	junctionTo(t, link, outside)
 
-	if _, err := Copy(dest, copied); err != nil {
+	if _, _, err := Copy(dest, copied, lastPrints[dest]); err != nil {
 		t.Fatalf("the run could not go on past a junction the sandbox left: %v", err)
 	}
 
@@ -345,10 +362,10 @@ func TestCopyCanStillClearAJunctionTheSandboxLeftBehind(t *testing.T) {
 	junctionTo(t, link, outside)
 
 	// Taken off the list, so the next run has to clear it.
-	if err := (&config.Config{Profile: []string{}}).Save(); err != nil {
+	if err := (&config.Config{Profile: config.Entries([]string{})}).Save(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Copy(dest, copied); err != nil {
+	if _, _, err := Copy(dest, copied, lastPrints[dest]); err != nil {
 		t.Fatalf("clearing a junction the sandbox left behind failed: %v", err)
 	}
 	if _, err := os.Lstat(link); !os.IsNotExist(err) {
@@ -387,7 +404,10 @@ func TestTheCopyStopsWhenItHasCarriedEnough(t *testing.T) {
 		t.Fatal(err)
 	}
 	left := int64(50) // enough for the first file, not for both
-	err = mirror(filepath.Join(home, "big"), "big", root, info, &left)
+	// Empty maps rather than nil: the file that finishes before the
+	// refusal still gets its fingerprint recorded, and a nil map would
+	// panic on the write.
+	err = mirror(filepath.Join(home, "big"), "big", "", root, info, &left, newWalk(config.Entry{Path: "big"}), map[string]Print{}, map[string]Print{})
 	if err == nil {
 		t.Fatal("a copy past its budget was allowed to finish")
 	}
@@ -406,7 +426,7 @@ func TestAnOrdinaryCopyIsNowhereNearTheCeiling(t *testing.T) {
 	home, dest := useProfile(t, []string{".claude/settings.json"})
 	write(t, filepath.Join(home, ".claude", "settings.json"), `{"theme":"dark"}`)
 
-	copied, err := Copy(dest, nil)
+	copied, _, err := Copy(dest, nil, nil)
 	if err != nil {
 		t.Fatalf("an ordinary copy was refused: %v", err)
 	}
@@ -435,13 +455,23 @@ func TestAStoppedCopyIsStillOnTheListToClear(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Enough for the first file, not for both.
-	copied, err := copyEntries(home, root, []string{"big"}, 50)
+	copied, prints, err := copyEntries(home, root, []config.Entry{{Path: "big"}}, 50, nil)
 	_ = root.Close()
 	if err == nil {
 		t.Fatal("a copy past its budget was allowed to finish")
 	}
-	if len(copied) != 1 || copied[0] != "big" {
+	if len(copied) != 1 || copied[0].Path != "big" {
 		t.Fatalf("the stopped entry came back as %v, and the caller has nothing to clear", copied)
+	}
+	// The fingerprints follow the same rule as the list: the file that
+	// finished is vouched for, the one the run never reached is not. A
+	// print for an unfinished copy would let the next run skip a file that
+	// may not be whole.
+	if len(prints) != 1 {
+		t.Fatalf("a stopped copy left %d fingerprints behind, want 1 for the file that finished", len(prints))
+	}
+	if _, ok := prints["big/one.txt"]; !ok {
+		t.Errorf("the fingerprint came back as %v, want one for big/one.txt", prints)
 	}
 
 	// And the clearing reaches it, which is the point of it being on the list.

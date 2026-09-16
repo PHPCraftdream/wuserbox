@@ -14,7 +14,6 @@ package profile
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,24 +35,40 @@ import (
 // it would be a list the sandbox could edit into an instruction to delete
 // something else. The caller keeps it where the sandbox cannot reach.
 //
+// prints is what the last run recorded about the sources it carried in,
+// keyed by each file's path inside the profile; the caller keeps it beside
+// the .copied list, outside the profile, so the sandbox cannot rewrite
+// what its own copies get compared against. It is what lets a file whose
+// source has not changed be skipped without ever trusting the
+// destination's timestamps. What comes back beside the copied list is this
+// run's own record, to be kept the same way for the next run.
+//
 // This only ever reads under the user's profile and writes under dest, never
 // the reverse, and that is fixed here rather than left to whoever calls it:
 // a sandbox able to write back into the files its own credentials came from
 // could rewrite them, which is the hole this exists to close.
-func Copy(dest string, previously []string) ([]string, error) {
+func Copy(dest string, previously []config.Entry, prints map[string]Print) ([]config.Entry, map[string]Print, error) {
 	root, err := openProfile(dest)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = root.Close() }()
 	rules, err := config.Load()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	// Cleanup runs first: a rule about what should not be there is applied
+	// before anything decides what to bring in. It is wired in here rather
+	// than in Clear, since --no-ai means this profile is not being filled at
+	// all, and running the cleanup globs then would be doing the work of a
+	// feature that is switched off.
+	if _, err := clearCleanup(root, rules.Cleanup); err != nil {
+		return nil, nil, err
 	}
 	if err := forget(root, previously, rules.Profile); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return copyEntries(paths.Home(), root, rules.Profile, Ceiling)
+	return copyEntries(paths.Home(), root, rules.Profile, Ceiling, prints)
 }
 
 // Clear takes back everything an earlier Copy placed under dest, without
@@ -64,7 +79,7 @@ func Copy(dest string, previously []string) ([]string, error) {
 // sandbox told to skip the agent preset must not go on holding what it
 // already copied simply because that section still names it. dest itself is
 // left exactly as an empty thin profile would be.
-func Clear(dest string, previously []string) error {
+func Clear(dest string, previously []config.Entry) error {
 	root, err := openProfile(dest)
 	if err != nil {
 		return err
@@ -110,24 +125,123 @@ func openProfile(dest string) (*os.Root, error) {
 // list does not name includes NTUSER.DAT, the Temp directory and whatever
 // the profile service built under AppData. Deleting those is deleting the
 // sandbox's registry. Nothing is removed that wuserbox did not put there.
-func forget(root *os.Root, previously, current []string) error {
+//
+// Each stale entry is cleared by clearEntry, which honors the exclusions the
+// entry carried: a name leaving the list says something about copying, and
+// what its exclusions protected was never ours to take back.
+func forget(root *os.Root, previously []config.Entry, current []config.Entry) error {
 	keep := make(map[string]bool, len(current))
 	for _, entry := range current {
-		keep[strings.ToLower(filepath.ToSlash(entry))] = true
+		keep[strings.ToLower(filepath.ToSlash(entry.Path))] = true
 	}
 	for _, entry := range previously {
-		if keep[strings.ToLower(filepath.ToSlash(entry))] {
+		if keep[strings.ToLower(filepath.ToSlash(entry.Path))] {
 			continue
 		}
-		stale, err := within(entry)
+		stale, err := within(entry.Path)
 		if err != nil {
 			// A recorded name that does not land inside the profile is one
 			// nothing here wrote. Refusing is the only safe reading: the
 			// alternative is deleting whatever it does point at.
 			return err
 		}
-		if err := root.RemoveAll(stale); err != nil {
-			return fmt.Errorf("clearing %s, which the rules file no longer names: %w", entry, err)
+		if err := clearEntry(root, stale, entry); err != nil {
+			return fmt.Errorf("clearing %s, which the rules file no longer names: %w", entry.Path, err)
+		}
+	}
+	return nil
+}
+
+// clearEntry takes back one stale entry: what a previous copy put under a
+// name the rules file no longer names. An entry carrying no exclusions --
+// the common case -- goes the way it always has, RemoveAll, which is cheaper
+// than any walk. An entry carrying exclusions is walked instead, and only
+// what its exclusions do not protect is removed, leaving the excluded paths
+// and the directories on the way to them: taking the entry off the list
+// said something about copying, and the exclusions it carried were never
+// about copying. They name what the sandbox keeps -- the sessions the agent
+// inside wrote, for one -- and nobody editing the list has said anything
+// against those.
+func clearEntry(root *os.Root, stale string, entry config.Entry) error {
+	if len(entry.Exclude) == 0 {
+		return root.RemoveAll(stale)
+	}
+	// A junction sitting where the entry itself landed is removed as the
+	// link it is, exactly as the unfiltered clearing would: the walk below
+	// opens directories through the root, and the root refuses to open one
+	// that leads out of the profile, which would fail the whole clearing
+	// over a link that is safe to remove and nothing else.
+	info, readable := lookAt(root, stale)
+	if !readable {
+		return nil
+	}
+	if !info.IsDir() || info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+		return root.RemoveAll(stale)
+	}
+	var kept bool
+	if err := clearKeeping(root, stale, "", entry, &kept); err != nil {
+		return err
+	}
+	if kept {
+		return nil
+	}
+	// Nothing under the entry survived, so the entry's own directory goes
+	// with what it held. RemoveAll rather than Remove because the entry may
+	// never have landed at all, and a clearing that errors on a name that
+	// is not there is worse than useless.
+	return root.RemoveAll(stale)
+}
+
+// clearKeeping removes the unprotected part of one directory of a stale
+// entry's subtree, through the root, and reports through kept whether
+// anything under it was spared. A child an exclusion protects is left with
+// everything below it and no questions asked: the mask was written against
+// the child's own relative path, and the sandbox's claim does not stop at
+// its first level. A directory with nothing protected under it goes once
+// its children have gone -- a directory is kept only while it is the way to
+// something protected -- so the clearing takes the entry's shape apart
+// rather than leaving empty frames behind.
+func clearKeeping(root *os.Root, dir, rel string, entry config.Entry, kept *bool) error {
+	d, err := root.Open(dir)
+	if err != nil {
+		// The entry may never have landed, or is already gone; either way
+		// there is nothing here to take back.
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	children, err := d.ReadDir(-1)
+	_ = d.Close()
+	if err != nil {
+		return err
+	}
+	for _, child := range children {
+		childRel := child.Name()
+		if rel != "" {
+			childRel = rel + "/" + child.Name()
+		}
+		if protectedBy(entry, childRel) {
+			*kept = true
+			continue
+		}
+		childPath := filepath.Join(dir, child.Name())
+		if !child.IsDir() {
+			if err := root.Remove(childPath); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			continue
+		}
+		var under bool
+		if err := clearKeeping(root, childPath, childRel, entry, &under); err != nil {
+			return err
+		}
+		if under {
+			*kept = true
+			continue
+		}
+		if err := root.Remove(childPath); err != nil && !os.IsNotExist(err) {
+			return err
 		}
 	}
 	return nil
@@ -140,6 +254,18 @@ func forget(root *os.Root, previously, current []string) error {
 // junction and the root can. It is here for the message: a name written
 // wrongly in the rules file deserves to be told what is wrong with it,
 // rather than "path escapes from parent" about a path nobody typed.
+// EntryEscapesProfile answers whether a profile: entry's path, exactly as
+// the rules file spells it, would be refused by within for being absolute
+// or for climbing out of the profile with "..", and if so, within's own
+// message. Exported so validation asks this package the question rather
+// than re-deciding it with a copy of the same rule: two answers to "does
+// this path escape the profile" are exactly how a rules file comes to pass
+// validation and then fail the run.
+func EntryEscapesProfile(path string) error {
+	_, err := within(path)
+	return err
+}
+
 func within(entry string) (string, error) {
 	clean := filepath.Clean(filepath.FromSlash(entry))
 	if filepath.IsAbs(clean) || clean == ".." ||
@@ -168,14 +294,20 @@ const Ceiling = 64 << 20
 // copyEntries takes its budget rather than reading the ceiling itself, so a
 // test can measure the counting and the refusal without asking this machine
 // for sixty-four megabytes of temporary files.
-func copyEntries(home string, root *os.Root, entries []string, left int64) ([]string, error) {
-	var copied []string
+//
+// prints is what the last run recorded and the map returned is this run's:
+// a skipped file carries its print forward and a copied file gets a fresh
+// one, so anything this run did not finish with is simply absent, which
+// sends the next run back to copying it.
+func copyEntries(home string, root *os.Root, entries []config.Entry, left int64, prints map[string]Print) ([]config.Entry, map[string]Print, error) {
+	var copied []config.Entry
+	newPrints := make(map[string]Print, len(prints))
 	for _, entry := range entries {
-		dst, err := within(entry)
+		dst, err := within(entry.Path)
 		if err != nil {
-			return copied, err
+			return copied, newPrints, err
 		}
-		src := filepath.Join(home, filepath.FromSlash(entry))
+		src := filepath.Join(home, filepath.FromSlash(entry.Path))
 		info, err := os.Stat(src)
 		if err != nil {
 			continue // not on this machine; not an error
@@ -192,149 +324,9 @@ func copyEntries(home string, root *os.Root, entries []string, left int64) ([]st
 		// list, and what had landed stayed in the sandbox's profile for good
 		// because nothing left knew it was there.
 		copied = append(copied, entry)
-		if err := mirror(src, dst, root, info, &left); err != nil {
-			return copied, fmt.Errorf("copying %s: %w", entry, err)
+		if err := mirror(src, dst, "", root, info, &left, newWalk(entry), prints, newPrints); err != nil {
+			return copied, newPrints, fmt.Errorf("copying %s: %w", entry.Path, err)
 		}
 	}
-	return copied, nil
-}
-
-// mirror replaces dst with a copy of src, exactly, whatever dst already held.
-// src is a path on the machine; dst is a path inside the profile's root.
-//
-// Unconditionally, on every call: dst sits inside a sandbox's own profile, so
-// its own timestamps are the sandboxed program's to set. Skipping a copy
-// because "dst already looks new enough" would trust a value the very thing
-// being contained controls, and a rule that only sometimes checks a
-// trustworthy source is worse than one that never checks an untrustworthy
-// one. The source's timestamps are never touched by a sandbox and would be
-// safe to trust, but comparing them against dst's does not help: dst still
-// has to be believed first.
-//
-// The cost is paid in full every time, which is affordable only because this
-// list names credentials and settings rather than whole state directories --
-// the default was the latter once, and came to 72,320 files and 19 GB per
-// run. A sandbox has its own writable profile for project data and caches,
-// and those never belong in this list.
-func mirror(src, dst string, root *os.Root, info os.FileInfo, left *int64) error {
-	if info.IsDir() {
-		return mirrorDir(src, dst, root, left)
-	}
-	if *left -= info.Size(); *left < 0 {
-		return fmt.Errorf("this is carrying more than %d MB into the sandbox's profile, and %s is "+
-			"where it went over. The profile section of the rules file is for the files an agent "+
-			"needs in order to be logged in, not for the directories it keeps its work in: name "+
-			"those files, or take the directory out",
-			Ceiling>>20, src)
-	}
-	return mirrorFile(src, dst, root)
-}
-
-func mirrorDir(src, dst string, root *os.Root, left *int64) error {
-	if err := clearWhatIsNotADirectory(root, dst); err != nil {
-		return err
-	}
-	if err := root.MkdirAll(dst, 0o755); err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return err
-	}
-	present := make(map[string]bool, len(entries))
-	for _, e := range entries {
-		info, err := e.Info()
-		if err != nil {
-			return err
-		}
-		// Anything that is neither a plain file nor a directory is passed
-		// over: a junction or symlink inside the source would otherwise be
-		// opened as a file and fail the whole copy, or followed into a loop.
-		// What it points at is the user's own arrangement to make; copying
-		// the link into a sandbox is not.
-		if !info.Mode().IsRegular() && !info.IsDir() {
-			continue
-		}
-		present[e.Name()] = true
-		if err := mirror(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()), root, info, left); err != nil {
-			return err
-		}
-	}
-	return removeStrayChildren(root, dst, present)
-}
-
-// clearWhatIsNotADirectory takes away whatever sits at dst when it is not a
-// plain directory, so that a copy of a directory can be made there.
-//
-// This is what keeps a sandbox from pinning a name in its own profile. Put a
-// junction where a listed directory belongs and the root refuses to make a
-// directory over it -- rightly, it will not follow the link -- and every run
-// afterwards fails on the same name until somebody removes the sandbox.
-// Removing the link is not following it: measured, what it pointed at is
-// untouched, which is the whole reason this is safe to do without asking.
-func clearWhatIsNotADirectory(root *os.Root, dst string) error {
-	info, readable := lookAt(root, dst)
-	// Nothing there, or nothing this can read: MkdirAll answers next, and
-	// its answer is the one worth reporting.
-	if !readable {
-		return nil
-	}
-	if info.IsDir() && info.Mode()&(os.ModeSymlink|os.ModeIrregular) == 0 {
-		return nil
-	}
-	return root.RemoveAll(dst)
-}
-
-// lookAt is Lstat where not finding something is an answer rather than a
-// failure.
-func lookAt(root *os.Root, name string) (os.FileInfo, bool) {
-	info, err := root.Lstat(name)
-	return info, err == nil
-}
-
-// removeStrayChildren drops whatever dst holds that src does not, so a
-// directory entry mirrors its source exactly instead of only ever growing -
-// otherwise a file an agent left behind, or one deleted from the source since
-// the last run, would sit in the sandbox's profile forever.
-func removeStrayChildren(root *os.Root, dst string, present map[string]bool) error {
-	dir, err := root.Open(dst)
-	if err != nil {
-		return err
-	}
-	entries, err := dir.ReadDir(-1)
-	_ = dir.Close()
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if present[e.Name()] {
-			continue
-		}
-		if err := root.RemoveAll(filepath.Join(dst, e.Name())); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func mirrorFile(src, dst string, root *os.Root) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	if parent := filepath.Dir(dst); parent != "." {
-		if err := root.MkdirAll(parent, 0o755); err != nil {
-			return err
-		}
-	}
-	out, err := root.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	return out.Close()
+	return copied, newPrints, nil
 }

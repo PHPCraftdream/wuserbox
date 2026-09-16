@@ -3,9 +3,11 @@ package setup
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/profile"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
@@ -112,13 +114,22 @@ func fillProfile(s *state.State) error {
 	if err != nil {
 		return err
 	}
+	prints, err := facts.Prints(s.Group)
+	if err != nil {
+		return err
+	}
 	if s.NoAI {
 		if err := profile.Clear(s.Profile, previously); err != nil {
 			return err
 		}
-		return facts.RecordCopied(s.Group, nil)
+		if err := facts.RecordCopied(s.Group, nil); err != nil {
+			return err
+		}
+		// The fingerprints are dropped along with what Clear took back: a
+		// cleared profile has nothing left to compare against.
+		return facts.RecordPrints(s.Group, nil)
 	}
-	copied, copyErr := profile.Copy(s.Profile, previously)
+	copied, newPrints, copyErr := profile.Copy(s.Profile, previously, prints)
 	// Written down whatever happened. What did land has to be findable next
 	// time or nothing will ever clear it, and on a failure the union is the
 	// safe reading: naming something already gone costs one attempt that
@@ -127,25 +138,43 @@ func fillProfile(s *state.State) error {
 	if err := facts.RecordCopied(s.Group, union(previously, copied, copyErr != nil)); err != nil {
 		return err
 	}
+	// Recorded on a partial copy too, for the same reason the entry list
+	// is. What came back is exactly the files this run looked at and can
+	// vouch for; everything else has no fingerprint, which means the next
+	// run copies it. A missing fingerprint costs one copy; a stale one
+	// costs a file the sandbox needed.
+	if err := facts.RecordPrints(s.Group, newPrints); err != nil {
+		return err
+	}
 	return copyErr
 }
 
 // union is what to record: exactly what was copied where the copy finished,
-// and everything either list mentions where it did not.
-func union(previously, copied []string, partial bool) []string {
+// and everything either list mentions where it did not. Either way it is
+// deduped by path, folded the same way forget folds the names it keeps,
+// because an entry named twice in one record would be cleared twice and
+// cleared wrong the second time.
+func union(previously, copied []config.Entry, partial bool) []config.Entry {
 	if !partial {
-		return copied
+		return dedupeByPath(copied)
 	}
-	seen := make(map[string]bool, len(previously)+len(copied))
-	var all []string
-	for _, entry := range append(append([]string{}, previously...), copied...) {
-		if seen[entry] {
+	return dedupeByPath(append(append([]config.Entry{}, previously...), copied...))
+}
+
+// dedupeByPath keeps the first of the entries that share a path, so the
+// record holds one entry per place in the profile.
+func dedupeByPath(entries []config.Entry) []config.Entry {
+	seen := make(map[string]bool, len(entries))
+	whole := make([]config.Entry, 0, len(entries))
+	for _, entry := range entries {
+		key := strings.ToLower(filepath.ToSlash(entry.Path))
+		if seen[key] {
 			continue
 		}
-		seen[entry] = true
-		all = append(all, entry)
+		seen[key] = true
+		whole = append(whole, entry)
 	}
-	return all
+	return whole
 }
 
 // onlyRunning refuses the options that describe what a sandbox is, rather than

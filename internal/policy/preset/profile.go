@@ -6,54 +6,112 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 )
 
-// credentialsAndSettings is what a sandbox is given of an agent's own: the
-// file it logs in with and the file it is configured by. Not the directory
-// holding them.
+// defaultProfile is what a sandbox is given of an agent's own, and it comes
+// in three kinds: credentials, settings, and instructions -- the agents,
+// commands, skills and memory files people write for their tools. The old
+// list carried only the first two and missed the third entirely, because
+// instructions live in directories and naming a directory meant carrying
+// everything inside it. An agent in a sandbox could log in but had none of
+// what it had been taught, which is also the part a person cannot retype on
+// every run.
 //
-// That distinction is the whole of this list, and it was learned the
-// expensive way. The default was once the agent state directories whole --
-// the same list AI() knows -- and it was measured, on one ordinary machine,
-// at 72,320 files and 19,436 MB, copied into every sandbox on every run.
-// Almost none of it was credentials. `.codex` came to 7.2 GB of which two
-// SQLite databases of conversation history were 1.9 GB; `.claude` came to
-// 10 GB of project transcripts; `.config` came to 129 MB of which 82 MB was
-// a note-taking application that is not an agent at all. What an agent
-// actually needs to start logged in and configured is measured in kilobytes.
+// The whole list comes to roughly 2.8 MB across about 250 files, against
+// 254 KB for the file-only default it replaces and the 64 MB ceiling
+// internal/policy/profile.Ceiling enforces. It stays that small because
+// every directory in it was chosen by measurement: `.claude/skills` is
+// 1.5 MB and 104 files, `.claude/agents` 244 KB and 50, `.claude/commands`
+// 112 KB, `.claude/output-styles` 8 KB, `.codex/agents` 92 KB,
+// `.gemini/commands` 32 KB, and every single file under 10 KB.
 //
-// So this names files. A history, a log, a cache or a database is left
-// behind on purpose: a sandbox starts with your login and your settings and
-// a blank history, which is also the more useful answer -- one project's
-// transcripts have no business inside another project's sandbox.
+// One entry is named wide and bounded. `.claude/plugins` measured 44 MB, of
+// which almost all -- 1,139 files -- was `marketplaces`, a cache of other
+// people's plugin repositories, so the entry carries an exclusion. The
+// exclusion does two things at once: it keeps the cache out of the copy,
+// and it tells the copier that whatever sits under that name in the
+// sandbox is the sandbox's to keep rather than something a later run
+// deletes for not being in the source.
 //
-// It is a starting point rather than a closed set. Agents appear faster than
-// releases, the list is written into the rules file where it can be edited,
-// and a name that is not on this machine is simply not copied. Anyone who
-// wants a directory copied whole can say so there; what they cannot do is
-// get one by accident.
-var credentialsAndSettings = []string{
-	".claude.json",
-	".claude/.credentials.json", ".claude/settings.json",
-	".claude/CLAUDE.md", ".claude/keybindings.json",
-	".codex/auth.json", ".codex/config.toml",
-	".gemini/settings.json", ".gemini/google_accounts.json",
-	".gemini/.env", ".gemini/installation_id",
-	".qwen/oauth_creds.json", ".qwen/settings.json", ".qwen/installation_id",
-	".factory/auth.encrypted", ".factory/settings.json",
-	".grok/settings.json",
-	".crush/crush.json",
-	".zai/settings.json",
-	".continue/config.yaml", ".continue/config.json",
-	".cagent/config.yaml",
-	"AppData/Roaming/Goose/config.yaml",
-	"AppData/Roaming/Codex/auth.json",
+// What is still left behind is what made naming a whole agent directory a
+// disaster. The default that did it was measured at 72,320 files and
+// 19,436 MB into every sandbox on every run; on the machine these numbers
+// come from, `.claude/projects` alone was 9.2 GB and `.codex/sessions`
+// 4.5 GB of session history. None of that is reachable from this list, and
+// the guard that keeps it from coming back -- no bare entry naming a whole
+// agent directory -- is a test in this package, not a filter here, because
+// a filter that refused every directory would refuse the instructions the
+// list exists to carry.
+//
+// Two absences are deliberate rather than oversights. `AppData/Local/rush/
+// providers.json` is a 517 KB catalog the tool re-fetches by itself, so
+// copying it buys nothing and costs more than everything on the Gemini and
+// rush lines put together. And OpenCode is named by its one settings file
+// rather than by `.config/opencode`, which also holds a `node_modules`
+// tree: naming the directory would need an exclusion to say what naming
+// the file says plainly.
+//
+// The six agents measured above get directories; the rest keep the named
+// credential files they always had. That line is where the measuring
+// stopped, not where the list's ambition did: a directory named without
+// somebody having counted what is in it is exactly how the 19 GB default
+// happened, and none of those agents is installed here to count. Whoever
+// has one and wants its instructions adds the directory to their own rules
+// file, having seen what is in it.
+//
+// It is a starting point rather than a closed set. Agents appear faster
+// than releases, the list is written into the rules file where it can be
+// edited, and a name that is not on this machine is simply not copied.
+var defaultProfile = []config.Entry{
+	{Path: ".claude.json"},
+	{Path: ".claude/.credentials.json"},
+	{Path: ".claude/settings.json"},
+	{Path: ".claude/keybindings.json"},
+	{Path: ".claude/CLAUDE.md"},
+	{Path: ".claude/agents"},
+	{Path: ".claude/commands"},
+	{Path: ".claude/skills"},
+	{Path: ".claude/output-styles"},
+	{Path: ".claude/plugins", Exclude: config.Masks([]string{"marketplaces/**"})},
+	{Path: ".codex/auth.json"},
+	{Path: ".codex/config.toml"},
+	{Path: ".codex/installation_id"},
+	{Path: ".codex/AGENTS.md"},
+	{Path: ".codex/agents"},
+	{Path: "AppData/Roaming/Codex/auth.json"},
+	{Path: ".gemini/settings.json"},
+	{Path: ".gemini/google_accounts.json"},
+	{Path: ".gemini/.env"},
+	{Path: ".gemini/installation_id"},
+	{Path: ".gemini/commands"},
+	{Path: ".config/opencode/opencode.json"},
+	{Path: ".crush/crush.json"},
+	{Path: ".crush/commands"},
+	{Path: ".config/rush/rush.json"},
+	{Path: ".config/rush/commands"},
+	{Path: "AppData/Local/rush/rush.json"},
+	// The agents nobody measured, carrying what they always carried. They
+	// are here because taking them out would log somebody out of a tool
+	// that has been working for them, and a list gaining directories for
+	// six agents is no reason for the other seven to lose what they had.
+	{Path: ".qwen/oauth_creds.json"},
+	{Path: ".qwen/settings.json"},
+	{Path: ".qwen/installation_id"},
+	{Path: ".factory/auth.encrypted"},
+	{Path: ".factory/settings.json"},
+	{Path: ".grok/settings.json"},
+	{Path: ".zai/settings.json"},
+	{Path: ".continue/config.yaml"},
+	{Path: ".continue/config.json"},
+	{Path: ".cagent/config.yaml"},
+	{Path: "AppData/Roaming/Goose/config.yaml"},
 }
 
 // Profile lists the default entries for the rules file's profile section:
-// the credential and settings files above that exist on this machine, each
-// as a path relative to the profile root, so a copy can be placed at the
-// same relative spot under a sandbox's own profile.
+// the entries above that exist on this machine, each named as a path
+// relative to the profile root, so a copy can be placed at the same relative
+// spot under a sandbox's own profile.
 //
 // What is deliberately not here is anything on the sensitive list -- ~/.ssh,
 // ~/.netrc, ~/.npmrc, ~/.gitconfig and their neighbors. wuserbox protects
@@ -71,29 +129,29 @@ var credentialsAndSettings = []string{
 // every agent this project knows about will not exist for a given person,
 // and a name that never resolves to anything would sit in every fresh rules
 // file unexplained.
-func Profile() []string {
+func Profile() []config.Entry {
 	home := paths.Home()
 	guarded := make(map[string]bool, len(sensitive))
 	for _, entry := range sensitive {
 		guarded[strings.ToLower(entry.name)] = true
 	}
-	var out []string
-	for _, entry := range credentialsAndSettings {
+	var out []config.Entry
+	for _, entry := range defaultProfile {
 		// The first segment is what the sensitive table names, so a file
 		// under a protected directory is refused along with the directory.
-		if guarded[strings.ToLower(firstSegment(entry))] {
+		if guarded[strings.ToLower(firstSegment(entry.Path))] {
 			continue
 		}
-		info, err := os.Stat(filepath.Join(home, filepath.FromSlash(entry)))
-		if err != nil {
-			continue
-		}
-		// A plain file or nothing. The whole point of naming files is that
-		// the default cannot grow into a tree, and a name that happens to be
-		// a directory on somebody's machine would do exactly that -- copied
-		// whole, on every run, without anybody having asked for it. Whoever
-		// wants that says so in the rules file.
-		if !info.Mode().IsRegular() {
+		// Whatever is there, file or directory. This used to refuse
+		// anything that was not a plain file, and the reason was sound
+		// while the list named only files: a name that happened to be a
+		// directory on somebody's machine would have been copied whole,
+		// unasked. The list now names directories on purpose, so the guard
+		// would refuse exactly what it was extended to carry. What it was
+		// protecting against is a test in this package instead -- no bare
+		// entry may name a whole agent state directory -- which refuses the
+		// dangerous shape rather than every directory.
+		if _, err := os.Stat(filepath.Join(home, filepath.FromSlash(entry.Path))); err != nil {
 			continue
 		}
 		out = append(out, entry)

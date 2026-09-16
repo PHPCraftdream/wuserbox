@@ -54,10 +54,11 @@ func ProtectSettings(s *state.State) error {
 }
 
 // ensureRules writes a rules file when there is none, its profile section
-// pre-filled from the agent preset, so the common agents' credentials are
-// copied into a sandbox without anybody composing that list by hand. It is
-// held while doing so, like every other change to that file, so it cannot
-// overwrite a rule another command is writing at the same moment.
+// pre-filled from the agent preset, so the common agents' credentials,
+// settings and instructions are copied into a sandbox without anybody
+// composing that list by hand. It is held while doing so, like every other
+// change to that file, so it cannot overwrite a rule another command is
+// writing at the same moment.
 func ensureRules() error {
 	if _, err := os.Stat(config.Path()); err == nil {
 		return nil
@@ -78,7 +79,7 @@ func ensureRules() error {
 }
 
 // RetireWholeDirectoryProfileRules replaces the whole agent directories an
-// older default wrote into a rules file with the files that default names
+// older default wrote into a rules file with the entries that default names
 // now, and answers with what it took out so the caller can say so.
 //
 // A narrower default only reaches a machine that has never run wuserbox. The
@@ -121,15 +122,20 @@ func RetireWholeDirectoryProfileRules() ([]string, error) {
 		for _, entry := range preset.RetiredProfileEntries() {
 			old[folded(entry)] = true
 		}
-		kept := make([]string, 0, len(rules.Profile))
+		kept := make([]config.Entry, 0, len(rules.Profile))
 		have := make(map[string]bool, len(rules.Profile))
 		for _, entry := range rules.Profile {
-			if old[folded(entry)] {
-				retired = append(retired, entry)
+			// Bare entries only. An entry carrying limits names the same
+			// directory the old default named and means something the old
+			// default could not say -- that shape did not exist when it was
+			// written -- so it is somebody's own, and taking it out would be
+			// the migration undoing a deliberate edit again.
+			if entry.Bare() && old[folded(entry.Path)] {
+				retired = append(retired, entry.Path)
 				continue
 			}
 			kept = append(kept, entry)
-			have[folded(entry)] = true
+			have[folded(entry.Path)] = true
 		}
 		if len(retired) == 0 {
 			return nil
@@ -138,7 +144,7 @@ func RetireWholeDirectoryProfileRules() ([]string, error) {
 		// anything already named. Added rather than substituted wholesale, so
 		// a section somebody has edited keeps its own shape.
 		for _, entry := range preset.Profile() {
-			if !have[folded(entry)] {
+			if !have[folded(entry.Path)] {
 				kept = append(kept, entry)
 			}
 		}
