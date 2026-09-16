@@ -167,6 +167,50 @@ func TestEmptyCleanupChangesNothingAndCostsNoWalk(t *testing.T) {
 	}
 }
 
+// TestCleanupRefusesAGlobBroadEnoughToReachUsrClassDat checks that the same
+// refusal NTUSER.DAT gets reaches UsrClass.dat too: "AppData/**" names none
+// of NTUSER.DAT's own family (that hive sits at the profile root, not under
+// AppData) and would still take the per-user class registration hive the
+// profile service built at AppData\Local\Microsoft\Windows\UsrClass.dat.
+// Fails without the fix, since refuseReservedCleanup only ever looked at
+// NTUSER.DAT's family.
+func TestCleanupRefusesAGlobBroadEnoughToReachUsrClassDat(t *testing.T) {
+	_, dest := useCleanup(t, nil, []string{"AppData/**"})
+	hive := filepath.Join(dest, "AppData", "Local", "Microsoft", "Windows", "UsrClass.dat")
+	write(t, hive, "classes")
+	write(t, filepath.Join(dest, "keep.txt"), "should not be reached either")
+
+	_, _, err := Copy(dest, nil, nil)
+	if err == nil {
+		t.Fatal("a glob that would match UsrClass.dat was accepted")
+	}
+	if exit.Of(err) != exit.BadConfig {
+		t.Errorf("the refusal carried exit code %v, want %v (bad-config)", exit.Of(err), exit.BadConfig)
+	}
+	if _, err := os.Stat(hive); err != nil {
+		t.Errorf("the hive is gone even though the run was refused: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "keep.txt")); err != nil {
+		t.Errorf("cleanup cleared other files before refusing the run entirely: %v", err)
+	}
+}
+
+// TestCleanupStillClearsTheSandboxesOwnTemp checks that guarding UsrClass.dat
+// does not cost the feature its commonest case: Temp is the sandbox's own
+// scratch directory, nowhere near AppData\Local\Microsoft\Windows, and a
+// glob naming it must still run rather than being caught by a guard drawn
+// too wide around the profile service's own files.
+func TestCleanupStillClearsTheSandboxesOwnTemp(t *testing.T) {
+	_, dest := useCleanup(t, nil, []string{"Temp/**"})
+	write(t, filepath.Join(dest, "Temp", "scratch.tmp"), "work in progress")
+
+	fill(t, dest)
+
+	if _, err := os.Stat(filepath.Join(dest, "Temp", "scratch.tmp")); !os.IsNotExist(err) {
+		t.Errorf("Temp/** should have cleared the sandbox's own scratch file, stat error: %v", err)
+	}
+}
+
 // TestCleanupCannotReachOutOfTheProfileThroughAJunction checks glob 9,
 // following the shape of TestCopyCannotBeWalkedOutOfTheProfileThroughAJunction.
 // The glob is a name-only mask with no separator, "*.txt" -- it does not match

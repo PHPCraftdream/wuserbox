@@ -207,6 +207,9 @@ func matchesCleanup(cleanup []config.Mask, rel string) bool {
 // representative name stands in for the whole family -- a glob that matches
 // this one matches every other member of it too, since nothing about the
 // varying part of the name changes what pattern would have to reach it.
+//
+// Bare names, not full paths, because NTUSER.DAT and its companions all sit
+// at the profile root -- a name is the whole of their path.
 var reservedProfileNames = []string{
 	"NTUSER.DAT",
 	"NTUSER.DAT.LOG1",
@@ -216,13 +219,39 @@ var reservedProfileNames = []string{
 	"NTUSER.DAT{a0876e4c-1cb1-11d9-9669-0800200c9a66}.TMContainer00000000000000000001.regtrans-ms",
 }
 
+// reservedProfilePaths is reservedProfileNames' counterpart for what does not
+// sit at the profile root: UsrClass.dat, the per-user class registration
+// hive, and its own family of transaction logs, both named the same
+// GUID-stands-in way as NTUSER.DAT's for the same reason. an-account-of-
+// its-own.md's "How the profile is made" names UsrClass.dat as part of what
+// the profile service fills in under AppData once account.MakeProfile's
+// empty hive is first loaded -- Windows' own work, not the sandbox's, and
+// the thing account.MakeProfile itself never puts there.
+//
+// Given as a full path, relative to the profile root, rather than a bare
+// name: matchMask already tells the two apart the way a mask does, so a
+// glob with no separator still reaches UsrClass.dat by its name wherever it
+// sits, and a glob with one -- "AppData/**", the shape that used to slip
+// past reservedProfileNames entirely -- is tested against the whole path
+// below. That path is AppData\Local\Microsoft\Windows, which shares no
+// prefix with AppData\Local\Temp or with account.MakeProfile's own
+// AppData\Local\Roaming: nothing here stops a glob naming either of those,
+// because neither is the profile service's.
+var reservedProfilePaths = []string{
+	"AppData/Local/Microsoft/Windows/UsrClass.dat",
+	"AppData/Local/Microsoft/Windows/UsrClass.dat.LOG1",
+	"AppData/Local/Microsoft/Windows/UsrClass.dat.LOG2",
+	"AppData/Local/Microsoft/Windows/UsrClass.dat{a0876e4c-1cb1-11d9-9669-0800200c9a66}.TM.blf",
+	"AppData/Local/Microsoft/Windows/UsrClass.dat{a0876e4c-1cb1-11d9-9669-0800200c9a66}.TMContainer00000000000000000001.regtrans-ms",
+}
+
 // refuseReservedCleanup refuses the whole run if any cleanup glob can match
-// the registry hive or the profile root itself, checked against the glob as
-// written rather than waiting for the walk to reach the file. A glob that
-// says ** is refused for the same reason a glob naming NTUSER.DAT outright
-// would be: it is asking for something that cannot be granted, and saying so
-// plainly is kinder than clearing everything else and quietly skipping the
-// one name that cannot go.
+// the registry hive, what the profile service keeps beside it, or the
+// profile root itself, checked against the glob as written rather than
+// waiting for the walk to reach the file. A glob that says ** is refused for
+// the same reason a glob naming NTUSER.DAT outright would be: it is asking
+// for something that cannot be granted, and saying so plainly is kinder than
+// clearing everything else and quietly skipping the one name that cannot go.
 //
 // This is enforced here, when the rules are read, rather than by skipping
 // the reserved names during the walk below. Skipping would make "cleanup:
@@ -231,12 +260,13 @@ var reservedProfileNames = []string{
 // that line was thinking about -- and that is a worse outcome than refusing
 // the run.
 // CleanupNamesSomethingReserved answers whether any cleanup glob in the list
-// would be refused for reaching the registry hive or the profile root
-// itself, and if so, the exact message a run would give when the same check
-// stopped it. Exported so validation asks this package the question rather
-// than re-deciding it with a copy of the reserved names and the matching
-// rules: two answers to "would this cleanup line be refused" are exactly how
-// a rules file comes to pass validation and then fail the run.
+// would be refused for reaching the registry hive, what the profile service
+// keeps beside it, or the profile root itself, and if so, the exact message
+// a run would give when the same check stopped it. Exported so validation
+// asks this package the question rather than re-deciding it with a copy of
+// the reserved names and the matching rules: two answers to "would this
+// cleanup line be refused" are exactly how a rules file comes to pass
+// validation and then fail the run.
 func CleanupNamesSomethingReserved(cleanup []config.Mask) error {
 	return refuseReservedCleanup(cleanup)
 }
@@ -254,6 +284,14 @@ func refuseReservedCleanup(cleanup []config.Mask) error {
 					"cleanup glob %q matches %s, which is the sandbox's own registry hive -- "+
 						"deleting it does not clear a cache, it destroys HKEY_CURRENT_USER "+
 						"and the sandbox will not start again", mask.Pattern, name)
+			}
+		}
+		for _, path := range reservedProfilePaths {
+			if matchMask(mask.Pattern, path) {
+				return exit.Errorf(exit.BadConfig,
+					"cleanup glob %q matches %s, which the profile service built, not the sandbox -- "+
+						"cleanup clears what the sandbox wrote, not what Windows keeps beside its registry",
+					mask.Pattern, path)
 			}
 		}
 	}

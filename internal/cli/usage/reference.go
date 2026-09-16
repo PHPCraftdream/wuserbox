@@ -120,10 +120,11 @@ THE RULES FILE
   It is a separate list rather than part of an entry because it answers a
   different question, and the two overlap only by coincidence: what is worth
   clearing is usually something nothing copies. A glob that would reach
-  NTUSER.DAT is refused and the run stops, that file being the sandbox's
-  registry rather than a cache -- so "cleanup: [**]" is an error rather than
-  a very thorough sweep, which is the honest answer to a line asking for
-  something that cannot be granted.
+  NTUSER.DAT, or UsrClass.dat and the rest of what the profile service keeps
+  beside it, is refused and the run stops -- those are the sandbox's registry,
+  not a cache -- so "cleanup: [**]" is an error rather than a very thorough
+  sweep, which is the honest answer to a line asking for something that
+  cannot be granted.
 
   Nothing on the protected list is in that default and nothing inside one
   either -- no .ssh, .netrc, .npmrc or .gitconfig, which are exactly what

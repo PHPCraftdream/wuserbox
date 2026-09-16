@@ -36,9 +36,10 @@ const header = "## wuserbox: extra directories each project may write to, and th
 	"## cleanup: globs, relative to the profile root, cleared from a sandbox's\n" +
 	"## own profile before each run -- caches, logs and session stores the\n" +
 	"## sandbox itself wrote. Same mask language as above. A glob that would\n" +
-	"## reach NTUSER.DAT is refused outright, that file being the sandbox's\n" +
-	"## registry rather than anything worth clearing, so `cleanup: [**]` is\n" +
-	"## an error and not a very thorough sweep.\n" +
+	"## reach NTUSER.DAT, or UsrClass.dat and the rest of what the profile\n" +
+	"## service keeps beside it, is refused outright -- those are the sandbox's\n" +
+	"## registry, not anything worth clearing, so `cleanup: [**]` is an error\n" +
+	"## and not a very thorough sweep.\n" +
 	"##\n" +
 	"## Paths use forward slashes: ktav reads a backslash as an escape.\n"
 
