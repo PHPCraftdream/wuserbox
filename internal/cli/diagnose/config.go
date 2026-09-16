@@ -17,11 +17,21 @@ import (
 // Complaint is one thing wrong with the rules file.
 type Complaint struct {
 	// Kind is what sort of problem it is, so a script can sort them:
-	// "syntax", "conflict", "duplicate" or "missing".
+	// "syntax", "conflict", "duplicate", "missing", "outside", "empty",
+	// "depth", "cleanup", "profile-duplicate", "sensitive" or
+	// "profile-limits".
 	Kind    string `json:"kind"`
 	Project string `json:"project,omitempty"`
 	Path    string `json:"path,omitempty"`
 	Message string `json:"message"`
+	// Fatal says this complaint has to stop the command with a non-zero
+	// exit, rather than only being printed. Set once, at the point the
+	// complaint is made, instead of inferred later from Kind: "missing" is
+	// the one complaint that has never counted against the file, and every
+	// complaint added since has to say for itself which side of that line
+	// it falls on, rather than being swept into a growing string comparison
+	// at the one place that used to ask.
+	Fatal bool `json:"fatal"`
 }
 
 // configFlags builds config's set, apart from the parsing, so a test can walk
@@ -118,7 +128,7 @@ func validateRules(project string, asJSON bool) error {
 		return err
 	}
 	for _, complaint := range complaints {
-		if complaint.Kind != "missing" {
+		if complaint.Fatal {
 			return exit.Errorf(exit.BadConfig, "%s has %d problem(s)", config.Path(), len(complaints))
 		}
 	}
@@ -164,7 +174,7 @@ func inspectRules(rules *config.Config) []Complaint {
 		project := lower(cleanPath(rule.Dir))
 		if first, repeated := seenProject[project]; repeated {
 			complaints = append(complaints, Complaint{
-				Kind: "duplicate", Project: rule.Dir, Path: rule.Dir,
+				Kind: "duplicate", Project: rule.Dir, Path: rule.Dir, Fatal: true,
 				Message: fmt.Sprintf("%s has more than one rule; only the first is applied, "+
 					"so everything this one asks for is dropped", first),
 			})
@@ -193,6 +203,7 @@ func inspectRules(rules *config.Config) []Complaint {
 			}
 		}
 	}
+	complaints = append(complaints, inspectProfile(rules.Profile, rules.Cleanup)...)
 	return complaints
 }
 
@@ -202,12 +213,12 @@ func inspectRules(rules *config.Config) []Complaint {
 func clash(project, path string, previous, current grant.Kind) Complaint {
 	if previous == current {
 		return Complaint{
-			Kind: "duplicate", Project: project, Path: path,
+			Kind: "duplicate", Project: project, Path: path, Fatal: true,
 			Message: fmt.Sprintf("%s is listed twice as %s", path, current),
 		}
 	}
 	return Complaint{
-		Kind: "conflict", Project: project, Path: path,
+		Kind: "conflict", Project: project, Path: path, Fatal: true,
 		Message: fmt.Sprintf("%s is listed as both writable and readable; "+
 			"the readable entry would win and write access would be lost", path),
 	}

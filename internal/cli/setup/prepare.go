@@ -271,8 +271,16 @@ func Preview(options sandbox.Options) error {
 		return err
 	}
 	existing, _ := state.Load(group)
-	prepared, err := plan.For(previewInput(options, group, dir, existing))
+	in := previewInput(options, group, dir, existing)
+	prepared, err := plan.For(in)
 	if err != nil {
+		return err
+	}
+	// Filling the profile is a whole other question from the permissions
+	// above, and asked separately for the reason AddProfilePreview's own
+	// doc gives: it is a walk of the machine, and only --dry-run needs the
+	// answer.
+	if err := prepared.AddProfilePreview(group, in.NoAI); err != nil {
 		return err
 	}
 	text, err := plan.Render(prepared, options.JSON)

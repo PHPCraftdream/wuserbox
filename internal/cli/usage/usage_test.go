@@ -218,6 +218,25 @@ func TestFullCarriesWhatNothingElseSays(t *testing.T) {
 			t.Errorf("the manual says nothing about %q", phrase)
 		}
 	}
+}
+
+// TestFullDocumentsTheProfileEntryShapes covers the format a profile entry
+// may now take -- a bare path or an object with depth, include and exclude
+// -- and the mask syntax those lists hold. Before this, the manual only ever
+// showed the flat, path-only shape, which is no longer the whole story.
+func TestFullDocumentsTheProfileEntryShapes(t *testing.T) {
+	manual := Full()
+	for _, phrase := range []string{
+		"depth",
+		"include",
+		"exclude",
+		"sessions/**",
+		"mask",
+	} {
+		if !strings.Contains(manual, phrase) {
+			t.Errorf("the manual says nothing about %q", phrase)
+		}
+	}
 	// And the overview stays the short answer it is for.
 	if strings.Contains(Text, "THE RULES FILE") {
 		t.Error("the reference has moved into the overview")

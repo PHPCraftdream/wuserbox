@@ -55,16 +55,75 @@ THE RULES FILE
         .codex/auth.json
     ]
 
-  Each entry is a path relative to the profile root, copied to the same
+  Each entry names a path relative to the profile root, copied to the same
   relative place under the sandbox's; there is no rw or ro here, because
   copying only ever reads from the user's profile and never writes back to
-  it. It is pre-filled when this file is first created, with the credential
-  and settings files of the agents found on this machine -- files, not the
-  directories holding them. Histories, logs, caches and databases are left
-  behind on purpose: naming the directories instead measured 72,320 files
-  and 19 GB copied into every sandbox on every run, almost none of it
-  credentials, where the files themselves come to a few hundred kilobytes.
-  A sandbox therefore starts logged in and configured, with a blank history.
+  it. It is pre-filled when this file is first created, with three things
+  belonging to the agents found on this machine: their credentials, their
+  settings, and the instructions written for them -- the agents, commands
+  and skills directories, and files like CLAUDE.md and AGENTS.md. A sandbox
+  therefore starts logged in, configured, and knowing what it was taught.
+
+  What the default leaves behind is the histories, logs, caches and session
+  databases those same directories hold, and it is left behind on purpose:
+  a default that named the agent directories whole measured 72,320 files
+  and 19 GB copied into every sandbox on every run, almost none of it worth
+  carrying. The default names the useful subdirectories instead, and where
+  one of them is mostly cache it carries an exclusion. All of it together
+  comes to a few megabytes, against a ceiling of 64 MB that stops a run
+  rather than letting a rules file quietly fill a profile with somebody's
+  work.
+
+  An entry is either a bare path like the ones above -- copied whole, a file
+  as a file and a directory with everything under it, which is still what
+  most entries should be -- or an object that puts limits on one:
+
+    {
+        path: .codex
+        depth: 2
+        include: [
+            *.json
+            *.toml
+        ]
+        exclude: [
+            sessions/**
+        ]
+    }
+
+  "depth" bounds how far below "path" to descend: 0 copies only the files
+  directly in it, and leaving it out means no limit. "include" keeps only
+  the files a mask matches; "exclude" drops the files a mask matches and,
+  unlike an ordinary copy, leaves alone whatever the sandbox already has
+  there -- which is what makes naming a whole directory safe: ".codex" with
+  "exclude: [sessions/**]" copies the credentials and the settings, and
+  neither copies nor deletes the session history an agent inside the
+  sandbox is writing to. A mask in either list may carry a depth of its
+  own, overriding the entry's for that one pattern: { mask: *.md, depth: 3 }.
+
+  A mask is "*", "?" or "**" and nothing else, matched without regard to
+  case: "*" is any run of characters within one path segment, "?" is one
+  character, and "**" is any number of whole segments, including none. A
+  mask with no slash in it matches a file's own name, wherever it sits
+  within the depth; a mask with a slash matches the path relative to the
+  entry's own path.
+
+  A third list, "cleanup", says what should not be sitting in a sandbox's
+  own profile when a run starts -- the caches, logs and session stores the
+  sandbox itself wrote. Globs relative to the profile root, in the same mask
+  language, cleared before anything is copied in:
+
+    cleanup: [
+        .codex/sessions/**
+        **/*.log
+    ]
+
+  It is a separate list rather than part of an entry because it answers a
+  different question, and the two overlap only by coincidence: what is worth
+  clearing is usually something nothing copies. A glob that would reach
+  NTUSER.DAT is refused and the run stops, that file being the sandbox's
+  registry rather than a cache -- so "cleanup: [**]" is an error rather than
+  a very thorough sweep, which is the honest answer to a line asking for
+  something that cannot be granted.
 
   Nothing on the protected list is in that default and nothing inside one
   either -- no .ssh, .netrc, .npmrc or .gitconfig, which are exactly what
