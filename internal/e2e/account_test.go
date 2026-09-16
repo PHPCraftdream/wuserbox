@@ -167,7 +167,7 @@ func (b *realBox) tries(t *testing.T, commandLine, dir string) bool {
 // ends is the same run, answered with the code the program ended on.
 func (b *realBox) ends(t *testing.T, commandLine, dir string) int {
 	t.Helper()
-	code, err := proc.RunAsAccount(b.account, b.password, commandLine, dir, os.Environ())
+	code, err := proc.RunAsAccount(b.account, b.password, commandLine, dir, os.Environ(), b.group)
 	if err != nil {
 		t.Fatalf("starting %q as %s: %v", commandLine, b.account, err)
 	}
@@ -309,6 +309,12 @@ func TestMain(m *testing.M) {
 		// Reached only where the stub was asked for a token and nothing more;
 		// with a program to run it ends on that program's own exit code.
 		os.Exit(0)
+	}
+	if len(os.Args) > 3 && os.Args[1] == slotProwlerFlag {
+		os.Exit(slotProwl(os.Args[2], os.Args[3]))
+	}
+	if len(os.Args) > 3 && os.Args[1] == slotVictimFlag {
+		os.Exit(slotVictim(os.Args[2], os.Args[3]))
 	}
 	os.Exit(m.Run())
 }

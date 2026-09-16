@@ -95,7 +95,7 @@ func runAsAccount(s *state.State, commandLine string) (int, error) {
 	if err != nil {
 		return -1, err
 	}
-	code, err := proc.RunAsAccount(s.Account, password, line, s.Dir, childEnv(s, profileOf(s)))
+	code, err := proc.RunAsAccount(s.Account, password, line, s.Dir, childEnv(s, profileOf(s)), s.Group)
 	if err != nil {
 		return -1, cannotStart(s, self, err)
 	}

@@ -1,11 +1,14 @@
 package proc
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"syscall"
+	"time"
 	"unsafe"
 
+	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
@@ -51,10 +54,35 @@ const (
 // Windows' own default security descriptor, which grants that same account
 // full access to both the process and its one thread. A process already
 // running as the account -- a second concurrent run of the same sandbox --
-// can open either one, duplicate the unrestricted token, and wear it, no
-// privilege required for wearing a token of one's own user. narrowBeforeResume
-// below narrows that window; it cannot close it, and says why where it lives.
-func RunAsAccount(username, password, commandLine, directory string, env []string) (int, error) {
+// can open either one and put code inside, which is the measured mechanism:
+// a restricted process wearing a token of its own user is answered with
+// identification level, which opens nothing, while THREAD_SET_CONTEXT on a
+// thread runs whatever the attacker likes inside a process still holding the
+// unrestricted token -- see
+// docs/investigations/the-window-before-the-shield.md. narrowBeforeResume
+// below narrows that window; it cannot close it, and says why where it
+// lives.
+//
+// Closing is not the narrowing's job, and cannot be: the window closes
+// because a stub is never being born while a program of the same sandbox is
+// alive. group is the sandbox the account belongs to, and this function
+// holds that sandbox's slot -- one exclusive file handle, given back by the
+// kernel when this process dies, whatever the cause -- from before the
+// logon until the run is over, so no second stub of the sandbox can be in
+// its window while a first run's program is standing there. That is the
+// design in docs/design/one-stub-for-a-sandbox.md with n = 1, serialize
+// whole runs; raising n later is more accounts and a loop over slot files,
+// not a second mechanism here.
+func RunAsAccount(username, password, commandLine, directory string, env []string, group string) (int, error) {
+	// Taken before anything else this function does, and deferred first, so
+	// that it is released last: "the run is over" includes the job's kill of
+	// a program still standing when its stub died, and a stub born in that
+	// gap is born into the same window as one born against a live program.
+	hold, err := holdLease(group)
+	if err != nil {
+		return -1, err
+	}
+	defer hold()
 	accountSID, err := sid.Lookup(username)
 	if err != nil {
 		return -1, fmt.Errorf("looking up %s to narrow its own stub before it runs: %w", username, err)
@@ -130,6 +158,32 @@ func RunAsAccount(username, password, commandLine, directory string, env []strin
 	procResumeThread.Call(uintptr(created.Thread))
 
 	return j.waitOrStop(created.Process)
+}
+
+// leaseWait is how long a run whose sandbox's slot is already held waits for
+// it before being refused. Five seconds absorbs a first run in its last
+// second and a script that fires two commands back to back; anything longer
+// is a real concurrent session, and refusing it -- with the message below --
+// beats hanging behind a first run that may be an agent session with hours
+// left in it. lock.Lease carries the other half of that argument.
+const leaseWait = 5 * time.Second
+
+// holdLease takes the sandbox's slot and returns how to let it go.
+//
+// A held slot is not a failure to retry blindly: the message below is the one
+// a person sees, so it says what happened -- another run of this sandbox is
+// going, and one run at a time is what keeps a stub out of a window a
+// standing program can reach into -- and what to do about it.
+func holdLease(group string) (func(), error) {
+	release, err := lock.Lease(group, leaseWait)
+	if err != nil {
+		if errors.Is(err, lock.ErrSlotHeld) {
+			return nil, fmt.Errorf("another run of sandbox %s is already going, and a sandbox runs one thing at a time; "+
+				"wait for that run to end -- or stop it -- then start this one again: %w", group, err)
+		}
+		return nil, fmt.Errorf("leasing the slot of sandbox %s: %w", group, err)
+	}
+	return release, nil
 }
 
 // environmentBlock turns a list of "NAME=VALUE" strings into the
