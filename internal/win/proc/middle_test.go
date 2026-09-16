@@ -151,10 +151,17 @@ const (
 	tokenImpersonateAccess = 0x0004
 	securityImpersonation  = 2
 	tokenImpersonation     = 2
+	// currentThread is the pseudo-handle every thread has to itself, and
+	// classImpersonationLevel is TokenImpersonationLevel -- together, what
+	// the calling thread is actually wearing rather than what the call that
+	// put it there returned.
+	currentThread           = ^uintptr(1)
+	classImpersonationLevel = 9
 )
 
 var (
 	procOpenProcess             = w32.Kernel32.NewProc("OpenProcess")
+	procOpenThreadToken         = w32.Advapi32.NewProc("OpenThreadToken")
 	procDuplicateTokenEx        = w32.Advapi32.NewProc("DuplicateTokenEx")
 	procImpersonateLoggedOnUser = w32.Advapi32.NewProc("ImpersonateLoggedOnUser")
 	procRevertToSelf            = w32.Advapi32.NewProc("RevertToSelf")
@@ -289,10 +296,44 @@ func rewriteAndWearItsToken(pid int) int {
 		return reached
 	}
 	defer procRevertToSelf.Call()
+	// Both questions, not just the second one. ImpersonateLoggedOnUser
+	// returns nonzero even when what the thread ends up wearing is only good
+	// for identification -- a level that answers "who is this" and opens
+	// nothing -- and a restricted process wearing a token of its own user
+	// gets exactly that. Measured: the same duplicate reaches impersonation
+	// level from an unrestricted process and identification level from a
+	// restricted one, and only the first can then write somewhere its own
+	// token could not.
+	//
+	// Asking only whether the duplicate was unrestricted therefore reported
+	// an escape that had not happened, and made the window before Shield
+	// look like token theft when what actually works in it is putting code
+	// inside the process instead.
+	if level, err := impersonationLevel(); err != nil || level < securityImpersonation {
+		return reached
+	}
 	if restricted, _, _ := procIsTokenRestricted.Call(uintptr(worn)); restricted == 0 {
 		reached |= woreAnUnrestrictedToken
 	}
 	return reached
+}
+
+// impersonationLevel reads the level the calling thread is actually wearing,
+// which is the part ImpersonateLoggedOnUser's return value does not say.
+func impersonationLevel() (uint32, error) {
+	var thread syscall.Token
+	if r, _, callErr := procOpenThreadToken.Call(currentThread, syscall.TOKEN_QUERY, 1,
+		uintptr(unsafe.Pointer(&thread))); r == 0 {
+		return 0, callErr
+	}
+	defer thread.Close()
+	var level uint32
+	var got uint32
+	if err := syscall.GetTokenInformation(thread, classImpersonationLevel,
+		(*byte)(unsafe.Pointer(&level)), uint32(unsafe.Sizeof(level)), &got); err != nil {
+		return 0, err
+	}
+	return level, nil
 }
 
 // listAllowing builds a permission list that hands everything to one
