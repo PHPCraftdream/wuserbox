@@ -20,6 +20,17 @@ import (
 // noAI mirrors fillProfile's own branch in internal/cli/setup/run.go: a
 // sandbox told to skip the agent preset never has its profile: entries
 // copied, only cleared, so there is nothing to preview here either.
+//
+// The destination comes from sandbox.ProfileDir(group), not from a loaded
+// state record's own Profile field, and the two can never disagree: Profile
+// is written in exactly one place, ensureProfile, and every time it is
+// written it is set to this same ProfileDir(group) -- a pure function of the
+// group name and nothing else, by its own doc. So there is no state a real
+// run could be in where its s.Profile names a different directory than the
+// one computed here. Recomputing it is not merely equivalent, though: a
+// preview is also shown for a sandbox that does not exist yet, when there is
+// no state record at all to read a Profile field from, and this still has to
+// name the directory a first run would fill.
 func (p *Plan) AddProfilePreview(group string, noAI bool) error {
 	if noAI {
 		return nil

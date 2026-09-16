@@ -431,8 +431,14 @@ returned, so the code you read after it is the sandboxed program's own.
   left on the machine and how to remove it. Making it work means the elevated
   half doing only what needs administrator rights and handing the rest back,
   which is not built.
-* **Reading is not restricted.** The sandbox sees your keys, tokens and browser
-  data. It prevents damage, not a determined leak.
+* **Reading is not restricted, once a directory is where the sandbox can
+  reach it.** The sandbox sees your keys, tokens and browser data because
+  your profile is granted to a read group made for exactly that, the moment
+  `--init` builds the sandbox. A directory somewhere else whose permissions
+  name you and nobody else is not covered by that group, and reading it
+  needs the same `--grant` a write would — `--ro` if reading is all that is
+  wanted. Once a directory is reachable, this prevents damage, not a
+  determined leak.
 * **What it cannot read is what belongs to your account rather than to a file.**
   Credential Manager, DPAPI secrets and mapped drives are yours, and the
   sandbox is not you. Anything sealed under your account stays sealed. This is
