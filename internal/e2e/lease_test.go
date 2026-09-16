@@ -79,6 +79,12 @@ func TestARunRefusedByTheSlotLeavesTheProfileAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	rules := filepath.Join(t.TempDir(), "rules.ktav")
+	// Set here as well as on the command below, because setRules writes the
+	// file from this process and config.Path reads this process's own
+	// environment: without it the rules are saved to the default location
+	// while the command under test reads the empty path named here, and the
+	// entry this test is about is never copied at all.
+	t.Setenv(config.EnvPath, rules)
 	setRules := func(entries ...string) {
 		t.Helper()
 		if err := (&config.Config{Profile: config.Entries(entries)}).Save(); err != nil {
@@ -94,8 +100,6 @@ func TestARunRefusedByTheSlotLeavesTheProfileAlone(t *testing.T) {
 	}
 	t.Cleanup(func() { run("--rm") })
 
-	// A first run, doing what every run does: filling the sandbox's profile
-	// from the rules file, which puts the entry's copy there.
 	setRules(entry)
 	if out, code := run("--init"); code != 0 {
 		t.Fatalf("init failed: %s", out)
@@ -104,12 +108,16 @@ func TestARunRefusedByTheSlotLeavesTheProfileAlone(t *testing.T) {
 	if err != nil || s == nil {
 		t.Fatalf("loading the record init wrote: %v", err)
 	}
+	// Filling the profile is a run's work and not init's: init builds the
+	// account, the profile directory and the record, and reads nothing from
+	// the profile section. So the copy this test stands on arrives with the
+	// first real run below, and is looked for after it rather than before.
+	if out, code := run("cmd.exe", "/c", "exit 0"); code != 0 {
+		t.Fatalf("the first run failed, so what is measured below is not a second run: %s", out)
+	}
 	copied := filepath.Join(s.Profile, entry)
 	if got, err := os.ReadFile(copied); err != nil || string(got) != content {
 		t.Fatalf("the first run did not leave the copy this test stands on: %v (%q)", err, got)
-	}
-	if out, code := run("cmd.exe", "/c", "exit 0"); code != 0 {
-		t.Fatalf("the first run failed, so what is measured below is not a second run: %s", out)
 	}
 
 	// The rules file stops naming the entry. The next fill would take the
@@ -150,6 +158,9 @@ func TestInitProbesTheStubWhileHoldingTheLeaseItself(t *testing.T) {
 	t.Setenv("USERPROFILE", t.TempDir())
 	t.Setenv("LOCALAPPDATA", t.TempDir())
 	rules := filepath.Join(t.TempDir(), "rules.ktav")
+	// Both here and on the command, for the reason the test above gives: the
+	// file is written from this process and read by that one.
+	t.Setenv(config.EnvPath, rules)
 	if err := (&config.Config{}).Save(); err != nil {
 		t.Fatal(err)
 	}
