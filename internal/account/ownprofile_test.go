@@ -27,7 +27,7 @@ func me(t *testing.T) sid.Value {
 	t.Helper()
 	value, err := sid.Lookup(os.Getenv("USERNAME"))
 	if err != nil {
-		t.Skipf("this account cannot be looked up by its own name: %v", err)
+		t.Fatalf("this account cannot be looked up by its own name, which is not a machine this can measure on: %v", err)
 	}
 	return value
 }
@@ -40,12 +40,17 @@ func me(t *testing.T) sid.Value {
 // owner and elevated, so a link left where AppData belongs sent those
 // directories somewhere the sandbox could never have created them itself.
 //
-// The control half is the point of the test. Windows has a mitigation for
-// exactly this shape -- RedirectionGuard -- that a process turns on for
-// itself, so a refusal here could just as easily be the machine refusing as
-// this code refusing. Plain MkdirAll is asked to walk the same junction
-// first: if it goes through, the door is open and what follows means
-// something.
+// The control half says whether the door was open here at all. Windows has a
+// mitigation for exactly this shape -- RedirectionGuard -- that a process
+// turns on for itself, so a refusal below could as easily be the machine
+// refusing as this code refusing. Plain MkdirAll is asked to walk the same
+// junction first, and what it did is written into the log.
+//
+// It is written rather than skipped on, deliberately. What follows holds on
+// any Windows, because os.Root refuses the traversal whatever the machine
+// would have done, and this test is in the list CI holds to no skips -- a
+// guard for a fix of this size should not be able to quietly not run. The
+// log is there so a reader can tell a measurement from a tautology.
 func TestMakingAProfileDoesNotReachThroughAJunction(t *testing.T) {
 	outside := t.TempDir()
 	profile := filepath.Join(t.TempDir(), "profile")
@@ -55,14 +60,17 @@ func TestMakingAProfileDoesNotReachThroughAJunction(t *testing.T) {
 	junction(t, filepath.Join(profile, "AppData"), outside)
 
 	control := filepath.Join(profile, "AppData", "Control")
-	if err := os.MkdirAll(control, 0o700); err != nil {
-		t.Skipf("this machine refuses to create a directory through a junction anyway: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(outside, "Control")); err != nil {
-		t.Skip("MkdirAll did not follow the junction on this machine, so nothing below is measuring a refusal")
-	}
-	if err := os.RemoveAll(filepath.Join(outside, "Control")); err != nil {
-		t.Fatal(err)
+	err := os.MkdirAll(control, 0o700)
+	_, landed := os.Stat(filepath.Join(outside, "Control"))
+	switch {
+	case err != nil:
+		t.Logf("this machine refuses to create a directory through a junction at all: %v", err)
+	case landed != nil:
+		t.Log("MkdirAll did not follow the junction here, so the door this closes is already shut")
+	default:
+		if err := os.RemoveAll(filepath.Join(outside, "Control")); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	// The hive needs administrator rights and this does not measure the hive.
