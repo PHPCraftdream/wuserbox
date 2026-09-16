@@ -86,9 +86,20 @@ jobs:
           # the sandbox plants in its own profile must not walk either one
           # out of it -- and out of the process that confined it by proc. A
           # fix of that size with a guard nobody runs is a fix nobody has.
+          # The status is taken rather than left to -e, and the output is
+          # printed before anything is decided about it. Letting the shell end
+          # the step on a failing go test took the log with it: a run that
+          # failed here printed the step's own header and nothing else, so the
+          # one thing the step exists to report -- which test, and how -- was
+          # the one thing missing from it.
+          failed=0
           output=$(go test ./internal/e2e/... ./internal/win/acl/... ./internal/account/... ./internal/policy/profile/... ./internal/win/proc/... \
-            -count=1 -v -run "$names" 2>&1)
+            -count=1 -v -run "$names" 2>&1) || failed=$?
           echo "$output"
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::a boundary test failed"
+            exit "$failed"
+          fi
           if echo "$output" | grep -q -- "--- SKIP"; then
             echo "::error::the boundary was not covered: a test that should never skip did"
             exit 1
