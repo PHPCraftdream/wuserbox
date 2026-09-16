@@ -32,6 +32,21 @@ const (
 	createSuspended       = 0x00000004
 	createNewProcessGroup = 0x00000200
 
+	// createNoWindow gives a process a console without putting a window on
+	// the screen for it.
+	//
+	// Needed because CreateProcessWithLogonW starts the stub as a different
+	// account, which cannot attach to the console wuserbox was started from:
+	// Windows hands it a new one, and a new console comes with a window that
+	// appears and takes the focus. One per run, which during a test suite is
+	// several a second, and each one steals the keyboard from whoever is
+	// using the machine.
+	//
+	// The console itself is kept rather than refused with DETACHED_PROCESS,
+	// because a program that asks Windows for console handles should find
+	// them: what is being taken away is the window, not the console.
+	createNoWindow = 0x08000000
+
 	// Closing the job's last handle ends every process still assigned to
 	// it. That is the safety net for wuserbox itself being killed outright
 	// rather than interrupted -- Windows closes this process's handles for

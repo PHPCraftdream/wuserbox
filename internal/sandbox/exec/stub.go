@@ -46,8 +46,13 @@ const StubFlag = "-sandbox-stub"
 // already had, so naming another sandbox's group here names a group this
 // account is not in and reaches nothing through it.
 //
-// With no command line it stops once the token is built. That is what --init
-// runs to prove a sandbox can start at all; see ProveItStarts.
+// With no command line it stops once the token is built and Shield has run
+// over it. That is what --init runs to prove a sandbox can start at all and
+// can shut itself in once started; see ProveItStarts. Both have to be
+// proven there rather than assumed: Shield used to run only once a real run
+// reached it, which meant --init could report a sandbox built and working
+// on a machine where Shield itself would fail at the first real run --
+// nothing here exercised the call until a program was already waiting on it.
 func Stub(args []string) error {
 	if len(args) != 2 && len(args) != 3 {
 		return exit.Errorf(exit.Usage,
@@ -58,17 +63,20 @@ func Stub(args []string) error {
 		return err
 	}
 	defer restricted.Close()
-	if len(args) == 2 {
-		return nil
-	}
-	// Before the program exists, and not after. What is about to start is the
-	// same account as this process, holding a token restricted from this
-	// one's -- and a permission list cannot tell two processes apart by who
-	// they are when they are the same who. Measured: without this, the
-	// program opened this process with every access there is and duplicated
-	// its token, which is the whole boundary undone from inside.
+	// Before the program exists, and not after -- and before the two-argument
+	// return below, not conditioned on it. What is about to start, when there
+	// is something to start, is the same account as this process, holding a
+	// token restricted from this one's -- and a permission list cannot tell
+	// two processes apart by who they are when they are the same who.
+	// Measured: without this, the program opened this process with every
+	// access there is and duplicated its token, which is the whole boundary
+	// undone from inside. Running it even with nothing to start is what lets
+	// --init's own probe answer for it too, rather than only for the token.
 	if err := proc.Shield(); err != nil {
 		return err
+	}
+	if len(args) == 2 {
+		return nil
 	}
 	here, err := os.Getwd()
 	if err != nil {
@@ -114,9 +122,9 @@ func StubLine(self, groupSID, commandLine string) (string, error) {
 	return strings.Join(quoted, " "), nil
 }
 
-// ProveItStarts measures the one thing about a newly built sandbox that
-// nothing here can work out by reasoning: whether its account can start
-// wuserbox at all.
+// ProveItStarts measures what a newly built sandbox cannot be reasoned about
+// from outside: whether its account can start wuserbox at all, and whether
+// the stub that account starts can shut itself in once it has.
 //
 // The account is not the person who installed wuserbox, and a binary sitting
 // in that person's own profile is unreadable to it. CreateProcessWithLogonW
@@ -125,8 +133,10 @@ func StubLine(self, groupSID, commandLine string) (string, error) {
 // first time the account tests ran, and the same thing would happen to a run.
 //
 // So it is measured by making the run's own call, with no program at the end
-// of it. What passes here is the chain a run depends on rather than a model
-// of it.
+// of it -- and, since Stub always runs Shield now rather than only when there
+// is a program to start next, that call is what stands behind Shield here
+// too. What passes here is the chain a run depends on rather than a model of
+// it.
 func ProveItStarts(s *state.State) error {
 	if s.Account == "" {
 		return nil // an older sandbox, which runs the old way and needs no stub

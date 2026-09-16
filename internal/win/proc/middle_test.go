@@ -66,6 +66,9 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == stubbyFlag {
 		os.Exit(stubby())
 	}
+	if len(os.Args) > 2 && os.Args[1] == raceVictimFlag {
+		os.Exit(raceVictim(os.Args[2]))
+	}
 	if os.Getenv(driverEnv) == "1" {
 		runDriver()
 		return

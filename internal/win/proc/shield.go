@@ -54,6 +54,35 @@ const (
 	offsetOfOwnerProcess = 12
 )
 
+// selfLockingDacl builds the list Shield hands to SetSecurityInfo, and
+// narrowBeforeResume in logon.go hands to the same call for a process it
+// does not own yet: shut for shutOut, read-only for the OWNER RIGHTS
+// identifier so the implicit owner grant does not undo the shutting, and
+// full for SYSTEM and the administrators so a runaway sandbox can still be
+// ended. Pulled out from Shield rather than written twice, because the two
+// callers want the identical list and a second, slightly different copy of
+// this text is exactly the kind of thing that drifts.
+//
+// The caller frees the security descriptor dacl points into once it is done
+// with it; the descriptor, not the dacl pointer, is what SetSecurityInfo
+// needs alive for the call and Windows needs freed afterwards.
+func selfLockingDacl(shutOut string) (dacl uintptr, free func(), err error) {
+	text := fmt.Sprintf("D:P(D;;GA;;;%s)(A;;RC;;;%s)(A;;GA;;;%s)(A;;GA;;;%s)",
+		shutOut, sid.OwnerRights, sid.System, sid.Administrators)
+	var descriptor uintptr
+	if r, _, callErr := procStringToSecurityDescriptor.Call(uintptr(unsafe.Pointer(w32.UTF16(text))), 1,
+		uintptr(unsafe.Pointer(&descriptor)), 0); r == 0 {
+		return 0, nil, fmt.Errorf("building the list that shuts a process to %s: %w", shutOut, callErr)
+	}
+	var present, defaulted int32
+	if r, _, callErr := procGetSecurityDescriptorDacl.Call(descriptor, uintptr(unsafe.Pointer(&present)),
+		uintptr(unsafe.Pointer(&dacl)), uintptr(unsafe.Pointer(&defaulted))); r == 0 {
+		w32.Free(descriptor)
+		return 0, nil, fmt.Errorf("reading the list that shuts a process to %s: %w", shutOut, callErr)
+	}
+	return dacl, func() { w32.Free(descriptor) }, nil
+}
+
 // Shield closes this process to the account it is itself running as.
 //
 // The stub and the program it starts are the same account. The stub holds
@@ -101,21 +130,11 @@ func Shield() error {
 	// takes back as well. What cannot be taken back is the ownership, and
 	// nothing needs to be: an owner who cannot rewrite the list cannot grant
 	// itself anything through it either.
-	text := fmt.Sprintf("D:P(D;;GA;;;%s)(A;;RC;;;%s)(A;;GA;;;%s)(A;;GA;;;%s)",
-		me, sid.OwnerRights, sid.System, sid.Administrators)
-	var descriptor uintptr
-	if r, _, callErr := procStringToSecurityDescriptor.Call(uintptr(unsafe.Pointer(w32.UTF16(text))), 1,
-		uintptr(unsafe.Pointer(&descriptor)), 0); r == 0 {
-		return fmt.Errorf("building the list that shuts this process to %s: %w", me, callErr)
+	dacl, free, err := selfLockingDacl(me)
+	if err != nil {
+		return err
 	}
-	defer w32.Free(descriptor)
-
-	var present, defaulted int32
-	var dacl uintptr
-	if r, _, callErr := procGetSecurityDescriptorDacl.Call(descriptor, uintptr(unsafe.Pointer(&present)),
-		uintptr(unsafe.Pointer(&dacl)), uintptr(unsafe.Pointer(&defaulted))); r == 0 {
-		return fmt.Errorf("reading the list that shuts this process to %s: %w", me, callErr)
-	}
+	defer free()
 
 	// The token first, so that a thread born between here and the last line
 	// is born shut rather than having to be caught afterwards.
