@@ -167,7 +167,7 @@ func (b *realBox) tries(t *testing.T, commandLine, dir string) bool {
 // ends is the same run, answered with the code the program ended on.
 func (b *realBox) ends(t *testing.T, commandLine, dir string) int {
 	t.Helper()
-	code, err := proc.RunAsAccount(b.account, b.password, commandLine, dir, os.Environ(), b.group)
+	code, err := proc.RunAsAccount(b.account, b.password, commandLine, dir, os.Environ())
 	if err != nil {
 		t.Fatalf("starting %q as %s: %v", commandLine, b.account, err)
 	}

@@ -186,8 +186,11 @@ type slotRun struct {
 // Without the lease, the second birth succeeds and the prowler -- the first
 // run's own program -- reaches the newborn through the doors
 // narrowBeforeResume leaves open: the thread, which Shield can only shut once
-// the stub's own code reaches it. With the lease, the second birth is refused
-// before CreateProcessWithLogonW is ever called, and this test passes because
+// the stub's own code reaches it. With the lease, the second take is refused
+// and no birth happens at all; the birth stands behind the take in the
+// goroutine below so that a lease which ever granted a second take is failed
+// by a report of the doors it opened, not by this test's own complaint.
+// Either way this test passes because
 // there was never a stub to attack, not because any door was measured shut.
 func TestASecondStubIsNotBornWhileAProgramOfTheSandboxRuns(t *testing.T) {
 	requireAdministrator(t)
@@ -221,23 +224,47 @@ func TestASecondStubIsNotBornWhileAProgramOfTheSandboxRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The wait the command that owns a run passes to the same take; see
+	// holdSlot in internal/cli/setup.
+	const leaseWait = 5 * time.Second
+
 	holder := make(chan slotRun, 1)
 	go func() {
-		code, err := proc.RunAsAccount(box.account, box.password, firstLine, work, os.Environ(), box.group)
+		// Held the way the command that owns a run holds it: taken before
+		// the birth, released when the run is over. The lease lived inside
+		// RunAsAccount once, which is why this call used to arrive already
+		// holding one.
+		release, err := lock.Lease(box.group, leaseWait)
+		if err != nil {
+			holder <- slotRun{-1, err}
+			return
+		}
+		defer release()
+		code, err := proc.RunAsAccount(box.account, box.password, firstLine, work, os.Environ())
 		holder <- slotRun{code, err}
 	}()
 
 	// The stub must be born under an attacker that is already standing
 	// there, and not merely started first. That the prowler is running also
-	// means the first run is past its own lease, so the second birth below
-	// meets a held slot rather than a race between two takes.
+	// means the lease above is still held, so the second take below meets a
+	// held slot rather than a race between two takes.
 	waitAttackerReady(t, holder, readyFile)
 
 	victim := make(chan slotRun, 1)
 	victimLine := syscall.EscapeArg(stub) + " " + slotVictimFlag + " " +
 		syscall.EscapeArg(pidFile) + " " + syscall.EscapeArg(goFile)
 	go func() {
-		code, err := proc.RunAsAccount(box.account, box.password, victimLine, work, os.Environ(), box.group)
+		// The take the command layer makes before any birth, and the birth
+		// only behind it. The pass at the bottom expects the refusal; the
+		// birth stands so that a lease which ever granted a second take is
+		// failed by what the prowler then reaches, not by a complaint here.
+		release, err := lock.Lease(box.group, leaseWait)
+		if err != nil {
+			victim <- slotRun{-1, err}
+			return
+		}
+		defer release()
+		code, err := proc.RunAsAccount(box.account, box.password, victimLine, work, os.Environ())
 		victim <- slotRun{code, err}
 	}()
 
@@ -263,10 +290,10 @@ func TestASecondStubIsNotBornWhileAProgramOfTheSandboxRuns(t *testing.T) {
 		t.Fatal("the second run never ended")
 	}
 
-	// The lease's answer, and the shape of the pass: the second run was
-	// refused, there was no second stub, so there was no window and nothing
-	// for a standing program of the account to reach. Asserting the refusal
-	// here rather than a closed door is the point of the test.
+	// The lease's answer, and the shape of the pass: the second take was
+	// refused and no second stub was born, so there was no window and
+	// nothing for a standing program of the account to reach. Asserting the
+	// refusal here rather than a closed door is the point of the test.
 	if errors.Is(second.err, lock.ErrSlotHeld) {
 		if attacker.code&^foundNothing != 0 {
 			t.Errorf("the second stub was never born, yet the prowler reports: %s", slotDoors(attacker.code))

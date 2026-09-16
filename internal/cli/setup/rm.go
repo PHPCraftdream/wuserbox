@@ -58,6 +58,17 @@ func Rm(args []string) error {
 	if !token.IsAdmin() {
 		return Elevate([]string{"--rm", "--dir", project})
 	}
+	// A removal that went ahead under a standing run would take the ground
+	// that run stands on -- the profile, the account, the grants -- so it
+	// waits on the same slot a run holds and is refused like a second run
+	// rather than allowed like a reader. After the elevation check, for the
+	// same reason init's is: where the work goes to an elevated copy, that
+	// copy takes the slot itself.
+	release, err := holdSlot(name)
+	if err != nil {
+		return err
+	}
+	defer release()
 	return removeSandbox(name, o.asJSON)
 }
 

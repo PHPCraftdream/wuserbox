@@ -51,6 +51,29 @@ func Run(args []string) error {
 	if err := refuseWithoutAccount(s); err != nil {
 		return err
 	}
+	// The slot is taken here, between the last thing a run may do to a
+	// sandbox it does not yet own and the first thing it does to state a
+	// concurrent run stands on. Everything above either changes nothing or
+	// reconciles permissions under the record's own lock; everything below
+	// clears and recopies the profile -- which no run may do while another
+	// run's program is using that profile -- records what it did, and births
+	// the stub. Not earlier: prepare hands a broken sandbox to an elevated
+	// init, and that init leases this same slot, so a run holding it across
+	// its own elevation would spend five seconds refusing the child it is
+	// waiting on.
+	//
+	// Released when this command returns, which is after exec.Run has come
+	// back from the job that closes over the program -- later than the old
+	// release inside the launch, not earlier, so a stub born after this
+	// release is still born after the job's kill of a program left standing.
+	// Where the command ends on the program's exit code instead, no defer
+	// runs and none has to: the kernel gives the slot back when its holder
+	// dies, which is the whole reason the lease is a file handle.
+	release, err := holdSlot(s.Group)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := fillProfile(s); err != nil {
 		return err
 	}

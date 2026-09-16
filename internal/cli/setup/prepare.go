@@ -304,6 +304,24 @@ func Init(args []string) error {
 	if !token.IsAdmin() {
 		return Elevate(options.Args())
 	}
+	name, _, err := sandbox.Name(options.Dir)
+	if err != nil {
+		return err
+	}
+	// Taken here rather than before the elevation check, because where this
+	// process is not the administrator it hands the work to an elevated copy
+	// of itself and waits, and that copy takes the slot of the same sandbox.
+	// It is held across the whole command and not only around the probe:
+	// the build is itself a change to state two runs share -- the account,
+	// the profile -- and the probe at the end births a stub, which is what
+	// the slot exists to arbitrate. Without the take here, the probe's own
+	// birth is what waits and refuses -- a self-inflicted "another run is
+	// already going" that would look like a flake.
+	release, err := holdSlot(name)
+	if err != nil {
+		return err
+	}
+	defer release()
 	s, err := sandbox.Init(options)
 	if err != nil {
 		return err

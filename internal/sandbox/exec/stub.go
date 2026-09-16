@@ -153,7 +153,7 @@ func ProveItStarts(s *state.State) error {
 	if err != nil {
 		return err
 	}
-	code, err := proc.RunAsAccount(s.Account, password, line, s.Dir, childEnv(s, profileOf(s)), s.Group)
+	code, err := proc.RunAsAccount(s.Account, password, line, s.Dir, childEnv(s, profileOf(s)))
 	if err != nil {
 		return fmt.Errorf("%s cannot start %s: %w", s.Account, self, err)
 	}
