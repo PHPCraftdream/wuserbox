@@ -53,7 +53,7 @@ func Copy(dest string, previously []string) ([]string, error) {
 	if err := forget(root, previously, rules.Profile); err != nil {
 		return nil, err
 	}
-	return copyEntries(paths.Home(), root, rules.Profile)
+	return copyEntries(paths.Home(), root, rules.Profile, Ceiling)
 }
 
 // Clear takes back everything an earlier Copy placed under dest, without
@@ -165,9 +165,11 @@ func within(entry string) (string, error) {
 // going to start with a half-built profile either way.
 const Ceiling = 64 << 20
 
-func copyEntries(home string, root *os.Root, entries []string) ([]string, error) {
+// copyEntries takes its budget rather than reading the ceiling itself, so a
+// test can measure the counting and the refusal without asking this machine
+// for sixty-four megabytes of temporary files.
+func copyEntries(home string, root *os.Root, entries []string, left int64) ([]string, error) {
 	var copied []string
-	left := int64(Ceiling)
 	for _, entry := range entries {
 		dst, err := within(entry)
 		if err != nil {
@@ -178,10 +180,21 @@ func copyEntries(home string, root *os.Root, entries []string) ([]string, error)
 		if err != nil {
 			continue // not on this machine; not an error
 		}
+		// Written down before the copying and not after. What this list is for
+		// is knowing what to take back, and a name that was half copied has to
+		// be on it more than one that was copied whole: a directory with three
+		// of its files in it, or a file truncated where the writing stopped, is
+		// exactly what a later clearing must reach.
+		//
+		// Recording it afterwards meant the opposite. A copy stopped in the
+		// middle -- by the ceiling, or by anything else -- returned a list
+		// without the name it had been working on, the caller recorded that
+		// list, and what had landed stayed in the sandbox's profile for good
+		// because nothing left knew it was there.
+		copied = append(copied, entry)
 		if err := mirror(src, dst, root, info, &left); err != nil {
 			return copied, fmt.Errorf("copying %s: %w", entry, err)
 		}
-		copied = append(copied, entry)
 	}
 	return copied, nil
 }

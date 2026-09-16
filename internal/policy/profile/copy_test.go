@@ -414,3 +414,41 @@ func TestAnOrdinaryCopyIsNowhereNearTheCeiling(t *testing.T) {
 		t.Errorf("copied %v, want the one entry named", copied)
 	}
 }
+
+// TestAStoppedCopyIsStillOnTheListToClear is what a record of "what was
+// copied" is actually for.
+//
+// It is not a receipt, it is the only thing that knows what to take back. A
+// copy stopped in the middle -- by the ceiling, or by a file that could not
+// be read, or by anything else -- leaves a directory with some of its files
+// in it, and the name of that directory has to come back with the error or
+// nothing will ever reach what landed. Recording it only on success meant the
+// caller wrote down a list without it, and the half-copied directory stayed
+// in the sandbox's profile for good.
+func TestAStoppedCopyIsStillOnTheListToClear(t *testing.T) {
+	home, dest := useProfile(t, []string{"big"})
+	write(t, filepath.Join(home, "big", "one.txt"), strings.Repeat("x", 40))
+	write(t, filepath.Join(home, "big", "two.txt"), strings.Repeat("x", 40))
+
+	root, err := os.OpenRoot(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Enough for the first file, not for both.
+	copied, err := copyEntries(home, root, []string{"big"}, 50)
+	_ = root.Close()
+	if err == nil {
+		t.Fatal("a copy past its budget was allowed to finish")
+	}
+	if len(copied) != 1 || copied[0] != "big" {
+		t.Fatalf("the stopped entry came back as %v, and the caller has nothing to clear", copied)
+	}
+
+	// And the clearing reaches it, which is the point of it being on the list.
+	if err := Clear(dest, copied); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "big")); err == nil {
+		t.Error("what the stopped copy left behind is still in the profile")
+	}
+}
