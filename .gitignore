@@ -2,3 +2,8 @@ wuserbox.exe
 *.exe
 dist/
 .ktav/
+
+# Task worktrees, always created in-tree so cleanup stays inside the repo.
+/worktrees/
+# Sub-agent run transcripts and their session database.
+/.rush/
