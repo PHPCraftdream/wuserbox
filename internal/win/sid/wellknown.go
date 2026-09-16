@@ -32,6 +32,17 @@ const (
 	// it closes this, and every identity like it, without anybody keeping a
 	// list of them.
 	Interactive = "S-1-5-4"
+	// OwnerRights is how the rights Windows grants an object's owner without
+	// asking -- READ_CONTROL and WRITE_DAC, so that nothing can be locked
+	// away from whoever it belongs to -- are limited to what a list actually
+	// says. Naming it at all is what switches the implicit grant off; the
+	// access on the entry is then all the owner has.
+	//
+	// It is the only way to refuse something to the account that owns it,
+	// which is exactly the case proc.Shield faces: the process it shuts and
+	// the program it shuts it against are the same account, so a refusal
+	// naming that account refused it nothing until this was added.
+	OwnerRights = "S-1-3-4"
 	// Administrators is needed when a permission list has to be written from
 	// nothing. An object with no list at all grants everybody everything,
 	// administrators and the system among them, so giving it one has to name

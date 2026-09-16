@@ -83,7 +83,23 @@ func Shield() error {
 	if err != nil {
 		return err
 	}
-	text := fmt.Sprintf("D:P(D;;GA;;;%s)(A;;GA;;;%s)(A;;GA;;;%s)", me, sid.System, sid.Administrators)
+	// The refusal alone was not enough, and the reason is worth keeping: an
+	// object's owner is granted READ_CONTROL and WRITE_DAC by Windows itself,
+	// whatever the list says, so that nothing can ever be locked away from
+	// whoever it belongs to. Both these processes are owned by the same
+	// account, so the refusal below refused it nothing -- measured, the whole
+	// way through: it opened this process for WRITE_DAC, wrote a list allowing
+	// everything, took the token, wore it, and what it wore was no longer
+	// restricted.
+	//
+	// The OWNER RIGHTS identifier is how that implicit grant is limited. Its
+	// presence in a list is what switches the implicit rights off; what it is
+	// given here is reading the list and nothing else, which the refusal then
+	// takes back as well. What cannot be taken back is the ownership, and
+	// nothing needs to be: an owner who cannot rewrite the list cannot grant
+	// itself anything through it either.
+	text := fmt.Sprintf("D:P(D;;GA;;;%s)(A;;RC;;;%s)(A;;GA;;;%s)(A;;GA;;;%s)",
+		me, sid.OwnerRights, sid.System, sid.Administrators)
 	var descriptor uintptr
 	if r, _, callErr := procStringToSecurityDescriptor.Call(uintptr(unsafe.Pointer(w32.UTF16(text))), 1,
 		uintptr(unsafe.Pointer(&descriptor)), 0); r == 0 {
