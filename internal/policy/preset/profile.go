@@ -101,9 +101,18 @@ func Profile() []string {
 	return out
 }
 
-// RetiredProfileEntries are what a rules file's profile section used to be
-// filled with: the agent state directories, whole, each as a path relative to
-// the profile root.
+// RetiredProfileEntries are the whole agent state directories an older
+// default filled a rules file's profile section with, each as a path relative
+// to the profile root.
+//
+// Directories and nothing else, although that default wrote files too. The
+// files it wrote are still right: ~/.claude.json is a credential file and is
+// named by the narrow default as well. Counting it as the old default's doing
+// made a rules file that said only `.claude.json` look like one that needed
+// migrating, so every --init decided it had found the old list and appended
+// the whole current default again -- and an entry somebody deleted came back
+// on the next run. Measured from the report; the test that was supposed to
+// cover this used an empty profile, where the two sets do not overlap.
 //
 // Worth recognizing because they are still on disk. A rules file is written
 // once and kept, so a machine that ran that version still carries that list,
@@ -118,9 +127,9 @@ func Profile() []string {
 // default's doing rather than as somebody's own addition.
 func RetiredProfileEntries() []string {
 	home := paths.Home()
-	dirs, files := aiPaths()
+	dirs, _ := aiPaths()
 	var out []string
-	for _, path := range append(append([]string{}, dirs...), files...) {
+	for _, path := range dirs {
 		rel, err := filepath.Rel(home, path)
 		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
 			continue

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
+	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/preset"
@@ -91,13 +92,31 @@ func ensureRules() error {
 // including a directory they added themselves. This cannot tell a person who
 // wants a whole tree copied from a default that wanted it on their behalf,
 // so it removes only what it can recognize as its own doing.
+//
+// It happens once and never again. Somebody who deliberately puts a whole
+// directory back into that section means it, and a migration that ran on
+// every --init would take it out again every time: an edit that never sticks
+// and never says why. The marker is written whether or not there was anything
+// to take out, so a machine that never carried the old list is left alone
+// from then on too.
 func RetireWholeDirectoryProfileRules() ([]string, error) {
 	var retired []string
 	err := lock.Hold(lock.Rules, func() error {
+		done := alreadyRetired()
+		if _, err := os.Stat(done); err == nil {
+			return nil
+		}
 		rules, err := config.Load()
 		if err != nil {
 			return err
 		}
+		defer func() {
+			// After the work and whatever came of it: a migration that ran and
+			// changed nothing is as finished as one that changed everything.
+			if err := os.MkdirAll(filepath.Dir(done), 0o755); err == nil {
+				_ = os.WriteFile(done, nil, 0o644)
+			}
+		}()
 		old := make(map[string]bool)
 		for _, entry := range preset.RetiredProfileEntries() {
 			old[folded(entry)] = true
@@ -130,6 +149,14 @@ func RetireWholeDirectoryProfileRules() ([]string, error) {
 		return nil, err
 	}
 	return retired, nil
+}
+
+// alreadyRetired is where it is written down that this has been done, beside
+// the rest of the bookkeeping rather than inside the rules file: the rules
+// file belongs to whoever is using the tool, and a field they did not ask for
+// would be one more thing to explain in it.
+func alreadyRetired() string {
+	return filepath.Join(paths.StateDir(), "profile-rules-retired")
 }
 
 // folded is how two spellings of the same entry are compared: Windows does

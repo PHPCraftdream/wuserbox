@@ -46,10 +46,15 @@ func TestProtectSettingsLocksTheRulesFile(t *testing.T) {
 func TestRetiringOldProfileRulesKeepsWhatSomebodyAdded(t *testing.T) {
 	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
 	t.Setenv("USERPROFILE", tempDir(t))
+	// The marker that makes this a one-time act lives beside the bookkeeping,
+	// so the bookkeeping has to be a temporary one. Without this the first run
+	// of the test wrote into the real state directory and told the machine its
+	// migration was done -- which is what happened, once, before this line.
+	t.Setenv("LOCALAPPDATA", tempDir(t))
 
 	old := preset.RetiredProfileEntries()
 	if len(old) == 0 {
-		t.Skip("this machine resolves no profile root, so there is no old default to recognize")
+		t.Fatal("no old default entries are derivable here, so this test can measure nothing")
 	}
 	const mine = "my-own-directory"
 	rules := &config.Config{Profile: append([]string{mine}, old...)}
@@ -83,14 +88,64 @@ func TestRetiringOldProfileRulesKeepsWhatSomebodyAdded(t *testing.T) {
 		t.Errorf("%q was taken out, and nobody but the person using this put it there", mine)
 	}
 
-	// And again changes nothing: a run that rewrote the file every time would
-	// fight anybody editing it.
+	// And now the part that matters more than the migration itself: what
+	// somebody does to the file afterwards has to stick. They delete one of
+	// the entries this added and put a whole directory back on purpose.
+	edited := &config.Config{Profile: []string{mine, ".claude"}}
+	if err := edited.Save(); err != nil {
+		t.Fatal(err)
+	}
 	again, err := RetireWholeDirectoryProfileRules()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(again) != 0 {
-		t.Errorf("a second pass took out %d more entries", len(again))
+		t.Errorf("a second pass took out %d more entries, so an edit never sticks", len(again))
+	}
+	final, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(final.Profile) != 2 || final.Profile[0] != mine || final.Profile[1] != ".claude" {
+		t.Errorf("the edited section came back as %v, and nobody but its owner touched it", final.Profile)
+	}
+}
+
+// TestRetiringLeavesACredentialFileThatIsInBothLists is the bug the test
+// above could not see, because an empty profile root has no overlap in it.
+//
+// ~/.claude.json was named by the old default and is named by the narrow one:
+// it is a credential file and was always the right answer. Counting it as the
+// old default's doing made a rules file that said only that look like one
+// needing migration, so every --init appended the whole current default
+// again -- and an entry somebody deleted came back on the next run.
+func TestRetiringLeavesACredentialFileThatIsInBothLists(t *testing.T) {
+	home := tempDir(t)
+	t.Setenv(config.EnvPath, filepath.Join(tempDir(t), "rules.ktav"))
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", tempDir(t))
+	// Present, so the narrow default would name it too and there is something
+	// for the two lists to overlap on.
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&config.Config{Profile: []string{".claude.json"}}).Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	retired, err := RetireWholeDirectoryProfileRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retired) != 0 {
+		t.Errorf("a credential file both lists name was taken for the old default: %v", retired)
+	}
+	after, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Profile) != 1 || after.Profile[0] != ".claude.json" {
+		t.Errorf("the section became %v, and nothing in it needed changing", after.Profile)
 	}
 }
 
