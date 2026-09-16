@@ -552,10 +552,7 @@ func TestOneInterruptStillReachesTheProgramThroughTheMiddle(t *testing.T) {
 	resultFile := filepath.Join(dir, "result.txt")
 	pidFile := filepath.Join(dir, "grandchild.pid")
 
-	procFreeConsole.Call()
-	if r, _, callErr := procAllocConsole.Call(); r == 0 {
-		t.Fatalf("AllocConsole: %v", callErr)
-	}
+	takeAConsole(t)
 
 	cmd := middleDriver(t, "patient", dir, resultFile)
 	if err := cmd.Start(); err != nil {
@@ -598,10 +595,7 @@ func TestInsistingStillEndsTheRunThroughTheMiddle(t *testing.T) {
 	resultFile := filepath.Join(dir, "result.txt")
 	pidFile := filepath.Join(dir, "grandchild.pid")
 
-	procFreeConsole.Call()
-	if r, _, callErr := procAllocConsole.Call(); r == 0 {
-		t.Fatalf("AllocConsole: %v", callErr)
-	}
+	takeAConsole(t)
 
 	cmd := middleDriver(t, "patient", dir, resultFile)
 	if err := cmd.Start(); err != nil {

@@ -68,7 +68,44 @@ var (
 	procFreeConsole       = w32.Kernel32.NewProc("FreeConsole")
 	procAllocConsole      = w32.Kernel32.NewProc("AllocConsole")
 	procGenerateCtrlEvent = w32.Kernel32.NewProc("GenerateConsoleCtrlEvent")
+	procGetConsoleWindow  = w32.Kernel32.NewProc("GetConsoleWindow")
+	procShowWindow        = w32.User32.NewProc("ShowWindow")
 )
+
+// takeAConsole gives this test process a console of its own, without putting
+// a window on the screen for it.
+//
+// The console is needed: GenerateConsoleCtrlEvent reaches the processes
+// attached to a console, and a caller attached to none can call it, get a
+// success return, and signal nobody. The window is not needed by anything,
+// and a test run that opens four of them across the package is a test run
+// that takes the screen away from whoever started it.
+//
+// Hiding the window does not weaken what the console is for. A control event
+// goes to the console's list of attached processes, which is unrelated to
+// whether anything is drawn: measured by the interrupt tests themselves,
+// which deliver and catch events with the window hidden.
+//
+// Freeing first and allocating second, before the driver is started, so the
+// driver inherits this console rather than getting an implicit one of its
+// own -- see the long note at the top of this file for why that order is not
+// optional.
+func takeAConsole(t *testing.T) {
+	t.Helper()
+	procFreeConsole.Call()
+	if r, _, callErr := procAllocConsole.Call(); r == 0 {
+		t.Fatalf("AllocConsole: %v", callErr)
+	}
+	// A console just allocated always has a window; nothing here has to cope
+	// with it being absent, and a zero handle would mean the allocation above
+	// did not do what it said.
+	window, _, callErr := procGetConsoleWindow.Call()
+	if window == 0 {
+		t.Fatalf("GetConsoleWindow after AllocConsole: %v", callErr)
+	}
+	const hide = 0
+	procShowWindow.Call(window, hide)
+}
 
 // runDriver plays the wuserbox-parent role: it starts the sandboxed
 // child+grandchild through Run, signals readiness, then either waits to be
@@ -351,10 +388,7 @@ func TestRunStopsOnInterruptAndWhatItStarted(t *testing.T) {
 	// fresh, empty console while the driver is still attached to whatever
 	// this test process had (here, none), and GenerateConsoleCtrlEvent
 	// below would address a console with nobody on it.
-	procFreeConsole.Call()
-	if r, _, callErr := procAllocConsole.Call(); r == 0 {
-		t.Fatalf("AllocConsole: %v", callErr)
-	}
+	takeAConsole(t)
 
 	cmd := driverCommand(t, "interrupt", dir, resultFile)
 	if err := cmd.Start(); err != nil {
@@ -459,10 +493,7 @@ func TestOneInterruptIsLeftToTheProgram(t *testing.T) {
 	resultFile := filepath.Join(dir, "result.txt")
 	pidFile := filepath.Join(dir, "grandchild.pid")
 
-	procFreeConsole.Call()
-	if r, _, callErr := procAllocConsole.Call(); r == 0 {
-		t.Fatalf("AllocConsole: %v", callErr)
-	}
+	takeAConsole(t)
 
 	cmd := driverCommand(t, "patient", dir, resultFile)
 	if err := cmd.Start(); err != nil {
