@@ -10,8 +10,9 @@ import "strings"
 // entries cannot drift apart.
 var Text = intro + commandList() + options + paths
 
-const intro = `wuserbox - run a command that reads everything you can read, but writes
-only where you allow.
+const intro = `wuserbox - run a command that reads what you can read, and changes nothing
+the machine does not already let every local account change, anywhere you
+did not allow it to.
 
 USAGE
 
@@ -34,10 +35,13 @@ WHAT THIS MEANS FOR A PROGRAM RUNNING INSIDE
   You are not the user. You run as a local account of this sandbox's own,
   which is what decides everything below.
 
-  You can read everything the user can read: the whole disk, the toolchain,
-  the user's settings and credential files. What you cannot reach is what
-  belongs to the user's account rather than to a file: Credential Manager,
-  anything sealed with DPAPI, mapped drives.
+  You can read what the user can read: the whole disk, the toolchain, the
+  user's settings and credential files. What you cannot reach is what belongs
+  to the user's account rather than to a file: Credential Manager, anything
+  sealed with DPAPI, mapped drives. Nor a directory whose permissions name
+  the user alone and nothing else -- reading the user's profile works because
+  it is granted to a group made for that, and a locked-down directory
+  somewhere else has to be granted to this sandbox like any other.
 
   Your profile is not the user's. USERPROFILE, HOME, APPDATA, LOCALAPPDATA
   and TEMP all point inside a profile built for this sandbox, and
@@ -56,11 +60,18 @@ WHAT THIS MEANS FOR A PROGRAM RUNNING INSIDE
   A sweep like "rmdir /s" or "rm -rf" started in the wrong place empties what
   the sandbox was given and stops at its edge.
 
-  Anywhere else a write fails with "Access is denied". That is Windows
-  enforcing a permission boundary, not a broken tool and not a bug to work
-  around. Retrying, changing permissions or asking for administrator rights
-  will not help: the commands that widen access refuse to run from inside a
-  sandbox, and so does elevation.
+  Anywhere else a write fails with "Access is denied", with one exception the
+  tool does not hide: a directory the machine already lets every local
+  account write to stays writable, because this sandbox has to carry Everyone
+  and BUILTIN\Users to start a program and read the system at all.
+  C:\ProgramData holds such directories on many machines, and
+  "wuserbox --audit" lists the ones on this one. Writing there is not a way
+  in to anything of the user's, and it is still not a place to put work.
+
+  A refusal is Windows enforcing a permission boundary, not a broken tool and
+  not a bug to work around. Retrying, changing permissions or asking for
+  administrator rights will not help: the commands that widen access
+  refuse to run from inside a sandbox, and so does elevation.
 
   WUSERBOX_DIR holds the project directory and WUSERBOX_GROUP the name of the
   sandbox, so you can tell you are inside one.
