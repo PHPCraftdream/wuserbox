@@ -3,6 +3,7 @@ package profile
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
@@ -25,6 +26,12 @@ type EntryPlan struct {
 // entry would copy or skip. It is --dry-run's way into this package, and it
 // walks the same ground Copy does rather than a second guess at it -- see
 // planSink and previewCleanup for how each half shares its real twin's walk.
+//
+// The halves answer in Copy's own order: what the cleanup globs would clear
+// counts as gone before the copy half looks, because in a real fill
+// clearCleanup runs first -- a preview that let the copy half read the tree
+// as it stands would report skips the run does not make, and zero bytes
+// where bytes move.
 //
 // dest need not exist yet: a sandbox --dry-run is asked about before it has
 // ever been built has no profile on disk at all, and that is answered
@@ -50,7 +57,10 @@ func Plan(dest string, prints map[string]Print) ([]CleanupPlan, []EntryPlan, err
 	if err != nil {
 		return nil, nil, err
 	}
-	entryPlans, err := previewEntries(paths.Home(), root, rules.Profile, prints)
+	// In Copy's own order: what the cleanup half would clear counts as gone
+	// before the copy half looks, because in a real fill clearCleanup runs
+	// first and the copy starts from what is left.
+	entryPlans, err := previewEntries(paths.Home(), root, rules.Profile, prints, goneAfterCleanup(cleanupPlan))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -90,8 +100,10 @@ func openForPreview(dest string) (*os.Root, error) {
 // name not on this machine, and the same walk underneath. What differs is
 // only the sink at the bottom -- planSink counts instead of copying -- so a
 // preview can never name a file the real run would not also reach, or skip
-// one it would actually copy.
-func previewEntries(home string, root *os.Root, entries []config.Entry, prints map[string]Print) ([]EntryPlan, error) {
+// one it would actually copy. gone is what the cleanup half of this
+// preview would clear, folded; the copy half reads it because a real run's
+// copy starts from a tree clearCleanup has already been over.
+func previewEntries(home string, root *os.Root, entries []config.Entry, prints map[string]Print, gone map[string]bool) ([]EntryPlan, error) {
 	var plans []EntryPlan
 	for _, entry := range entries {
 		dst, err := within(entry.Path)
@@ -104,7 +116,7 @@ func previewEntries(home string, root *os.Root, entries []config.Entry, prints m
 			continue // not on this machine; not an error, same as a real copy
 		}
 		plan := EntryPlan{Path: entry.Path}
-		sk := &planSink{plan: &plan}
+		sk := &planSink{plan: &plan, gone: gone}
 		if err := walkEntry(sk, src, dst, "", root, info, nil, newWalk(entry), prints, nil); err != nil {
 			return plans, fmt.Errorf("previewing %s: %w", entry.Path, err)
 		}
@@ -113,27 +125,88 @@ func previewEntries(home string, root *os.Root, entries []config.Entry, prints m
 	return plans, nil
 }
 
+// goneAfterCleanup is the cleanup plan as the copy half of a preview has to
+// read it: each planned removal under FoldedEntryPath, the key this package
+// already answers "are these two spellings of one path inside the profile"
+// with. Asked of the package rather than spelled out again because the two
+// sides are written by different witnesses -- a plan path comes out of the
+// destination tree's own names, a destination path out of the rules entry
+// and the source's -- and because whatever the fold becomes, one question
+// put to the package keeps the preview on its answer.
+func goneAfterCleanup(cleanupPlan []CleanupPlan) map[string]bool {
+	gone := make(map[string]bool, len(cleanupPlan))
+	for _, removal := range cleanupPlan {
+		gone[FoldedEntryPath(removal.Path)] = true
+	}
+	return gone
+}
+
+// takenByCleanup answers whether dst sits at or under a path the cleanup
+// half of this preview would clear. At or under, not equal to: a plan path
+// can name a directory cleanDir takes whole, so with cleanup: [agent] and
+// profile: [agent] every file under agent/ is a copy into a directory that
+// will not exist again until the copy makes it -- one level of them no
+// equality check would ever reach. Asked up dst's own ancestors rather
+// than across every removal, so a file pays for the depth it sits at, not
+// for the number of paths the globs matched.
+//
+// The ancestors are taken with path.Dir and not filepath.Dir, and the
+// difference is the whole of whether this works: the keys are spelled with
+// forward slashes, because that is what FoldedEntryPath hands back, and
+// filepath.Dir on Windows hands back the native spelling of whatever it was
+// given -- so the first ancestor of agent/sessions/one.json came back as
+// agent\sessions, which the map does not hold. Measured: a glob naming a
+// directory more than one segment deep matched nothing, and the plan went on
+// reporting the skip the run does not make. A glob naming a top-level
+// directory hid it, since one segment has no separator to convert.
+func takenByCleanup(gone map[string]bool, dst string) bool {
+	for p := FoldedEntryPath(dst); ; p = path.Dir(p) {
+		if gone[p] {
+			return true
+		}
+		if p == "." {
+			return false
+		}
+	}
+}
+
 // planSink is copySink's read-only twin: asked the same questions by the
 // same walk, and answers by counting instead of by writing. It never
 // touches root beyond an Lstat, and only where root is not nil -- a preview
 // asked about a sandbox that does not exist yet has nothing to Lstat, and
 // answers every file "would copy" rather than guessing at "would skip".
-type planSink struct{ plan *EntryPlan }
+// gone is what the cleanup half of this preview would clear, folded; nil
+// answers no to every file.
+type planSink struct {
+	plan *EntryPlan
+	gone map[string]bool
+}
 
 func (p *planSink) prepareDir(*os.Root, string) error { return nil }
 
 func (p *planSink) finishDir(*os.Root, string, string, map[string]bool, *walk) error { return nil }
 
 func (p *planSink) file(_, dst string, root *os.Root, info os.FileInfo, _ *int64, prints, _ map[string]Print) error {
-	key := filepath.ToSlash(dst)
-	if root != nil {
-		if old, ok := prints[key]; ok && old.stillDescribes(info) {
-			// The same second check copySink.file makes: a print alone does
-			// not prove the destination still holds the file, only that the
-			// source has not changed since it last did.
-			if now, there := lookAt(root, dst); there && now.Mode().IsRegular() && now.Size() == info.Size() {
-				p.plan.Skipped++
-				return nil
+	// A real fill clears the cleanup globs before the copy decides
+	// anything, so a file the globs take is not there to be skipped when
+	// the copy reaches it -- it is copied back into the space the deletion
+	// left. The preview deletes nothing, so it cannot let cleanDir's twin
+	// answer by absence; it asks instead. Answering the skip question
+	// against the tree as it stands reported a skip the run does not make:
+	// measured, an unchanged auth.json named by a cleanup glob came back
+	// "Skipped: 1, Files: 0" from a plan whose run deleted that file and
+	// copied it again.
+	if !takenByCleanup(p.gone, dst) {
+		key := filepath.ToSlash(dst)
+		if root != nil {
+			if old, ok := prints[key]; ok && old.stillDescribes(info) {
+				// The same second check copySink.file makes: a print alone does
+				// not prove the destination still holds the file, only that the
+				// source has not changed since it last did.
+				if now, there := lookAt(root, dst); there && now.Mode().IsRegular() && now.Size() == info.Size() {
+					p.plan.Skipped++
+					return nil
+				}
 			}
 		}
 	}
