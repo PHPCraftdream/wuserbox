@@ -136,6 +136,20 @@ by what it holds is a boundary somebody will lean on where it does not.
   service's work, not wuserbox's. Why the account is refused its own hive is
   an open question; the investigation carries the measurement that asks it
   and a hypothesis, and this document gets rewritten when there is an answer.
+* **A `cleanup:` glob is yours to aim, and the guard over it is a net rather
+  than a proof.** The globs in the rules file delete from the sandbox's
+  profile, and wuserbox refuses the run if one of them could reach the
+  registry hive or the transaction files Windows keeps beside it — deleting
+  those does not clear a cache, it destroys the sandbox's
+  `HKEY_CURRENT_USER`. That refusal works by asking whether the glob's
+  language meets the shape of those names, and the shape carries a GUID and
+  a counter that are different on every machine, so the question is answered
+  by analysis rather than by looking at what is on disk. Analysis of that
+  kind has been wrong here before, in a way nothing noticed until somebody
+  wrote the glob that slipped through. Write globs that name what the
+  sandbox wrote — a directory, an extension you recognize — rather than
+  broad ones trimmed with wildcards until they look right, and read what
+  `--dry-run` says a cleanup would take before you let it run.
 * **Files the sandbox creates are owned by the sandbox's account**, not by you.
   You keep being able to delete them, because the project directory carries an
   entry for you, but a listing will show an owner you do not recognize.
