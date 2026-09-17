@@ -337,6 +337,19 @@ func segmentReaches(glob string, fam []famChar) bool {
 				next[j] = true // the star may also match nothing here
 			case '?':
 				next[j+1] = true
+				// A ? eats one character whatever it is, and the only
+				// character a decMore position can hold is a digit, so the
+				// one it eats here is a digit and leaves the position still
+				// in play -- the same stay a literal digit earns below.
+				// Without it a ? run wider than the two positions a decRun
+				// encodes cannot cross a TxR index of three or more digits,
+				// and a glob spelling the index that way reached a real
+				// member unrefused; measured, "*.TxR.???.regtrans-ms"
+				// matched the three-digit member while the guard stayed
+				// silent.
+				if fam[j].decMore {
+					next[j] = true
+				}
 			default:
 				if famAccepts(fam[j], c) {
 					next[j+1] = true
