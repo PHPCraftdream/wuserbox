@@ -142,12 +142,14 @@ func RunAsAccount(username, password, commandLine, directory string, env []strin
 }
 
 // RunAsAccountWithLease transfers the sandbox's lease into the suspended stub
-// before it can execute. The stub is the lease's last holder: it holds the
-// adopted duplicate for its own life, the program is handed nothing, and a
-// program cannot outlive its stub -- the jobs end them together, measured and
-// held in place by TestTheProgramCarriesNoLeaseAndCannotOutliveItsStub -- so
-// a lease that covers the stub covers the run even if this process dies
-// while the job is still running.
+// before it can execute. The stub adopts and holds the duplicate; the program
+// is handed nothing. The slot can be granted before the chain's last process
+// object signals -- a process releases its handles before its object signals,
+// so that ordering is a tautology of handle release, not a defect (measured;
+// see TestTheProgramCannotRunWhenTheSlotIsGranted) -- and what the guarantee
+// buys is that at the grant the program is down to its exit's reaper thread,
+// which never returns to user mode, measured 8 runs out of 8. The stub, the
+// trusted and shielded process, remains the holder the guarantee rests on.
 func RunAsAccountWithLease(username, password, commandLine, directory string, env []string, slotPath string) (int, error) {
 	if slotPath == "" {
 		return -1, fmt.Errorf("the sandbox slot path is empty")

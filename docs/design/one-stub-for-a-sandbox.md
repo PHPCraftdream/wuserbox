@@ -267,18 +267,30 @@ and pass a copy on to the program through the stub's job, so that a process
 left behind while Windows was still tearing down its jobs would keep the
 slot held. A probe undid that: the program -- the untrusted thing in the
 system -- closed its inherited copy with one `CloseHandle` and kept
-running, and the coverage the copy existed to give was gone. Measured
-against the real chain, which is what the draft was missing: a real job
-with kill-on-close holding a real stub, a second holding the program, the
-outer killed outright -- and the program cannot outlive its stub. The first
-job's kill ends the stub, the stub's death closes the second job's last
-handle, and its kill ends the program. A guarantee resting on the trusted,
-shielded stub is therefore a guarantee for the whole tree, and the
-duplicate is handed over with no access at all, because the same-access
-duplicate the draft started from could set the read-only attribute on the
-slot file and brick the sandbox's next run until the bit was cleared from
-outside. Both measurements are held in place by tests in
-internal/base/lock. If the handoff never happens, the stub has not run and
+running, and the coverage the copy existed to give was gone. The draft also
+duplicated with the same access, and its removal stays as recorded: a
+same-access duplicate could set the read-only attribute on the slot file
+and brick the sandbox's next run until the bit was cleared from outside, so
+the duplicate is handed over with no access at all. The draft's conclusion
+that "the program cannot outlive its stub" settled the question of the slot
+-- and the racing measurement corrects it: the slot is granted 0.9-1.7ms
+after the outer is killed while the program's process object is still
+unsignaled for another ~0.5-1.1ms, every run. That is a tautology of handle
+release, not a defect -- a process's handles go before its object -- and no
+arrangement of handles inside the dying tree can hold the slot past it. The
+question that matters is executable code, and there the measurement says
+the program is down to one thread at the first grant -- the exit's reaper,
+which never returns to user mode -- 8 runs out of 8, on the shipped
+arrangement and on an experimental inheritable zero-access copy that would
+have made the ordering kernel-internal to the program's own exit. The copy
+was measured to buy nothing here -- identical thread verdicts, 4/4 against
+4/4 -- and was taken back out. The stub, trusted and shielded, remains the
+holder the guarantee rests on, and one `CloseHandle` from a program holding
+a copy erases only that copy's coverage. Three tests hold this in
+internal/base/lock: TestTheProgramCannotRunWhenTheSlotIsGranted holds the
+ordering at the executable level, TestTheProgramCarriesNoLeaseAndCannotOutliveItsStub
+holds that nothing is inherited and the tree ends, and the two damage tests
+hold the zero access. If the handoff never happens, the stub has not run and
 the outer job can end it without a program having been born.
 
 **The closure is structural rather than timed.** Run A's program holds

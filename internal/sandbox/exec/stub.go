@@ -60,14 +60,16 @@ func Stub(args []string) error {
 			"%s takes a group, a read group and a command line", StubFlag)
 	}
 	// The outer command duplicates its write lease into this suspended stub
-	// before resuming it. Adopt that handle and hold it here: this process
-	// is the lease's last holder. Nothing is passed on to the program --
-	// one CloseHandle from it erased the coverage an inherited copy was
-	// meant to give, and the jobs the two live in end the program with this
-	// process anyway -- so if the outer command is killed, this handle alone
-	// keeps a new run from starting until the job has gone away. Direct unit
-	// probes omit the variable because they do not model the command-layer
-	// lease.
+	// before resuming it. Adopt that handle and hold it here: the stub is
+	// the holder the guarantee rests on, and the program is handed nothing.
+	// The slot can be granted before the chain's last process object signals
+	// -- a process releases its handles before its object signals, so that
+	// ordering is a tautology of handle release, not a defect (measured; see
+	// TestTheProgramCannotRunWhenTheSlotIsGranted) -- and what the guarantee
+	// buys is that at the grant the program is down to its exit's reaper
+	// thread, which never returns to user mode, measured 8 runs out of 8.
+	// Direct unit probes omit the variable because they do not model the
+	// command-layer lease.
 	if handoff := os.Getenv(lock.TransferEnv); handoff != "" {
 		value, err := os.ReadFile(handoff)
 		if err != nil {

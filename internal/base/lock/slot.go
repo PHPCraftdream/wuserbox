@@ -29,9 +29,12 @@ var ErrSlotHeld = errors.New("the sandbox's slot is already leased")
 // TransferEnv is the environment variable passed only to the stub. It names
 // a protected handoff file containing a handle duplicated into the suspended
 // stub. The stub adopts that handle and holds it for its own life; the
-// program is handed nothing, because a program of the sandbox cannot outlive
-// its stub -- measured, and held in place by slot_chain_test.go -- so the
-// stub, trusted and shielded, is the holder the guarantee rests on.
+// program is handed nothing -- the slot can come free before the chain's last
+// process object signals, and what the lease actually buys at that grant is
+// that the program is down to its exit's one reaper thread, which never
+// returns to user mode (measured, and held by
+// TestTheProgramCannotRunWhenTheSlotIsGranted). The stub, trusted and
+// shielded, is the holder the guarantee rests on.
 const TransferEnv = "WUSERBOX_SLOT_TRANSFER"
 
 // slotCount is how many runs of one sandbox may go at once, and the number
@@ -127,21 +130,33 @@ func PrepareTransfer(slotPath string) (string, func(), error) {
 // not be resumed until this returns: before it can execute, either it owns a
 // copy of the lease or it has not started a program at all.
 //
-// The duplicate is handed over with no access at all and marked
-// non-inheritable, and both halves are measurements rather than taste. The
-// exclusion that makes a slot a slot is the share mode of the original open,
-// which any handle to the file object keeps, so the duplicate holds the
-// place while being able to do nothing through it. That matters because the
-// source handle is opened GENERIC_READ|GENERIC_WRITE: a duplicate that
+// The duplicate carries desired access zero and is not inherited, and both
+// halves are measurements rather than taste. The zero access matters because
+// the source handle is opened GENERIC_READ|GENERIC_WRITE: a duplicate that
 // carried the access along -- DUPLICATE_SAME_ACCESS -- let its holder set
 // FILE_ATTRIBUTE_READONLY on the slot file, and once every handle closed the
 // next Lease came back "Access is denied" and stayed that way, bricking
 // run, --init and --rm for the sandbox until somebody cleared the bit from
-// outside. And it is not inherited because the program was the wrong holder:
-// the coverage a copy in the program existed to give evaporated with one
-// CloseHandle from the untrusted thing in the system, while the jobs the two
-// live in already end the program with its stub -- measured with real jobs
-// and a real kill, and held in place by slot_chain_test.go.
+// outside. Held in place by TestALeaseHandedToTheStubCarriesNoRightsOverTheSlotFile
+// and TestADuplicateAloneKeepsTheSlotShutAndGivesItBackUnharmed.
+//
+// The duplicate is not inherited and the program is handed nothing. The
+// honest reason is the measured teardown: the slot can be granted before the
+// chain's last process object signals -- grants landed 0.9-1.7ms after the
+// kill while the program's process object signaled another ~0.5-1.1ms later,
+// every run -- and that ordering is not something a handle arrangement can
+// fix, because a process releases its handles before its process object
+// signals, so no arrangement of handles inside the dying tree can hold the
+// slot past that. What the lease actually buys is that at the grant the
+// program is down to the exit's one reaper thread, which never returns to
+// user mode -- measured 8 runs out of 8, and held by
+// TestTheProgramCannotRunWhenTheSlotIsGranted. An experimental inheritable
+// zero-access copy -- the program itself the last holder, making that
+// ordering kernel-internal rather than a race between two teardowns -- was
+// measured to buy nothing here and came back out; the numbers are in
+// docs/design/one-stub-for-a-sandbox.md. The stub, trusted and shielded, is
+// the holder the guarantee rests on: one CloseHandle from a program holding
+// a copy erases only that copy's coverage.
 func PassTo(slotPath string, target syscall.Handle, transferPath string) error {
 	if slotPath == "" || transferPath == "" {
 		return fmt.Errorf("the slot handoff paths are empty")
@@ -156,10 +171,13 @@ func PassTo(slotPath string, target syscall.Handle, transferPath string) error {
 	if err != nil {
 		return fmt.Errorf("getting the current process for the slot handoff: %w", err)
 	}
-	// Desired access zero and no DUPLICATE_SAME_ACCESS: the duplicate gets
-	// no rights at all, and no program ever inherits it -- proc.Run starts
-	// the program with handle inheritance on, and nothing inheritable here
-	// is anything the program should learn.
+	// Desired access zero is load-bearing -- a same-access duplicate could set
+	// FILE_ATTRIBUTE_READONLY on the slot file and brick every later Lease --
+	// and the duplicate is not inherited: the slot can come free before the
+	// chain's last process object signals no matter how the handles are
+	// arranged, because a process releases its handles before its object
+	// signals, and at the grant the program is down to its exit's reaper
+	// thread anyway (measured, see PassTo above).
 	var duplicate syscall.Handle
 	if err := syscall.DuplicateHandle(current, source, target, &duplicate, 0, false, 0); err != nil {
 		return fmt.Errorf("duplicating the slot into the stub: %w", err)

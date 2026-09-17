@@ -140,23 +140,19 @@ func chainProcessGone(pid uint32, wait time.Duration) bool {
 // but that probe built no jobs. With the real chain the program cannot
 // outlive its stub: killing the outer closes the first job, which ends the
 // stub, whose death closes the second job's last handle, which ends the
-// program. Measured here, below, on real jobs and a real kill. The stub --
-// wuserbox's own code, shielded before the program exists -- holding the
-// lease is therefore the whole guarantee, and a copy in the program buys
-// nothing except exactly the surface a CloseHandle from untrusted code
-// erases.
+// program. Measured here, below, on real jobs and a real kill.
 //
-// The handoff pins that decision where it is made. Handle inheritance is
-// the only route a copy of the lease has into the program: nobody names the
-// handle to it, and the program is started with inheritance on, the way
-// proc.Run starts one. So the test asks the stub whether the duplicate it
-// adopted carries the inherit flag -- asked where the handle actually
-// lives, in the stub, rather than by poking the value from inside the
-// program, where a fresh process can hold an unrelated handle worth the
-// same number. This is the test that fails if the duplicate ever reaches
-// the program again, and it holds the kernel's answer -- the program dies
-// with its stub, and the kernel gives the slot back -- where nothing can
-// quietly stop resting on it.
+// The stub is asked whether the duplicate it adopted carries the inherit
+// flag because the program is started with inheritance on, the way proc.Run
+// starts one -- so if the duplicate were inheritable, a copy of the lease
+// would reach the program. The answer must be no: the program is handed
+// nothing. It is asked where the handle actually lives, in the stub, rather
+// than by poking the value from inside the program, where a fresh process
+// can hold an unrelated handle worth the same number. This is the test that
+// fails if the duplicate ever turns inheritable, and it holds the kernel's
+// answer -- the program dies with its stub, and the kernel gives the slot
+// back -- where nothing can quietly stop resting on it. The zero-access half
+// lives in the two damage tests.
 func TestTheProgramCarriesNoLeaseAndCannotOutliveItsStub(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", t.TempDir())
 	name := fmt.Sprintf("wub-slot-chain-%d", os.Getpid())
@@ -199,7 +195,7 @@ func TestTheProgramCarriesNoLeaseAndCannotOutliveItsStub(t *testing.T) {
 		t.Fatal("the stub of the chain never reported whether its duplicate is inheritable")
 	}
 	if got := readSlotTestFile(t, flags); got != "plain" {
-		t.Fatalf("the duplicate the stub adopted is %s, so the program inherits a copy of the lease", got)
+		t.Fatalf("the stub's adopted duplicate is inheritable (%s), so the program inherits a copy of the lease and is handed something after all", got)
 	}
 
 	// Killed outright, like wuserbox with the power pulled: no cleanup runs
