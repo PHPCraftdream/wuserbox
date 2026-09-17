@@ -185,17 +185,26 @@ func TestAnEntryRespelledBetweenRunsKeepsItsCopyWhenTheSourceHasGone(t *testing.
 	}
 }
 
-// TestAnEntryRespelledBetweenSigmasKeepsItsCopyWhenTheSourceHasGone is the
-// respelling defect FoldedEntryPath was built for -- "agent" to "./agent" --
-// again, with capitals strings.ToLower cannot join: Σ and ς are different
-// runes to ToLower, but the file system equates the two spellings, so the
-// entry never left the list, while the folded key reads the recorded one as
-// a name it no longer holds and the bare take-back RemoveAll deletes the
-// directory with everything the sandbox keeps under it. Same defect as the
-// capitals tests, arriving through the record instead of the present list.
-func TestAnEntryRespelledBetweenSigmasKeepsItsCopyWhenTheSourceHasGone(t *testing.T) {
-	sigma := "\u03a3"
-	final := "\u03c2"
+// TestAnEntryRespelledBetweenSigmasFollowsWhatTheVolumeCallsOnePlace is
+// the respelling question FoldedEntryPath was built for -- "agent" to
+// "./agent" -- asked with capitals instead of separators, and it is the
+// volume that answers it rather than this test.
+//
+// Where the volume opens U+03A3 and U+03C2 onto one directory, respelling
+// the entry between them says nothing about where it lands: the copy is
+// still the copy, the record still vouches for it, and strings.ToLower --
+// which holds the two runes apart -- would have read the recorded name as
+// one the list no longer holds and taken the copy back. Where the volume
+// holds them apart, the respelled entry names a different place, the old
+// one is no longer named by anything, and taking it back is not a defect
+// but the whole point of the take-back.
+//
+// Both were measured. This desk joins the two spellings; a GitHub runner's
+// volume holds them apart, and this test asserted the first machine's
+// answer on both until the second one said no.
+func TestAnEntryRespelledBetweenSigmasFollowsWhatTheVolumeCallsOnePlace(t *testing.T) {
+	sigma := "Σ"
+	final := "ς"
 
 	home, dest := useProfile(t, []string{sigma + "ettings"})
 	write(t, filepath.Join(home, sigma+"ettings", "auth.json"), `{"token":"real"}`)
@@ -210,15 +219,28 @@ func TestAnEntryRespelledBetweenSigmasKeepsItsCopyWhenTheSourceHasGone(t *testin
 		t.Fatal(err)
 	}
 
-	// The same place, respelled. NTFS opens both spellings onto the same
-	// directory; strings.ToLower holds them apart.
+	// The same spelling question, put to the rules file.
 	if err := (&config.Config{Profile: config.Entries([]string{final + "ettings"})}).Save(); err != nil {
 		t.Fatal(err)
 	}
 	copied = fill(t, dest)
 
-	if got := read(t, filepath.Join(dest, sigma+"ettings", "auth.json")); got != `{"token":"real"}` {
-		t.Errorf("respelling the entry deleted the copy its source could no longer restore: %q", got)
+	held, err := os.Stat(filepath.Join(dest, sigma+"ettings", "auth.json"))
+	if !fileSystemJoins(t, sigma+"ettings.probe", final+"ettings.probe") {
+		// Two places on this volume, so the list stopped naming the copied
+		// one, and the take-back is right to have reached it.
+		if err == nil {
+			t.Errorf("the entry was respelled to a place this volume holds apart from the copied one, "+
+				"so nothing names the copy any more and it should have been taken back: %v", held.Name())
+		}
+		if len(copied) != 0 {
+			t.Errorf("the record came back as %v, vouching for a place this volume says was never copied", copied)
+		}
+		return
+	}
+	// One place on this volume: the respelling moved nothing.
+	if err != nil {
+		t.Errorf("respelling the entry deleted the copy its source could no longer restore: %v", err)
 	}
 	if len(copied) != 1 || copied[0].Path != final+"ettings" {
 		t.Errorf("the record came back as %v, and nothing vouches for the copy under the new spelling", copied)
