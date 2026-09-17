@@ -224,3 +224,133 @@ func TestAnEntryRespelledBetweenSigmasKeepsItsCopyWhenTheSourceHasGone(t *testin
 		t.Errorf("the record came back as %v, and nothing vouches for the copy under the new spelling", copied)
 	}
 }
+
+// TestARecordNeverClaimsAPlaceTheVolumeHoldsApart is the defect the fold
+// under FoldedEntryPath could not see: i and U+0131, dotless i, fold to the
+// same key, and this volume holds them apart as two different directories.
+// One run copies i; the source goes; the rules file respells the entry with
+// U+0131 and the sandbox has made that place its own, with a file of its
+// own in it. A fold that cannot tell the two places apart answers the
+// record's question -- was this path copied by an earlier run? -- with the
+// one place it knows, and the record claims a copy this machine never
+// made. The next Clear then takes the sandbox's own file, while the
+// credentials under i sit there with nothing left naming them.
+//
+// Where the volume joins the two spellings the defect cannot arise -- the
+// respelled entry IS the copied place -- and the test says so and skips.
+func TestARecordNeverClaimsAPlaceTheVolumeHoldsApart(t *testing.T) {
+	dotless := "\u0131"
+	if fileSystemJoins(t, "i", dotless) {
+		t.Skipf("this volume opens i and %s onto one place, so the record cannot mistake one for the other", dotless)
+	}
+
+	home, dest := useProfile(t, []string{"i"})
+	write(t, filepath.Join(home, "i", "auth.json"), `{"token":"real"}`)
+
+	copied := fill(t, dest)
+	if len(copied) != 1 {
+		t.Fatalf("nothing was copied in the first place, so this test proves nothing: %v", copied)
+	}
+
+	// The source goes the way sources do, and the sandbox makes the place
+	// the rules file is about to name its own.
+	if err := os.RemoveAll(filepath.Join(home, "i")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dest, dotless, "session.txt"), "the sandbox's own session")
+
+	if err := (&config.Config{Profile: config.Entries([]string{dotless})}).Save(); err != nil {
+		t.Fatal(err)
+	}
+	copied = fill(t, dest)
+
+	if len(copied) != 0 {
+		t.Errorf("the record came back as %v, and %s is a place this machine never copied", pathsOf(copied), dotless)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "i")); !os.IsNotExist(err) {
+		t.Errorf("the list no longer names i, and the copy it holds stayed behind: %v", err)
+	}
+
+	if err := Clear(dest, copied); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(dest, dotless, "session.txt")); err != nil {
+		t.Errorf("the sandbox's own file was taken for a copy that was never made: %v", err)
+	} else if string(data) != "the sandbox's own session" {
+		t.Errorf("the sandbox's own file was disturbed: %q", data)
+	}
+}
+
+// TestTheTakeBackReachesAPlaceTheListRenamedToAPlaceTheVolumeHoldsApart is
+// the one-sided half of the same defect: the respelled place does not exist
+// on disk at all, so nothing can be opened and compared, and the recorded
+// copy under the old name is a stray the list no longer names. The
+// take-back has to reach it anyway, or the credentials it holds sit in the
+// sandbox for good with nothing left naming them -- the kept half of the
+// loss the fold produced when it claimed the respelled place instead.
+func TestTheTakeBackReachesAPlaceTheListRenamedToAPlaceTheVolumeHoldsApart(t *testing.T) {
+	dotless := "\u0131"
+	if fileSystemJoins(t, "i", dotless) {
+		t.Skipf("this volume opens i and %s onto one place, so the list never stopped naming the copy", dotless)
+	}
+
+	home, dest := useProfile(t, []string{"i"})
+	write(t, filepath.Join(home, "i", "auth.json"), `{"token":"real"}`)
+
+	copied := fill(t, dest)
+	if len(copied) != 1 {
+		t.Fatalf("nothing was copied in the first place, so this test proves nothing: %v", copied)
+	}
+	if err := os.RemoveAll(filepath.Join(home, "i")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (&config.Config{Profile: config.Entries([]string{dotless})}).Save(); err != nil {
+		t.Fatal(err)
+	}
+	copied = fill(t, dest)
+
+	if _, err := os.Stat(filepath.Join(dest, "i", "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("the list renamed the entry to a place this volume holds apart, and the copy under the old name stayed: %v", err)
+	}
+	if len(copied) != 0 {
+		t.Errorf("the record came back as %v, and nothing this machine copied is left to vouch for", pathsOf(copied))
+	}
+}
+
+// TestAnEntryRespelledOnlyInCapitalsKeepsItsCopyWhenTheSourceHasGone is the
+// case respelling the ownership comparison has to keep joining, and the
+// reason its case half is the file system's and not a fold's: the volume
+// opens either capitals onto the one directory, and opening both spellings
+// says so exactly where a fold would only guess. The record must follow the
+// place and not the spelling, or forget reads the recorded entry as a name
+// the list no longer holds and deletes the copy its vanished source can
+// never put back.
+func TestAnEntryRespelledOnlyInCapitalsKeepsItsCopyWhenTheSourceHasGone(t *testing.T) {
+	if !fileSystemJoins(t, "i", "I") {
+		t.Skipf("this volume holds i and I apart, which no Windows volume is expected to do")
+	}
+
+	home, dest := useProfile(t, []string{"i"})
+	write(t, filepath.Join(home, "i", "auth.json"), `{"token":"real"}`)
+
+	copied := fill(t, dest)
+	if len(copied) != 1 {
+		t.Fatalf("nothing was copied in the first place, so this test proves nothing: %v", copied)
+	}
+	if err := os.RemoveAll(filepath.Join(home, "i")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (&config.Config{Profile: config.Entries([]string{"I"})}).Save(); err != nil {
+		t.Fatal(err)
+	}
+	copied = fill(t, dest)
+
+	if _, err := os.Stat(filepath.Join(dest, "i", "auth.json")); err != nil {
+		t.Errorf("respelling the entry in capitals deleted the copy its source could no longer restore: %v", err)
+	}
+	if len(copied) != 1 || copied[0].Path != "I" {
+		t.Errorf("the record came back as %v, and nothing left vouches for the copy that survived", copied)
+	}
+}

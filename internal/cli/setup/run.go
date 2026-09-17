@@ -174,11 +174,17 @@ func fillProfile(s *state.State) error {
 // union is what to record: exactly what the current list names where the
 // copy finished, and everything either list mentions where it did not.
 // Either way it is deduped by path, asking profile.FoldedEntryPath for the
-// key so the record folds a name the way forget keeps it and copyEntries
-// vouches for it -- an entry named twice in one record would be cleared
-// twice and cleared wrong the second time, and on a partial copy the two
-// spellings can be one respelling apart, this run's "./agent" against last
-// run's "agent".
+// key. The record has to hold one entry per place, and a join is the right
+// strength for that and only that: its wrong direction here drops a record
+// line -- the copy keeps sitting in the profile, and the next run writes
+// the line back for as long as the list still names it -- while the
+// tighter alternative leaves one place named twice and forget clearing it
+// twice, the second time by whichever entry's limits were recorded last,
+// which is how a --no-ai once deleted the sessions an exclusion had been
+// written to protect. forget and copyEntries no longer match by this key
+// -- both decide deletions, and both ask the volume instead, in the
+// profile package's fold.go -- so what the fold decides here is the
+// record's shape alone, never a deletion.
 //
 // On a partial copy, where both lists name a path, the entry from copied
 // wins, which is why it goes in first: it carries the limits now in force,
@@ -200,6 +206,11 @@ func union(previously, copied []config.Entry, partial bool) []config.Entry {
 // dedupeByPath keeps the first of the entries that share a path, so the
 // record holds one entry per place in the profile -- and so whoever folds
 // two lists decides which entry survives by the order it hands them in.
+// The key is FoldedEntryPath, the joining fold, on purpose: one place must
+// not be written down twice under the two spellings a case-insensitive
+// volume calls equal, and the join's own known-wrong pair -- U+0131 folded
+// into i -- costs a dropped line for a genuinely second place on the rare
+// partial-copy run that carries both, never a deletion.
 func dedupeByPath(entries []config.Entry) []config.Entry {
 	seen := make(map[string]bool, len(entries))
 	whole := make([]config.Entry, 0, len(entries))

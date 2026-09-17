@@ -139,230 +139,6 @@ func openProfile(dest string) (*os.Root, error) {
 	return root, nil
 }
 
-// forget takes away what a previous copy put under a name the list no longer
-// names, and nothing else.
-//
-// This is the whole of the pruning, and it is deliberately not what the
-// obvious version does. Clearing dest of everything the list does not name
-// reads as the tidier rule and is wrong here: dest is a profile, so what the
-// list does not name includes NTUSER.DAT, the Temp directory and whatever
-// the profile service built under AppData. Deleting those is deleting the
-// sandbox's registry. Nothing is removed that wuserbox did not put there.
-//
-// Each stale entry is cleared by clearEntry, which honors the exclusions the
-// entry carried: a name leaving the list says something about copying, and
-// what its exclusions protected was never ours to take back.
-func forget(root *os.Root, previously []config.Entry, current []config.Entry) error {
-	keep := make(map[string]bool, len(current))
-	for _, entry := range current {
-		keep[FoldedEntryPath(entry.Path)] = true
-	}
-	for _, entry := range previously {
-		if keep[FoldedEntryPath(entry.Path)] {
-			continue
-		}
-		stale, err := within(entry.Path)
-		if err != nil {
-			// A recorded name that does not land inside the profile is one
-			// nothing here wrote. Refusing is the only safe reading: the
-			// alternative is deleting whatever it does point at.
-			return err
-		}
-		// A recorded entry whose limits cannot bind is refused rather than
-		// guessed at, and the record is where the refusal has to stand: the
-		// rules file's own bad depth is refused by Copy before this runs,
-		// but a run before that refusal existed wrote the rules file's depth
-		// straight into the record, and Clear -- which reads no rules file
-		// -- reaches it here. With the entry's own depth at -1 the walk
-		// would spare everything below and the take-back would report
-		// success while taking back nothing; with a mask's depth at -1 the
-		// mask reaches nothing and its exclusion stops protecting exactly
-		// when the deletion is happening. The recorded limits are the only
-		// thing that says what the sandbox keeps.
-		//
-		// The way out is named in the message, because unlike a rules file
-		// this is not a file anybody was told about: a record can only carry
-		// a limit like this if some earlier build accepted it, so the person
-		// reading this did not write it anywhere they can see. Naming the
-		// entry again is what lets a run past it -- forget skips what the
-		// current list still names -- and the copy that follows rewrites the
-		// record with limits that bind, after which the entry can be dropped
-		// for good.
-		if err := EntryCarriesNegativeDepth(entry); err != nil {
-			return fmt.Errorf("the record of what an earlier run put in this sandbox names %s with a limit "+
-				"that cannot bind, so what under it is the sandbox's own cannot be told from what this "+
-				"tool copied, and nothing will be deleted on a guess: %w. Put %s back in the profile: "+
-				"list with a depth that can bind, or with none, and run once -- that rewrites the record "+
-				"and the entry can be removed again afterwards",
-				entry.Path, err, entry.Path)
-		}
-		if err := clearEntry(root, stale, entry); err != nil {
-			return fmt.Errorf("clearing %s, which the rules file no longer names: %w", entry.Path, err)
-		}
-	}
-	return nil
-}
-
-// clearEntry takes back one stale entry: what a previous copy put under a
-// name the rules file no longer names. A bare entry -- no depth, no masks,
-// the common case -- goes the way it always has, RemoveAll, which is
-// cheaper than any walk. An entry carrying any limit is walked instead, and
-// only what the copy would have touched is removed, leaving the excluded
-// paths and everything below the entry's depth: taking the entry off the
-// list said something about copying, and the limits it carried were never
-// about copying. They name what the sandbox keeps -- the sessions the agent
-// inside wrote, for one -- and nobody editing the list has said anything
-// against those.
-//
-// The depth bound belongs to that same promise, and it was missed once:
-// depth 0 spares an agent's sessions on every ordinary run, because the
-// mirroring declines to empty a directory the walk will not enter, and then
-// removing the entry -- or a --no-ai run, which reads no rules file at all
-// -- deleted the whole tree, sessions and all. An entry that never reached
-// below its depth never put anything there, and what is there is the
-// sandbox's.
-func clearEntry(root *os.Root, stale string, entry config.Entry) error {
-	// A reserved path is inert to the take-back whatever the entry
-	// carried: the record may name the hive outright, bare or with
-	// limits, and both branches below would honor the name to the
-	// letter -- the bare one by RemoveAll, the limits-bearing one the
-	// moment its target is not a directory. Spared rather than refused;
-	// reserved.go records why this spares where refuseReservedCleanup refuses.
-	rel := filepath.ToSlash(stale)
-	if reservedAt(rel) {
-		return nil
-	}
-	if entry.Bare() {
-		// An entry over a directory the hive sits under -- AppData
-		// leaving the list, most commonly -- takes the hive with it by
-		// the roots. What around it is ours still goes: the same walk
-		// the limits-bearing branch uses, clearing around the hive.
-		if reservedWithin(rel) {
-			_, err := clearKeepingReserved(root, stale)
-			return err
-		}
-		return root.RemoveAll(stale)
-	}
-	// A junction sitting where the entry itself landed is removed as the
-	// link it is, exactly as the unfiltered clearing would: the walk below
-	// opens directories through the root, and the root refuses to open one
-	// that leads out of the profile, which would fail the whole clearing
-	// over a link that is safe to remove and nothing else.
-	info, readable := lookAt(root, stale)
-	if !readable {
-		return nil
-	}
-	if !info.IsDir() || info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
-		return root.RemoveAll(stale)
-	}
-	var kept bool
-	if err := clearKeeping(root, stale, "", newWalk(entry), &kept); err != nil {
-		return err
-	}
-	if kept {
-		return nil
-	}
-	// Nothing under the entry survived, so the entry's own directory goes
-	// with what it held. RemoveAll rather than Remove because the entry may
-	// never have landed at all, and a clearing that errors on a name that
-	// is not there is worse than useless.
-	return root.RemoveAll(stale)
-}
-
-// clearKeeping removes what one directory of a stale entry's subtree holds
-// that the entry's own walk would have touched, through the root, and
-// reports through kept whether anything under it was spared. The questions
-// are asked of w, so the same rules govern the copy and the taking-back: a
-// directory the walk would not enter -- one an exclusion names, or one past
-// the depth that governed the copy -- is left with everything below it and
-// no questions asked, and a file the entry would not have copied -- because
-// an exclusion or an include list left it out -- is left the same way. The
-// mask was written against the child's own relative path, and the sandbox's
-// claim does not stop at its first level. A directory with nothing spared
-// under it goes once its children have gone -- a directory is kept only
-// while it is the way to something kept -- so the clearing takes the entry's
-// shape apart rather than leaving empty frames behind.
-func clearKeeping(root *os.Root, dir, rel string, w *walk, kept *bool) error {
-	d, err := root.Open(dir)
-	if err != nil {
-		// The entry may never have landed, or is already gone; either way
-		// there is nothing here to take back.
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	children, err := d.ReadDir(-1)
-	_ = d.Close()
-	if err != nil {
-		return err
-	}
-	for _, child := range children {
-		childRel := child.Name()
-		if rel != "" {
-			childRel = rel + "/" + child.Name()
-		}
-		childPath := filepath.Join(dir, child.Name())
-		if child.IsDir() {
-			if !w.descends(childRel) {
-				*kept = true
-				continue
-			}
-			// A directory sitting at a reserved path is spared by its
-			// name. Whatever the sandbox made of the hive's name,
-			// nothing under a name the tables reserve was ever ours to
-			// sort, and reporting it kept is what leaves it so.
-			if reservedAt(filepath.ToSlash(childPath)) {
-				*kept = true
-				continue
-			}
-			// Lstat before opening, the way cleanDir does: a junction the
-			// sandbox planted where a plain directory sits is removed as
-			// the link it is -- the root would refuse to open one leading
-			// out of the profile, and failing the whole clearing over an
-			// artifact the sandbox is entitled to leave lying around is
-			// worse than taking the link.
-			if info, readable := lookAt(root, childPath); !readable ||
-				info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
-				if err := root.Remove(childPath); err != nil && !os.IsNotExist(err) {
-					return err
-				}
-				continue
-			}
-			var under bool
-			if err := clearKeeping(root, childPath, childRel, w, &under); err != nil {
-				return err
-			}
-			if under {
-				*kept = true
-				continue
-			}
-		} else {
-			// A file outside the entry's include list was never ours to
-			// remove. This matters when an entry is removed entirely: the
-			// sandbox may have written an unrelated file beside the copies,
-			// and an include is a boundary on copying just as an exclusion is
-			// a boundary on taking back.
-			// The registry is not ours to take back under any entry: a
-			// depth that reaches four below AppData reaches the class
-			// hive, and the walk honoring the entry's limits would honor
-			// them straight through the profile service's file.
-			if reservedAt(filepath.ToSlash(childPath)) {
-				*kept = true
-				continue
-			}
-			if !w.copiesFile(childRel) {
-				*kept = true
-				continue
-			}
-		}
-		if err := root.Remove(childPath); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return nil
-}
-
 // within turns an entry from the rules file into the path it names under the
 // profile, and refuses one that climbs out.
 //
@@ -384,9 +160,10 @@ func EntryEscapesProfile(path string) error {
 }
 
 // cleanEntryPath is the one cleaning of a rules file's or a record's
-// spelling of an entry: within lands the path it names and FoldedEntryPath
-// folds the key it is compared by, and both start here, so the two cannot
-// disagree about what was cleaned.
+// spelling of an entry: within lands the path it names, FoldedEntryPath
+// folds the key it is deduped and refused by, and the ownership comparison
+// opens both of its spellings cleaned -- sameEntryPlace through it -- so
+// none of them can disagree about what was cleaned.
 func cleanEntryPath(entry string) string {
 	return filepath.Clean(filepath.FromSlash(entry))
 }
@@ -445,11 +222,14 @@ const Ceiling = 64 << 20
 func copyEntries(home string, root *os.Root, entries, previously []config.Entry, left int64, prints map[string]Print) ([]config.Entry, map[string]Print, error) {
 	var copied []config.Entry
 	newPrints := make(map[string]Print, len(prints))
-	// The paths the previous record already claims, folded the way forget
-	// folds them. This is the oracle for a source os.Stat cannot ask about.
-	recorded := make(map[string]bool, len(previously))
+	// The previous record's own spellings. This is the oracle for a source
+	// os.Stat cannot ask about, and the question it answers -- was this
+	// place copied by an earlier run? -- decides a deletion, so it is
+	// asked of the volume and not of a fold: both wrong directions of a
+	// fold delete here.
+	recorded := make([]string, 0, len(previously))
 	for _, entry := range previously {
-		recorded[FoldedEntryPath(entry.Path)] = true
+		recorded = append(recorded, entry.Path)
 	}
 	for _, entry := range entries {
 		dst, err := within(entry.Path)
@@ -474,7 +254,7 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 			// witness that can tell the two apart; taking a vanished source
 			// back here instead would act on a disappearance that is often
 			// temporary -- a drive not yet mounted, a tool not yet installed.
-			if recorded[FoldedEntryPath(entry.Path)] {
+			if recordVouches(root, recorded, entry.Path) {
 				copied = append(copied, entry)
 			}
 			continue
@@ -496,4 +276,26 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 		}
 	}
 	return copied, newPrints, nil
+}
+
+// recordVouches answers whether the record names the place one entry lands
+// at, and it is asked exactly where os.Stat cannot answer: a source that
+// has gone since an earlier run copied it and a source that was never here
+// look identical to that call, and the record is the only witness that can
+// tell them apart. Both of its wrong directions delete -- joined too much,
+// the record claims a place this machine never copied and Clear takes the
+// sandbox's own file for it; split too fine, it reads a copy it did make
+// as a name nothing vouches for -- so the question goes to sameEntryPlace,
+// which asks the volume, and it does not fall back when a spelling opens
+// nothing: the entry's own place is then missing from the profile, there
+// is no copy for the record to vouch for, and dropping the claim costs
+// nothing that exists. A vouch is a claim about a copy, and a claim about
+// a copy has to be witnessed by the copy.
+func recordVouches(root *os.Root, recorded []string, entry string) bool {
+	for _, path := range recorded {
+		if sameEntryPlace(root, path, entry) {
+			return true
+		}
+	}
+	return false
 }

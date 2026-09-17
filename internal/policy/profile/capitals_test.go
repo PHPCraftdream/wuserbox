@@ -133,12 +133,13 @@ func fileSystemJoins(t *testing.T, first, second string) bool {
 // table written down once.
 //
 // The two directions of a wrong fold are not equivalent, and that asymmetry
-// is the whole design. A fold that holds apart two names the file system
+// is the design of the present list. A fold that holds apart two names the file system
 // joins is what deletes: the copy lands in the entry already there, that
 // entry keeps the spelling it had, the present list misses it, and the file
 // the run just wrote goes as a stray. A fold that joins two names the file
-// system holds apart only spares something that was not this run's to take.
-// So this pins one direction and deliberately not the other -- foldedName
+// system holds apart only spares something that was not this run's to take
+// -- here, on the present list and the reserved tables, the only places a
+// fold is still trusted. So this pins one direction and deliberately not the other -- foldedName
 // joins U+0131 with I where NTFS does not, and that is allowed.
 //
 // What this cannot do is promise it found anything. Which pairs a volume
