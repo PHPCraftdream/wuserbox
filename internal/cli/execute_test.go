@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -269,5 +270,30 @@ func TestExplicitDashedRunReachesTheProgramAfterTheSeparator(t *testing.T) {
 	}
 	if err != nil && strings.Contains(err.Error(), "\"--run\"") {
 		t.Errorf("--run itself was treated as the missing program: %v", err)
+	}
+}
+
+// TestTheStubFlagWithALeaseReachesTheStub holds the other direction of the
+// guard above. The refusal test cannot tell a guard from a wall: tighten the
+// check until it refuses the flag whether or not the lease came with it, and
+// the stub becomes unreachable from the only process allowed to start it --
+// and nothing but the account e2e tests, which need administrator rights and
+// run only on CI, would notice. What is asserted is that the answer comes
+// from the stub itself, complaining about the empty command line it was
+// given, and not from the guard.
+func TestTheStubFlagWithALeaseReachesTheStub(t *testing.T) {
+	// Shaped like the handoff path production passes, and pointing nowhere:
+	// Stub refuses the empty command line before it reads the variable, so
+	// this value is never opened.
+	t.Setenv(lock.TransferEnv, filepath.Join(t.TempDir(), "handoff"))
+	err := Execute([]string{exec.StubFlag})
+	if err == nil {
+		t.Fatal("the stub was reached with no command line and answered nothing")
+	}
+	if strings.Contains(err.Error(), "active sandbox lease") {
+		t.Errorf("the guard refused a stub that came with its lease: %v", err)
+	}
+	if !strings.Contains(err.Error(), "takes a group") {
+		t.Errorf("the call did not reach the stub itself: %v", err)
 	}
 }

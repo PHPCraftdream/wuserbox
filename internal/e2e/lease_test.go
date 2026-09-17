@@ -37,6 +37,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
 // stateDir is a directory to point LOCALAPPDATA at, taken away on the way out
@@ -211,5 +212,124 @@ func TestInitProbesTheStubWhileHoldingTheLeaseItself(t *testing.T) {
 		if strings.Contains(out, "already going") {
 			t.Errorf("init %d waited on its own lease and refused itself: %q", i+1, out)
 		}
+	}
+}
+
+// TestRmIsRefusedWhileAnotherRunHoldsTheSlot is the guard for rm's take of
+// the slot. Nothing else here would notice the call going missing: with it
+// deleted, the whole suite still passes, and a removal that went ahead under
+// a standing run would take the account, the grants and the profile out from
+// under the program that is using them. What is asserted is the pair, the
+// same pair the run test above asserts: the refusal, in the words a person
+// is meant to read, and the sandbox still standing afterwards. The second
+// half is the one that matters, because a refusal that has already deleted
+// half the sandbox is not a refusal. Removal takes the temp directory first,
+// the record in the middle and the group last, so all three are looked at:
+// a removal that got as far as starting at all shows in at least one.
+func TestRmIsRefusedWhileAnotherRunHoldsTheSlot(t *testing.T) {
+	requireAdministrator(t)
+	t.Setenv("USERPROFILE", t.TempDir())
+	t.Setenv("LOCALAPPDATA", stateDir(t))
+	rules := filepath.Join(t.TempDir(), "rules.ktav")
+	// Both here and on the command, for the reason the first test gives: the
+	// file is written from this process and read by that one.
+	t.Setenv(config.EnvPath, rules)
+	if err := (&config.Config{}).Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	project := t.TempDir()
+	run := leaseRunner(t, project, rules)
+	group, _, err := sandbox.Name(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { run("--rm") })
+	if out, code := run("--init"); code != 0 {
+		t.Fatalf("init failed: %s", out)
+	}
+	s, err := state.Load(group)
+	if err != nil || s == nil {
+		t.Fatalf("loading the record init wrote: %v", err)
+	}
+
+	// The slot, held the way a standing run holds it: for as long as this
+	// process keeps it, the sandbox is busy and --rm is the second command.
+	release, err := lock.Lease(group, 5*time.Second)
+	if err != nil {
+		t.Fatalf("the slot was held before anything here held it: %v", err)
+	}
+	defer release()
+
+	out, code := run("--rm")
+	if code == 0 {
+		t.Fatal("a removal whose sandbox's slot was held went ahead")
+	}
+	if !strings.Contains(out, "already going") {
+		t.Errorf("the refusal does not say another run is going: %q", out)
+	}
+	if _, err := os.Stat(s.Temp); err != nil {
+		t.Errorf("the refused removal took the temp directory with it: %v", err)
+	}
+	if kept, err := state.Load(group); err != nil || kept == nil {
+		t.Errorf("the refused removal took the record with it: %v", err)
+	}
+	if _, err := sid.Lookup(group); err != nil {
+		t.Errorf("the refused removal took the group with it: %v", err)
+	}
+}
+
+// TestInitIsRefusedWhileAnotherRunHoldsTheSlot holds init's take itself, and
+// not only the ordering around it. The test above proves init does not wait
+// on its own lease, and it would go on passing if init stopped taking the
+// slot at all -- nothing in it ever holds a second lease. Here the slot is
+// held the way another run holds it, and init has to be refused. Init is the
+// one take that would be missed quietly, because a second init is not
+// obviously a second run: it goes on to birth a stub through its probe, and
+// that birth is exactly the event the slot exists to arbitrate.
+func TestInitIsRefusedWhileAnotherRunHoldsTheSlot(t *testing.T) {
+	requireAdministrator(t)
+	t.Setenv("USERPROFILE", t.TempDir())
+	t.Setenv("LOCALAPPDATA", stateDir(t))
+	rules := filepath.Join(t.TempDir(), "rules.ktav")
+	// Both here and on the command, for the reason the first test gives: the
+	// file is written from this process and read by that one.
+	t.Setenv(config.EnvPath, rules)
+	if err := (&config.Config{}).Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	project := t.TempDir()
+	run := leaseRunner(t, project, rules)
+	group, _, err := sandbox.Name(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { run("--rm") })
+	if out, code := run("--init"); code != 0 {
+		t.Fatalf("the first init failed, so the second is not a re-init of a standing sandbox: %s", out)
+	}
+	if _, err := state.Load(group); err != nil {
+		t.Fatalf("loading the record the first init wrote: %v", err)
+	}
+
+	// The slot, held the way a first run holds it: for as long as this
+	// process keeps it, the sandbox is busy and this init is the second
+	// command.
+	release, err := lock.Lease(group, 5*time.Second)
+	if err != nil {
+		t.Fatalf("the slot was held before anything here held it: %v", err)
+	}
+	defer release()
+
+	out, code := run("--init")
+	if code == 0 {
+		t.Fatal("an init whose sandbox's slot was held went ahead")
+	}
+	if !strings.Contains(out, "already going") {
+		t.Errorf("the refusal does not say another run is going: %q", out)
+	}
+	if _, err := state.Load(group); err != nil {
+		t.Errorf("the refused init disturbed the record: %v", err)
 	}
 }
