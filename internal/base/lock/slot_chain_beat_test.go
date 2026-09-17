@@ -189,12 +189,25 @@ func chainSampleBeats(base unsafe.Pointer, window time.Duration) (beats int, max
 	// here keeps the first gap from being measured against the machine's
 	// whole uptime, which overflows the tick-to-duration conversion and
 	// reports an absurd negative gap.
+	//
+	// The wait is the chain's own 20 seconds and not a couple, because what
+	// is being waited for is a process starting, not a beat arriving late.
+	// The stub writes the ready file the moment it has resumed the program,
+	// and the program still has a Go runtime to bring up and a section to
+	// open before its first beat; measured under `go test ./...`, which runs
+	// a package per core, that took longer than two seconds and the health
+	// check read the silence as a dead instrument. The sleep is part of the
+	// same repair: the old spin held a core the writer was trying to start
+	// on. None of this touches what is measured -- the 150ms window and the
+	// gaps inside it begin once the instrument is known to be alive.
 	if prevStamp == 0 {
-		deadline := time.Now().Add(2 * time.Second)
+		deadline := time.Now().Add(20 * time.Second)
 		for prevStamp == 0 && time.Now().Before(deadline) {
 			if s, st := chainLastBeat(base); st != 0 {
 				prevSeq, prevStamp = s, st
+				break
 			}
+			time.Sleep(time.Millisecond)
 		}
 		if prevStamp == 0 {
 			return 0, 0 // no beat ever arrived: the window will agree
@@ -231,19 +244,60 @@ const (
 	chainBeatHealthMinBeats = 40
 	chainBeatHealthMaxGap   = time.Second
 	chainBeatSettleFactor   = 20
+	// How long the health check will keep asking for its beats before
+	// calling the instrument dead. A full-rate window produces roughly 750
+	// of them and needs one pass; a machine running a test package per core
+	// has taken several. This bounds a stall, it does not set a pace.
+	chainBeatHealthPatience = 10 * time.Second
+	// How long the negative control will wait for the program to prove it
+	// is still executing with the slot free. Same reason as the patience
+	// above: what the control needs is one beat after the free instant, and
+	// a busy machine can take longer than a fixed sleep to deliver it
+	// without the program having stopped at all.
+	chainBeatStillRunning = 5 * time.Second
 )
 
 // chainRequireHealthyBeat asserts the instrument works before anything is
 // decided with it. An unhealthy instrument is fatal, never a pass.
+//
+// It asks for a count of beats rather than for a rate, and keeps asking
+// until it has them or chainBeatHealthPatience is spent. The difference
+// matters because the thing being measured is not how fast the writer runs
+// -- the verdict never reads a rate, only stamps -- but whether it beats at
+// all and how long it can pause, and both of those survive a slow machine
+// while a rate does not. Measured under `go test ./...`, a package per core:
+// the writer managed 37 beats in the 150ms this used to allow itself and the
+// run went red for it, on an instrument that was working perfectly and said
+// so in the same breath, worst gap 210us. A test that fails because the
+// machine was busy teaches people to re-run it.
+//
+// What is still fatal: a writer that cannot produce the count inside the
+// patience, and one whose worst pause is longer than the window the verdict
+// has to resolve. Those are the two ways a quiet page would stop meaning
+// anything.
 func chainRequireHealthyBeat(t *testing.T, base unsafe.Pointer) (beats int, maxGap time.Duration) {
 	t.Helper()
-	n, gapTicks := chainSampleBeats(base, chainBeatHealthWindow)
-	maxGap = chainTicksToDuration(gapTicks)
-	if n < chainBeatHealthMinBeats || maxGap > chainBeatHealthMaxGap {
-		t.Fatalf("the instrument failed before the kill: %d beats in %s with a worst gap of %s, and a decision needs at least %d beats with gaps under %s",
-			n, chainBeatHealthWindow, maxGap, chainBeatHealthMinBeats, chainBeatHealthMaxGap)
+	deadline := time.Now().Add(chainBeatHealthPatience)
+	var gapTicks uint64
+	for {
+		n, gap := chainSampleBeats(base, chainBeatHealthWindow)
+		beats += n
+		if gap > gapTicks {
+			gapTicks = gap
+		}
+		maxGap = chainTicksToDuration(gapTicks)
+		if maxGap > chainBeatHealthMaxGap {
+			t.Fatalf("the instrument failed before the kill: a pause of %s between two beats, and a decision needs pauses under %s",
+				maxGap, chainBeatHealthMaxGap)
+		}
+		if beats >= chainBeatHealthMinBeats {
+			return beats, maxGap
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the instrument failed before the kill: %d beats in %s, and a decision needs at least %d",
+				beats, chainBeatHealthPatience, chainBeatHealthMinBeats)
+		}
 	}
-	return n, maxGap
 }
 
 // chainRunHeartbeat is the program's half: it runs forever, stamping a
@@ -308,18 +362,31 @@ func chainSpawnForBeatTest(t *testing.T, ready string) (outerPID, stubPID, progr
 		killSlotProcess(outerPID)
 		_ = cmd.Wait() // the watch is started at the kill; the cleanup collects the process
 	})
-	if !waitForSlotTestFile(ready, 20*time.Second) {
-		t.Fatal("the outer never built its chain")
-	}
-	data, err := os.ReadFile(ready)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := fmt.Sscanf(string(data), "%d %d", &stubPID, &programPID); err != nil {
-		t.Fatalf("reading the chain's pids: %v", err)
-	}
+	stubPID, programPID = waitForSlotChainPIDs(t, ready, 20*time.Second)
 	t.Cleanup(func() { killSlotProcess(stubPID); killSlotProcess(programPID) })
 	return outerPID, stubPID, programPID
+}
+
+// waitForSlotChainPIDs waits for the stub's handoff file to hold two pids
+// and not merely to exist. The parse is the wait's own condition because a
+// half-written file can still parse: os.WriteFile creates before it writes,
+// and "11844 1" is two good numbers whose second is a pid this test would
+// go on to kill. Nothing here is acted on until the file says the whole of
+// what it was going to say.
+func waitForSlotChainPIDs(t *testing.T, ready string, wait time.Duration) (stubPID, programPID uint32) {
+	t.Helper()
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(ready)
+		if err == nil {
+			if n, _ := fmt.Sscanf(string(data), "%d %d", &stubPID, &programPID); n == 2 {
+				return stubPID, programPID
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("the outer never built its chain: %s never came to hold two pids", ready)
+	return 0, 0
 }
 
 // TestADetectorForTheGrantGoesRedWhenTheSlotIsReleasedEarly is the
@@ -388,11 +455,18 @@ func TestADetectorForTheGrantGoesRedWhenTheSlotIsReleasedEarly(t *testing.T) {
 	// The program must still be executing with the slot free -- that is the
 	// state the race test exists to detect, arranged on purpose.
 	seqBefore, _ := chainLastBeat(base)
-	time.Sleep(100 * time.Millisecond)
-	seqAfter, lastStamp := chainLastBeat(base)
-	if seqAfter <= seqBefore {
-		t.Fatalf("with the slot free the program stopped beating: %d beats before, %d after a 100ms wait",
-			seqBefore/2, seqAfter/2)
+	seqAfter, lastStamp := seqBefore, uint64(0)
+	waited := time.Now().Add(chainBeatStillRunning)
+	for {
+		seqAfter, lastStamp = chainLastBeat(base)
+		if seqAfter > seqBefore {
+			break
+		}
+		if time.Now().After(waited) {
+			t.Fatalf("with the slot free the program stopped beating: %d beats before, %d after %s",
+				seqBefore/2, seqAfter/2, chainBeatStillRunning)
+		}
+		time.Sleep(time.Millisecond)
 	}
 	// The verdict rule the race test applies, applied to an arrangement
 	// where it must fire: with code demonstrably executing after the slot

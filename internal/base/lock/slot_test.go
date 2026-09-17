@@ -336,10 +336,27 @@ func readSlotTestFile(t *testing.T, path string) string {
 	return string(data)
 }
 
+// waitForSlotTestFile waits for one stage of a chain to say something, and
+// waits for what it said rather than for the file it said it in.
+//
+// The distinction is the whole of this function and it was learned the hard
+// way. Every one of these files is written by os.WriteFile, which creates
+// the file and then writes it, so between those two a reader polling Stat
+// sees a file that exists and holds nothing. Measured under `go test ./...`,
+// which runs a package per core: the stub's handoff file was read back empty
+// and the chain's pids came out "EOF", failing a test about lease ordering
+// for a reason that has nothing to do with leases, in roughly one full-suite
+// run in two. A partial read is worse than an empty one and was the real
+// danger here: "11844 1" parses as two perfectly good numbers, and the
+// second is a pid this test would then have killed.
+//
+// Emptiness is the signal because every writer here writes something. A
+// caller that needs the content to parse, and not merely to be there, waits
+// on the parse itself -- see waitForSlotChainPIDs.
 func waitForSlotTestFile(path string, wait time.Duration) bool {
 	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
+		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
 			return true
 		}
 		time.Sleep(20 * time.Millisecond)
