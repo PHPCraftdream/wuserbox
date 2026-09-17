@@ -119,14 +119,21 @@ jobs:
         run: |
           # The one measurement in this repository whose value is its output
           # rather than its verdict. TestWhereTheSeededHiveRefusesItsOwnAccount
-          # asserts only what the investigation already measured -- the account
-          # is refused its own HKCU\Software, HKCU\Software\Classes accepts,
-          # reads work -- and reports everything else: who owns each key of the
-          # seeded hive and what each permission list grants, the key that
-          # refuses printed beside the key that accepts. That report is what a
-          # reader needs to close the open question, and go test prints it only
-          # under -v, so this step exists to put it in the log of every run
-          # rather than only in the log of a failing one. It needs the
-          # administrator rights a runner has and a desk usually does not, so
-          # here is the only place it ever runs.
+          # asserts the shape this step's first run measured -- the account
+          # reaches the seeded hive's root and every key it makes there
+          # itself, and is refused HKCU\Software for reading as much as for
+          # writing, while HKCU\Software\Classes accepts because it is a hive
+          # the profile service built -- and reports who owns each key and
+          # what each permission list grants, the key that refuses printed
+          # beside the key that accepts. That report is what closed the open
+          # question, and go test prints it only under -v, so this step exists
+          # to put it in the log of every run rather than only in the log of a
+          # failing one. It needs the administrator rights a runner has and a
+          # desk usually does not, so here is the only place it ever runs.
+          #
+          # It is written to go red when the picture moves. That is the wanted
+          # signal, not a breakage: two of its assertions hold a defect in
+          # place, and the day setHiveSecurity grants below the root they stop
+          # being true and the investigation and docs/limits.md have to be
+          # corrected in the same change.
           go test ./internal/account/ -run TestWhereTheSeededHiveRefusesItsOwnAccount -count=1 -v
