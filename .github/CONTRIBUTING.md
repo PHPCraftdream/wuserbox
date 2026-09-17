@@ -40,8 +40,30 @@ hard way, write it down next to the code that depends on it; that is the part
 a reader cannot recover on their own.
 
 Keep files under 500 lines and directories under about seven entries. Where
-those two pull against each other, say so in the change rather than quietly
-picking one.
+those two pull against each other, the line limit wins, and here is why,
+measured in September 2026 when every oversized file in the repository was
+split at once.
+
+In Go a directory is a package. An oversized file can therefore only be split
+into siblings beside it, which raises the entry count of the very directory
+the second rule is about: `internal/policy/profile` went from thirteen entries
+to seventeen by obeying the line limit, and there is no arrangement in which
+it obeys both. Splitting the package instead would mean exporting what
+crosses the new boundary — `walk`, `copiesFile`, `matchMask`, `within`,
+`forget` — and those are the internals of a security boundary, deliberately
+unreachable from outside this package. A layout rule is not worth an API.
+
+So the entry guideline applies where it costs nothing: documentation
+directories, and packages that are genuinely separable on their own merits
+rather than to satisfy a count. It does not apply to a Go package that is one
+subject. When a directory goes over because a file was split, that is the
+rule working, not failing.
+
+One measured exception in the other direction: `docs/checkpoints` is flat and
+stays flat however many entries it grows to. The `/checkpoint` and `/resume`
+tooling reads that directory non-recursively — `/resume` sorts every `.md` in
+it by modification time and picks the first — so grouping the files by month
+would hide every existing checkpoint from the tool that exists to read them.
 
 ## Commits
 
