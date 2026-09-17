@@ -330,6 +330,12 @@ runs will not see each other's registry, and anything keeping state there will
 look forgetful. A cap: run `n+1` waits. `--check` and `access.Check` have to
 name a slot rather than "the account". And it does not fix output.
 
+(The correction the later measurement forced, from
+[a hive per slot](../investigations/a-hive-per-slot.md): nothing keeps state
+there in the first place. The seeded hive refuses the account's own writes to
+`HKCU\Software`, so "looking forgetful" is today "never written" — for one
+slot as much as for n.)
+
 ## Where the resident-stub design above is wrong
 
 Kept rather than deleted, because the three errors are each worth not making

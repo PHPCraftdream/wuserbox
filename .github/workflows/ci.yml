@@ -114,3 +114,19 @@ jobs:
             exit 1
           fi
 
+      - name: Registry hive picture
+        shell: bash
+        run: |
+          # The one measurement in this repository whose value is its output
+          # rather than its verdict. TestWhereTheSeededHiveRefusesItsOwnAccount
+          # asserts only what the investigation already measured -- the account
+          # is refused its own HKCU\Software, HKCU\Software\Classes accepts,
+          # reads work -- and reports everything else: who owns each key of the
+          # seeded hive and what each permission list grants, the key that
+          # refuses printed beside the key that accepts. That report is what a
+          # reader needs to close the open question, and go test prints it only
+          # under -v, so this step exists to put it in the log of every run
+          # rather than only in the log of a failing one. It needs the
+          # administrator rights a runner has and a desk usually does not, so
+          # here is the only place it ever runs.
+          go test ./internal/account/ -run TestWhereTheSeededHiveRefusesItsOwnAccount -count=1 -v

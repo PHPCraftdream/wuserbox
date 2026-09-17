@@ -9,7 +9,9 @@ version is in the [README](../README.md); this is the whole of it.
 
 * the project directory;
 * the sandbox's own thin profile, which `HOME`, `APPDATA`, `TEMP` and `TMP`
-  point inside.
+  point inside — everything in it but the registry hive, which the account
+  the profile belongs to cannot write into. That last part is a known defect
+  rather than a boundary drawn on purpose; [limits](limits.md) records it.
 
 That is the whole list. Your real `~/.config`, `~/.claude` and the other
 agent directories are **not** handed over: what an agent needs from them is

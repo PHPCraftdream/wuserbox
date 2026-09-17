@@ -21,6 +21,13 @@ own objects: the MSYS runtime's signal pipe, its per-user shared section, its
 rewritten default list, and the registry a shell wants to write to. None of
 them needs a restricted token to be talked out of refusing.
 
+The registry half of that turned out half-true once measured again: the hive
+became the sandbox's own and the restricted-token refusals went away, but the
+seeded hive refuses the account's own writes to `HKCU\Software` for a reason
+of its own — [the finding and the hypothesis are in a hive per slot](../investigations/a-hive-per-slot.md).
+"Whose the registry is" was the design's question, and it was answered;
+"what may be written into it" turned out to be a different question.
+
 It also makes the restricted token usable rather than unnecessary, which is
 not what this section said when it was written. Those objects name the account
 now, and an account's identifier may be a restricting one, so restricting the
@@ -86,6 +93,13 @@ rather than from the registry. What starts blank is anything that expected the
 default profile's own settings — locale and the like — which is inferred rather
 than measured.
 
+What that measurement never asked was whether the tools could *save* into the
+hive, and the first measurement that asked came back the opposite of what
+this paragraph assumes: PowerShell's own attempt to record its execution
+policy under `HKCU\Software` is refused
+([a hive per slot](../investigations/a-hive-per-slot.md)). Starting works;
+saving does not, and the open question is why.
+
 The cost in time is tens of milliseconds: about fifty to ninety for the very
 first run of a sandbox, twenty-five to a hundred to load the hive on a cold run
 afterwards, and a few milliseconds when it is already warm. Nothing pauses for
@@ -132,7 +146,9 @@ path back.
   has to become narrower and honest.
 - **`HKEY_CURRENT_USER` becomes the sandbox's own**, which is what lets a shell
   and a registry-writing tool work at all, and means nothing of yours is read
-  from there.
+  from there. Measured later: the tool runs and reads, and saving under
+  `HKCU\Software` is denied — a known defect, measured and so far unexplained;
+  see [a hive per slot](../investigations/a-hive-per-slot.md).
 - **Files the sandbox creates are owned by the sandbox account.** You need to
   keep being able to delete them, so the project directory has to carry an
   inheritable entry for you.

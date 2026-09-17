@@ -122,11 +122,20 @@ by what it holds is a boundary somebody will lean on where it does not.
   it. `wuserbox --revoke` and `wuserbox --rm` succeed against open files and
   refuse every new attempt straight away, but they are not a way to stop a
   program that is already running. Stop it first.
-* **`HKEY_CURRENT_USER` is the sandbox's own, and starts empty.** A program
-  that saves settings in the registry can, and they go into the sandbox's hive
-  rather than yours — so they are there next run, and nothing of yours is read
-  from there. What starts blank is anything that expected your own settings:
-  locale and the like.
+* **`HKEY_CURRENT_USER` is the sandbox's own, starts empty — and cannot be
+  written where it matters, which is a known defect, not a design choice.**
+  The hive is seeded per sandbox, so nothing of yours is read from there, and
+  what starts blank is anything that expected your own settings: locale and
+  the like. Reading it works. Writing under `HKCU\Software`, where Windows
+  programs keep their settings, does not: the account the hive was seeded for
+  is refused with "Access is denied" — measured, on both slots of
+  [the probe that found it](investigations/a-hive-per-slot.md), and again by
+  PowerShell on the key it writes at startup. Settings a program tries to
+  save are not there next run because they never landed. The one place that
+  accepts a write is `HKCU\Software\Classes`, and that hive is the profile
+  service's work, not wuserbox's. Why the account is refused its own hive is
+  an open question; the investigation carries the measurement that asks it
+  and a hypothesis, and this document gets rewritten when there is an answer.
 * **Files the sandbox creates are owned by the sandbox's account**, not by you.
   You keep being able to delete them, because the project directory carries an
   entry for you, but a listing will show an owner you do not recognize.

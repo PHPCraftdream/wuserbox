@@ -333,3 +333,66 @@ verifies its own teardown — the run quoted here ended:
   sid.Lookup(wub-regcost): gone (account "wub-regcost" not found)
   RESULT: clean — nothing left behind
 ```
+
+## A hypothesis from reading the seeding, 2026-09-17, not measured
+
+Written down as a hypothesis so it can be refuted rather than assumed;
+nothing in the seeding has been changed. The measurement that can settle it
+now runs in CI, and is named at the end.
+
+**`tightenHive`'s permission list names no subkeys.** The three
+`EXPLICIT_ACCESS` entries `setHiveSecurity` builds carry no inheritance
+flags, and on a registry key that means *this key only*: after tightening,
+the root grants the account, `SYSTEM` and the administrators full control of
+the root and nothing under it. Every key that turns up in the hive later
+therefore takes its permissions from somewhere else — and a key whose parent
+offers it nothing to inherit takes its *creator's* default list. Windows
+documents that fallback for new objects, and the registry follows it. So the
+transcript above arranges itself:
+
+- `HKCU\Software` was created during the first load, as `SYSTEM` — nothing in
+  the seeding creates it. On this hypothesis its list is SYSTEM's default,
+  which does not name the account: writes refused, reads perhaps not, which
+  is what both slots got and what PowerShell hit on its own settings key.
+- `HKCU\Software\Classes` accepts writes because it is `UsrClass.dat`, whose
+  root the profile service permissions itself, naming the account. That is
+  the profile service's work, not the seeded hive's — which is also why the
+  denial travels with the seeded `NTUSER.DAT` and not with accounts in
+  general, the control the naive wiring gave.
+- The substitute hive in wiring X accepted writes because the profile service
+  built it whole, as it builds every hive of its own.
+
+This is also why the differential probe proposed when the finding was
+written — same seeding against an untightened `RegLoadAppKey` hive — could
+not have settled anything on its own: neither the tightened nor the
+untightened hive refuses a write *at its root*, so a probe writing into the
+hive directly would have found both writable and concluded there was nothing
+to find. The refusal lives one level down, on keys a logon creates in the
+account's absence. If the hypothesis is right it predicts, specifically:
+**a write to the root itself succeeds**, and a subkey the account creates
+directly under the root accepts further writes, while `HKCU\Software`
+refuses, and its list, read out, names `SYSTEM` and the administrators and
+no account.
+
+Ranked against the evidence: it accounts for every measured fact above
+without contrivance, including both controls. What it does not pin down is
+which step of the first load creates `Software` — the profile service's
+classes mounting is the likely author, but that is a hypothesis inside the
+hypothesis, and the descriptor read out of `Software` will name whoever it
+was regardless. What would refute the whole shape: the root itself refusing
+a write from the account. Nothing measured so far tests that.
+
+The measurement now runs where the rights are:
+`TestWhereTheSeededHiveRefusesItsOwnAccount`
+(`internal/account/ownprofile_hive_test.go`) builds a real account, seeds
+the hive the way `MakeProfile` does, registers it, and asks reg.exe — one
+logon per probe, the way a run starts everything — to write at the root, at
+`Software`, at a fresh subkey of each, and at `Software\Classes`. It then
+loads the hive itself and reports, in words, who owns the root, `Software`
+and `Software\Classes` and what each permission list grants, the key that
+refuses beside the key that accepts. It asserts only what the transcript
+above already measured — `Software` refuses, `Software\Classes` accepts,
+reads work — so that when the picture changes, because the defect was fixed
+or because this hypothesis is wrong, the test goes red with the new
+descriptors attached, and this section and `docs/limits.md` are the two
+things to update in the same change.
