@@ -60,11 +60,14 @@ func Stub(args []string) error {
 			"%s takes a group, a read group and a command line", StubFlag)
 	}
 	// The outer command duplicates its write lease into this suspended stub
-	// before resuming it. Adopt that handle and let proc.Run inherit it into
-	// the job's first child. If the outer command is killed, its handle closes
-	// immediately but this handle (and the child's copy) keeps a new run from
-	// starting until the job has gone away. Direct unit probes omit the
-	// variable because they do not model the command-layer lease.
+	// before resuming it. Adopt that handle and hold it here: this process
+	// is the lease's last holder. Nothing is passed on to the program --
+	// one CloseHandle from it erased the coverage an inherited copy was
+	// meant to give, and the jobs the two live in end the program with this
+	// process anyway -- so if the outer command is killed, this handle alone
+	// keeps a new run from starting until the job has gone away. Direct unit
+	// probes omit the variable because they do not model the command-layer
+	// lease.
 	if handoff := os.Getenv(lock.TransferEnv); handoff != "" {
 		value, err := os.ReadFile(handoff)
 		if err != nil {

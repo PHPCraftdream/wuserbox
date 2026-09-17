@@ -28,9 +28,10 @@ var ErrSlotHeld = errors.New("the sandbox's slot is already leased")
 
 // TransferEnv is the environment variable passed only to the stub. It names
 // a protected handoff file containing a handle duplicated into the suspended
-// stub. The stub adopts that handle and proc.Run inherits it into the program
-// in the stub's job, so a process left behind while the parent is dying keeps
-// the slot held.
+// stub. The stub adopts that handle and holds it for its own life; the
+// program is handed nothing, because a program of the sandbox cannot outlive
+// its stub -- measured, and held in place by slot_chain_test.go -- so the
+// stub, trusted and shielded, is the holder the guarantee rests on.
 const TransferEnv = "WUSERBOX_SLOT_TRANSFER"
 
 // slotCount is how many runs of one sandbox may go at once, and the number
@@ -53,10 +54,10 @@ var held = struct {
 
 // Lease holds one slot of the sandbox named name for the caller alone, and
 // returns how to let it go.
-//
 // A slot is one exclusive write handle: writers share nothing, so the second
-// writer is refused by the kernel itself rather than queued, while the stub's
-// read handle can be inherited into the job. The slot is given back
+// writer is refused by the kernel itself rather than queued, and the copy
+// the stub adopts carries no access at all -- the exclusion lives in this
+// open's share mode, not in any handle's rights. The slot is given back
 // by the kernel when its holder dies by any cause. That is the whole reason
 // it is a file handle and not a lock file with a pid in it or a named mutex:
 // there is no stale state after a crash, no timeout to tune, and no cleanup
@@ -125,6 +126,22 @@ func PrepareTransfer(slotPath string) (string, func(), error) {
 // and records the target-side handle value in transferPath. The target must
 // not be resumed until this returns: before it can execute, either it owns a
 // copy of the lease or it has not started a program at all.
+//
+// The duplicate is handed over with no access at all and marked
+// non-inheritable, and both halves are measurements rather than taste. The
+// exclusion that makes a slot a slot is the share mode of the original open,
+// which any handle to the file object keeps, so the duplicate holds the
+// place while being able to do nothing through it. That matters because the
+// source handle is opened GENERIC_READ|GENERIC_WRITE: a duplicate that
+// carried the access along -- DUPLICATE_SAME_ACCESS -- let its holder set
+// FILE_ATTRIBUTE_READONLY on the slot file, and once every handle closed the
+// next Lease came back "Access is denied" and stayed that way, bricking
+// run, --init and --rm for the sandbox until somebody cleared the bit from
+// outside. And it is not inherited because the program was the wrong holder:
+// the coverage a copy in the program existed to give evaporated with one
+// CloseHandle from the untrusted thing in the system, while the jobs the two
+// live in already end the program with its stub -- measured with real jobs
+// and a real kill, and held in place by slot_chain_test.go.
 func PassTo(slotPath string, target syscall.Handle, transferPath string) error {
 	if slotPath == "" || transferPath == "" {
 		return fmt.Errorf("the slot handoff paths are empty")
@@ -139,9 +156,12 @@ func PassTo(slotPath string, target syscall.Handle, transferPath string) error {
 	if err != nil {
 		return fmt.Errorf("getting the current process for the slot handoff: %w", err)
 	}
+	// Desired access zero and no DUPLICATE_SAME_ACCESS: the duplicate gets
+	// no rights at all, and no program ever inherits it -- proc.Run starts
+	// the program with handle inheritance on, and nothing inheritable here
+	// is anything the program should learn.
 	var duplicate syscall.Handle
-	if err := syscall.DuplicateHandle(current, source, target, &duplicate, 0, true,
-		syscall.DUPLICATE_SAME_ACCESS); err != nil {
+	if err := syscall.DuplicateHandle(current, source, target, &duplicate, 0, false, 0); err != nil {
 		return fmt.Errorf("duplicating the slot into the stub: %w", err)
 	}
 	if err := os.WriteFile(transferPath, []byte(strconv.FormatUint(uint64(duplicate), 10)), 0o600); err != nil {

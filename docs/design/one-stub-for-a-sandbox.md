@@ -261,12 +261,25 @@ is no stale state and nothing to time out. It lives in the user's own profile,
 where the sandbox reads and cannot write, so unlike a pipe or a `Local\` object
 it cannot be squatted.
 
-The write handle is handed to the suspended stub before it is resumed. The
-stub adopts that duplicate and the program inherits it through the stub's
-job. If the command dies while Windows is still tearing down its jobs, the
-duplicate remains held by the stub or one of its descendants, so the next
-writer still cannot start. If the handoff never happens, the stub has not run
-and the outer job can end it without a program having been born.
+The write handle is handed to the suspended stub before it is resumed, and
+the stub alone holds it. An earlier draft had the stub adopt the duplicate
+and pass a copy on to the program through the stub's job, so that a process
+left behind while Windows was still tearing down its jobs would keep the
+slot held. A probe undid that: the program -- the untrusted thing in the
+system -- closed its inherited copy with one `CloseHandle` and kept
+running, and the coverage the copy existed to give was gone. Measured
+against the real chain, which is what the draft was missing: a real job
+with kill-on-close holding a real stub, a second holding the program, the
+outer killed outright -- and the program cannot outlive its stub. The first
+job's kill ends the stub, the stub's death closes the second job's last
+handle, and its kill ends the program. A guarantee resting on the trusted,
+shielded stub is therefore a guarantee for the whole tree, and the
+duplicate is handed over with no access at all, because the same-access
+duplicate the draft started from could set the read-only attribute on the
+slot file and brick the sandbox's next run until the bit was cleared from
+outside. Both measurements are held in place by tests in
+internal/base/lock. If the handoff never happens, the stub has not run and
+the outer job can end it without a program having been born.
 
 **The closure is structural rather than timed.** Run A's program holds
 `{group, Everyone, Users, logonA, account-1, read group}`. Run B's newborn stub
