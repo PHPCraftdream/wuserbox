@@ -126,16 +126,28 @@ by what it holds is a boundary somebody will lean on where it does not.
   written where it matters, which is a known defect, not a design choice.**
   The hive is seeded per sandbox, so nothing of yours is read from there, and
   what starts blank is anything that expected your own settings: locale and
-  the like. Reading it works. Writing under `HKCU\Software`, where Windows
-  programs keep their settings, does not: the account the hive was seeded for
-  is refused with "Access is denied" — measured, on both slots of
-  [the probe that found it](investigations/a-hive-per-slot.md), and again by
-  PowerShell on the key it writes at startup. Settings a program tries to
-  save are not there next run because they never landed. The one place that
-  accepts a write is `HKCU\Software\Classes`, and that hive is the profile
-  service's work, not wuserbox's. Why the account is refused its own hive is
-  an open question; the investigation carries the measurement that asks it
-  and a hypothesis, and this document gets rewritten when there is an answer.
+  the like. What a program cannot do is use `HKCU\Software`, where Windows
+  programs keep their settings: the account the hive was seeded for is
+  refused there with "Access is denied", and refused for reading as much as
+  for writing. Settings a program tries to save are not there next run
+  because they never landed.
+
+  The reach it does have is the root and whatever it makes there itself:
+  `HKCU` directly, and any key the program creates under it, accept writes.
+  `HKCU\Software\Classes` accepts too, and that one is a separate hive the
+  Windows profile service builds and permissions for the account rather than
+  wuserbox.
+
+  The cause is known and the shape of it says what the reach will be until it
+  is fixed: the permission list wuserbox puts on the hive's root grants the
+  account everything **on the root and nothing below it**, so keys the first
+  logon creates — `Software` among them — are permissioned by whoever made
+  them, and the account is not on those lists. The hive the profile service
+  builds carries the same three grants written to reach the subkeys too,
+  which is why `Classes` behaves and `Software` does not.
+  [The investigation](investigations/a-hive-per-slot.md) carries the
+  measurement, the two permission lists side by side, and what a fix has to
+  change. This entry gets rewritten when it is fixed.
 * **A `cleanup:` glob is yours to aim, and the guard over it is a net rather
   than a proof.** The globs in the rules file delete from the sandbox's
   profile, and wuserbox refuses the run if one of them could reach the

@@ -146,18 +146,40 @@ func TestWhereTheSeededHiveRefusesItsOwnAccount(t *testing.T) {
 	t.Log("who owns each key and what each permission list says, read from the hive once the logons let go of it:")
 	describeSeededHive(t, dir)
 
-	// The three claims the transcript measured. If one fails to hold now,
-	// the picture moved, and everything downstream of it -- the hypothesis
-	// in the investigation, the wording in docs/limits.md -- moved with
-	// it; the report above is the evidence to read first.
-	if results[0].exit == 0 {
-		t.Errorf("the account wrote into its own seeded hive under Software, which the investigation measured as refused. reg said: %s", oneLine(results[0].text))
-	}
-	if results[1].exit != 0 {
-		t.Errorf("Software\\Classes refused the account, but that hive is the profile service's own work and the investigation measured it accepting writes. reg said: %s", oneLine(results[1].text))
-	}
-	if results[2].exit != 0 {
-		t.Errorf("Software could not be read, and reads are the one direction the investigation measured working. reg said: %s", oneLine(results[2].text))
+	// What the measurement found, the first time it ran, on 2026-09-17. The
+	// shape is the whole answer and each line is part of it: the account
+	// reaches the root and everything it creates there itself, and reaches
+	// nothing the first load created for it -- which is exactly a list
+	// granted on the root and nowhere below it.
+	//
+	// Asserted rather than reported now, because reported facts do not
+	// notice when they stop being true. Two of these go red the day the
+	// defect is fixed, and that is what they are for: the fix is not
+	// finished until this test, the hypothesis in
+	// docs/investigations/a-hive-per-slot.md and the entry in
+	// docs/limits.md are corrected in the same change, with the new
+	// descriptors from the report above pasted into the investigation.
+	for _, want := range []struct {
+		at      int
+		refused bool
+		because string
+	}{
+		{0, true, "Software was created during the first load by somebody the tightened root names nothing about, so its own list does not name the account"},
+		{1, false, "Software\\Classes is UsrClass.dat, and the profile service permissions its root to the account with entries that reach the subkeys"},
+		{2, true, "the refusal is not about writing: the account cannot read Software either, which the investigation had recorded the other way round"},
+		{3, false, "the root itself is where the tightened list grants the account everything, and the grant stops there"},
+		{4, false, "a key the account creates under the root is the account's own, permissioned from its creator"},
+		{5, false, "and stays the account's own, which is what makes the refusal above a matter of who made the key rather than of the hive being read-only"},
+		{6, true, "Software refuses a value the same way it refuses a subkey"},
+	} {
+		if refused := results[want.at].exit != 0; refused != want.refused {
+			verb := "was refused"
+			if !want.refused {
+				verb = "succeeded"
+			}
+			t.Errorf("%q no longer %s, and the picture this test exists to hold has moved -- %s. reg said: %s",
+				probes[want.at].what, verb, want.because, oneLine(results[want.at].text))
+		}
 	}
 }
 

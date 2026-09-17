@@ -396,3 +396,64 @@ reads work — so that when the picture changes, because the defect was fixed
 or because this hypothesis is wrong, the test goes red with the new
 descriptors attached, and this section and `docs/limits.md` are the two
 things to update in the same change.
+
+## The hypothesis measured, 2026-09-17, and settled
+
+`TestWhereTheSeededHiveRefusesItsOwnAccount` ran for the first time on a CI
+runner, which has the administrator rights this desk does not. The hypothesis
+above holds, with one correction to the transcript this document opens with.
+
+What the account's own logons did, one logon per probe, reg.exe quoted:
+
+```
+  create HKCU\Software\wub-probe                        exit 1: Access is denied.
+  create HKCU\Software\Classes\wub-probe                exit 0: completed successfully
+  read   HKCU\Software                                  exit 1: Access is denied.
+  write a value on the root, HKCU itself                exit 0: completed successfully
+  create HKCU\wub-rootkey, a subkey of the root         exit 0: completed successfully
+  write a value on HKCU\wub-rootkey                     exit 0: completed successfully
+  write a value on HKCU\Software itself                 exit 1: Access is denied.
+```
+
+The prediction the hypothesis made and nothing had ever tested — **a write to
+the root itself succeeds** — is the fourth line. So is the second half of it:
+a key the account creates under the root is the account's own and keeps
+accepting writes. The refusal is not about the hive being read-only. It is
+about who made the key.
+
+The correction: **reads of `Software` are refused too.** This document
+recorded reads as the one direction that worked, and that reading came from a
+query against the probe key the write had failed to create — which finds
+nothing whether or not reading is allowed. Asked of `Software` itself, the
+account is refused. The sentence in `docs/limits.md` that said reading works
+has been corrected with this.
+
+And the two permission lists, read out of the hives afterwards, are the cause
+in one view:
+
+```
+  the seeded hive's root (what HKCU was) -- owner Administrators, protected:
+    allow <the account>     all -- this key only
+    allow SYSTEM            all -- this key only
+    allow Administrators    all -- this key only
+
+  UsrClass.dat's root, which HKCU\Software\Classes resolved to -- owner SYSTEM, protected:
+    allow <the account>     all -- this key and its subkeys
+    allow SYSTEM            all -- this key and its subkeys
+    allow Administrators    all -- this key and its subkeys
+    allow RESTRICTED        query, enumerate, notify, read control -- this key and its subkeys
+    allow ALL APPLICATION PACKAGES  query, enumerate, notify, read control -- and its subkeys
+```
+
+"This key only" against "this key and its subkeys", written by wuserbox and
+by the profile service respectively, on hives that behave differently in
+exactly that way. `HKCU\Software` could not even be opened to read its own
+descriptor from the loaded hive — error 5 — which is the same refusal seen
+from the other side.
+
+The mechanism, named: the three `EXPLICIT_ACCESS` entries `setHiveSecurity`
+builds in `internal/account/ownprofile.go` carry no inheritance flags, which
+on a registry key means `NO_INHERITANCE` — this key only. What a fix has to
+change is those entries, and what it has to be checked against is this test,
+whose assertions are written to go red the day the picture moves.
+
