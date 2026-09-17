@@ -203,40 +203,6 @@ func forget(root *os.Root, previously []config.Entry, current []config.Entry) er
 	return nil
 }
 
-// FoldedEntryPath is the key under which two spellings of one profile path
-// count as the same entry: cleaned the way within cleans, then case-folded,
-// because Windows matches names case-insensitively, and spelled with forward
-// slashes, because the rules file and the record are free to spell the
-// separator either way. forget matches what it keeps by it, copyEntries
-// matches a missing source against the record by it, and the caller dedupes
-// the record it writes down by it. Measured, before the clean went in: a
-// rules file respelling "agent" as "./agent" between runs made forget read
-// the recorded entry as a name the list no longer held and delete the copy,
-// and with the source gone -- a drive not mounted, a tool uninstalled --
-// copyEntries could not put it back, and the run reported success.
-//
-// The clean is cleanEntryPath, the one within starts from, rather than a
-// second copy of it: the key answers "where does this entry land", and two
-// answers to that are how the key and the copier part ways again. The order
-// is the order within uses -- FromSlash, then Clean on the native spelling,
-// then ToSlash, then the fold. Clean is separator-aware, so cleaning a path
-// already converted to slashes is not the operation cleaning the native
-// spelling is. Exported for the same reason EntryEscapesProfile is: the
-// record's dedupe in internal/cli/setup asks this package the question
-// rather than keeping a second copy of the rule.
-//
-// within's refusals are deliberately not part of the key: a key has to
-// answer for every spelling a record or a rules file can hold, and a path
-// within refuses -- absolute, out of the profile, the root itself -- lands
-// nowhere but still needs a stable spelling to be compared by. The
-// refusals happen where the acting is: forget asks within about every
-// recorded path it is about to clear, copyEntries about every entry it is
-// about to copy, and validation asks EntryEscapesProfile, so a refused
-// spelling is no more acted on for having a key.
-func FoldedEntryPath(path string) string {
-	return strings.ToLower(filepath.ToSlash(cleanEntryPath(path)))
-}
-
 // clearEntry takes back one stale entry: what a previous copy put under a
 // name the rules file no longer names. A bare entry -- no depth, no masks,
 // the common case -- goes the way it always has, RemoveAll, which is

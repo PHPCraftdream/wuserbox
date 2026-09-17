@@ -184,3 +184,43 @@ func TestAnEntryRespelledBetweenRunsKeepsItsCopyWhenTheSourceHasGone(t *testing.
 		t.Error("the copy outlived its source and the record both, and nothing left will ever take it back")
 	}
 }
+
+// TestAnEntryRespelledBetweenSigmasKeepsItsCopyWhenTheSourceHasGone is the
+// respelling defect FoldedEntryPath was built for -- "agent" to "./agent" --
+// again, with capitals strings.ToLower cannot join: Σ and ς are different
+// runes to ToLower, but the file system equates the two spellings, so the
+// entry never left the list, while the folded key reads the recorded one as
+// a name it no longer holds and the bare take-back RemoveAll deletes the
+// directory with everything the sandbox keeps under it. Same defect as the
+// capitals tests, arriving through the record instead of the present list.
+func TestAnEntryRespelledBetweenSigmasKeepsItsCopyWhenTheSourceHasGone(t *testing.T) {
+	sigma := "\u03a3"
+	final := "\u03c2"
+
+	home, dest := useProfile(t, []string{sigma + "ettings"})
+	write(t, filepath.Join(home, sigma+"ettings", "auth.json"), `{"token":"real"}`)
+
+	copied := fill(t, dest)
+	if len(copied) != 1 {
+		t.Fatalf("nothing was copied in the first place, so this test proves nothing: %v", copied)
+	}
+
+	// The source goes the way sources do.
+	if err := os.RemoveAll(filepath.Join(home, sigma+"ettings")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The same place, respelled. NTFS opens both spellings onto the same
+	// directory; strings.ToLower holds them apart.
+	if err := (&config.Config{Profile: config.Entries([]string{final + "ettings"})}).Save(); err != nil {
+		t.Fatal(err)
+	}
+	copied = fill(t, dest)
+
+	if got := read(t, filepath.Join(dest, sigma+"ettings", "auth.json")); got != `{"token":"real"}` {
+		t.Errorf("respelling the entry deleted the copy its source could no longer restore: %q", got)
+	}
+	if len(copied) != 1 || copied[0].Path != final+"ettings" {
+		t.Errorf("the record came back as %v, and nothing vouches for the copy under the new spelling", copied)
+	}
+}
