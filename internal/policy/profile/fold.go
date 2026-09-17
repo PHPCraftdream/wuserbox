@@ -55,6 +55,18 @@ import (
 // live file for one; the direction that deletes is a pair the file system
 // equates that the fold holds apart, and none was found among the pairs
 // measured.
+//
+// "Per-volume" is not a figure of speech, and it cost a red build to learn.
+// The table is built when a volume is formatted, from the Unicode version in
+// use then, so it is not even one answer per machine. The measurements above
+// are this desk's; a GitHub runner's volume holds the two sigmas apart and
+// keeps Σ.json and ς.json side by side, which is the same disagreement in
+// the other direction. The fold is right on both, because it errs only
+// toward joining, and joining more than the volume does costs a spared stray
+// rather than a file. What cannot be written down anywhere is a fixed list
+// of which pairs are one name: TestTheFoldNeverHoldsApartWhatTheFileSystemJoins
+// therefore asks the volume it is running on, and says in its log where the
+// answer left it with nothing to check.
 func foldedName(name string) string {
 	return strings.ToUpper(name)
 }
