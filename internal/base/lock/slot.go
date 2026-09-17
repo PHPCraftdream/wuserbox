@@ -31,8 +31,9 @@ var ErrSlotHeld = errors.New("the sandbox's slot is already leased")
 // stub. The stub adopts that handle and holds it for its own life; the
 // program is handed nothing -- the slot can come free before the chain's last
 // process object signals, and what the lease actually buys at that grant is
-// that the program is down to its exit's one reaper thread, which never
-// returns to user mode (measured, and held by
+// that the program cannot execute code: a heartbeat instrument measures the
+// last code the program ran against the grant instant, and no beat has ever
+// landed at or after one (held by
 // TestTheProgramCannotRunWhenTheSlotIsGranted). The stub, trusted and
 // shielded, is the holder the guarantee rests on.
 const TransferEnv = "WUSERBOX_SLOT_TRANSFER"
@@ -142,15 +143,17 @@ func PrepareTransfer(slotPath string) (string, func(), error) {
 //
 // The duplicate is not inherited and the program is handed nothing. The
 // honest reason is the measured teardown: the slot can be granted before the
-// chain's last process object signals -- grants landed 0.9-1.7ms after the
-// kill while the program's process object signaled another ~0.5-1.1ms later,
+// chain's last process object signals -- grants landed 0.76-46.4ms after
+// the kill over 20 runs while the program's process object signaled later,
 // every run -- and that ordering is not something a handle arrangement can
 // fix, because a process releases its handles before its process object
 // signals, so no arrangement of handles inside the dying tree can hold the
 // slot past that. What the lease actually buys is that at the grant the
-// program is down to the exit's one reaper thread, which never returns to
-// user mode -- measured 8 runs out of 8, and held by
-// TestTheProgramCannotRunWhenTheSlotIsGranted. An experimental inheritable
+// program cannot execute code: the program of the chain runs a heartbeat
+// stamping a clock tick into a shared page ~5000 times a second, and over
+// 20 runs its last beat always preceded the grant, with no beat at or
+// after one -- held by TestTheProgramCannotRunWhenTheSlotIsGranted, whose
+// detector a negative control shows can fire. An experimental inheritable
 // zero-access copy -- the program itself the last holder, making that
 // ordering kernel-internal rather than a race between two teardowns -- was
 // measured to buy nothing here and came back out; the numbers are in
@@ -176,8 +179,8 @@ func PassTo(slotPath string, target syscall.Handle, transferPath string) error {
 	// and the duplicate is not inherited: the slot can come free before the
 	// chain's last process object signals no matter how the handles are
 	// arranged, because a process releases its handles before its object
-	// signals, and at the grant the program is down to its exit's reaper
-	// thread anyway (measured, see PassTo above).
+	// signals, and at the grant the program cannot execute code anyway
+	// (measured by the heartbeat, see PassTo above).
 	var duplicate syscall.Handle
 	if err := syscall.DuplicateHandle(current, source, target, &duplicate, 0, false, 0); err != nil {
 		return fmt.Errorf("duplicating the slot into the stub: %w", err)

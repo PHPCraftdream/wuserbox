@@ -228,9 +228,10 @@ func TestSlotChainOuterHoldsTheChainAndWaits(t *testing.T) {
 	path := SlotPath(name)
 	// Taken before anything else, the way holdSlot takes it: the lease's
 	// first open is what creates the state directory the handoff file below
-	// lands in. And never released on purpose -- the outer of the chain dies
-	// holding the lease, the way a killed wuserbox does, and the kernel is
-	// what puts the slot back.
+	// lands in. And in the normal mode never released on purpose -- the
+	// outer of the chain dies holding the lease, the way a killed wuserbox
+	// does, and the kernel is what puts the slot back. Only the negative
+	// control asks for an early release, below.
 	release, err := Lease(name, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -278,6 +279,16 @@ func TestSlotChainOuterHoldsTheChainAndWaits(t *testing.T) {
 	}
 	if !waitForSlotTestFile(ready, 15*time.Second) {
 		t.Fatal("the stub of the chain never became ready")
+	}
+	// The negative control asks the outer to let its copy go once the chain
+	// stands, so the slot can come free while the program is demonstrably
+	// beating. The stub's duplicate must go too -- the slot only comes free
+	// when both handles are closed -- and the stub does the same, below. It
+	// cannot go earlier: PassTo duplicates from held.byPath and needs the
+	// lease still held by this process.
+	if os.Getenv(slotChainReleaseEnv) == "1" {
+		chainWaitForGo(t, os.Getenv(slotChainGoEnv))
+		release()
 	}
 	time.Sleep(60 * time.Second)
 }
@@ -350,6 +361,13 @@ func TestSlotChainStubAdoptsTheLeaseAndStartsAProgram(t *testing.T) {
 	if err := os.WriteFile(ready, []byte(fmt.Sprintf("%d %d", os.Getpid(), created.ProcessId)), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The negative control's other half: the adopted duplicate goes too, so
+	// both handles holding the slot are closed while the program runs.
+	// Adopt's release is idempotent, so the defer above stays.
+	if os.Getenv(slotChainReleaseEnv) == "1" {
+		chainWaitForGo(t, os.Getenv(slotChainGoEnv))
+		release()
+	}
 	if _, err := syscall.WaitForSingleObject(created.Process, syscall.INFINITE); err != nil {
 		t.Fatal(err)
 	}
@@ -363,6 +381,12 @@ func TestSlotChainStubAdoptsTheLeaseAndStartsAProgram(t *testing.T) {
 func TestSlotChainProgramStandsThere(t *testing.T) {
 	if os.Getenv(slotChainFlagsEnv) == "" {
 		t.Skip("runs only as the program at the end of the chain test")
+	}
+	// The heartbeat branch: a program that is provably executing, so the
+	// grant test can compare the last executed instruction's timestamp with
+	// the instant the slot comes free. It never returns; the job ends it.
+	if section := os.Getenv(slotChainBeatEnv); section != "" {
+		chainRunHeartbeat(t, section)
 	}
 	time.Sleep(60 * time.Second)
 }

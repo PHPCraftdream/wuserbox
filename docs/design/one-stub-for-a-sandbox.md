@@ -278,17 +278,33 @@ after the outer is killed while the program's process object is still
 unsignaled for another ~0.5-1.1ms, every run. That is a tautology of handle
 release, not a defect -- a process's handles go before its object -- and no
 arrangement of handles inside the dying tree can hold the slot past it. The
-question that matters is executable code, and there the measurement says
-the program is down to one thread at the first grant -- the exit's reaper,
-which never returns to user mode -- 8 runs out of 8, on the shipped
-arrangement and on an experimental inheritable zero-access copy that would
-have made the ordering kernel-internal to the program's own exit. The copy
-was measured to buy nothing here -- identical thread verdicts, 4/4 against
-4/4 -- and was taken back out. The stub, trusted and shielded, remains the
-holder the guarantee rests on, and one `CloseHandle` from a program holding
-a copy erases only that copy's coverage. Three tests hold this in
+question that matters is executable code, and the first instrument that
+asked it -- counting the program's live threads -- could not actually
+answer it: WaitForSingleObject reports only signal state, which cannot
+tell a reaper that will never run again from a runnable thread parked in a
+wait, and the program at the end of the chain was a 60-second sleep, a
+process full of parked runtime threads. The measurement now gives the
+chain a heartbeat: a program loop stamping a sequence number and a
+QueryPerformanceCounter tick into a shared page ~5000 times a second, so
+whether the program executed code at the grant is a comparison of the last
+beat's stamp against the grant instant, on one machine-wide clock, with
+the program stamping its own beats so nothing depends on when the test
+reads the page. Over 20 consecutive runs, no beat ever landed at or after
+the grant; the last beat preceded it by 0.4-605ms, grants landed
+0.76-46.4ms after the kill (sixteen of twenty inside 1.0-1.6ms), and a
+negative control that releases the slot on purpose while the program beats
+fires the same verdict 6 runs out of 6. The heartbeated program is closer
+to a real one than the sleeper was, and an earlier experiment with an
+inheritable zero-access copy of the lease -- the program itself the last
+holder, making the ordering kernel-internal to the program's own exit --
+was measured to buy nothing and was taken back out. The stub, trusted and
+shielded, remains the holder the guarantee rests on, and one `CloseHandle`
+from a program holding a copy erases only that copy's coverage. Three tests
+hold this in
 internal/base/lock: TestTheProgramCannotRunWhenTheSlotIsGranted holds the
-ordering at the executable level, TestTheProgramCarriesNoLeaseAndCannotOutliveItsStub
+ordering at the executable level (and
+TestADetectorForTheGrantGoesRedWhenTheSlotIsReleasedEarly holds that its
+detector can actually fire), TestTheProgramCarriesNoLeaseAndCannotOutliveItsStub
 holds that nothing is inherited and the tree ends, and the two damage tests
 hold the zero access. If the handoff never happens, the stub has not run and
 the outer job can end it without a program having been born.
