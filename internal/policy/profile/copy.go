@@ -222,7 +222,25 @@ func forget(root *os.Root, previously []config.Entry, current []config.Entry) er
 // below its depth never put anything there, and what is there is the
 // sandbox's.
 func clearEntry(root *os.Root, stale string, entry config.Entry) error {
+	// A reserved path is inert to the take-back whatever the entry
+	// carried: the record may name the hive outright, bare or with
+	// limits, and both branches below would honor the name to the
+	// letter -- the bare one by RemoveAll, the limits-bearing one the
+	// moment its target is not a directory. Spared rather than refused;
+	// reserved.go records why this spares where refuseReservedCleanup refuses.
+	rel := filepath.ToSlash(stale)
+	if reservedAt(rel) {
+		return nil
+	}
 	if entry.Bare() {
+		// An entry over a directory the hive sits under -- AppData
+		// leaving the list, most commonly -- takes the hive with it by
+		// the roots. What around it is ours still goes: the same walk
+		// the limits-bearing branch uses, clearing around the hive.
+		if reservedWithin(rel) {
+			_, err := clearKeepingReserved(root, stale)
+			return err
+		}
 		return root.RemoveAll(stale)
 	}
 	// A junction sitting where the entry itself landed is removed as the
@@ -290,6 +308,14 @@ func clearKeeping(root *os.Root, dir, rel string, w *walk, kept *bool) error {
 				*kept = true
 				continue
 			}
+			// A directory sitting at a reserved path is spared by its
+			// name. Whatever the sandbox made of the hive's name,
+			// nothing under a name the tables reserve was ever ours to
+			// sort, and reporting it kept is what leaves it so.
+			if reservedAt(filepath.ToSlash(childPath)) {
+				*kept = true
+				continue
+			}
 			// Lstat before opening, the way cleanDir does: a junction the
 			// sandbox planted where a plain directory sits is removed as
 			// the link it is -- the root would refuse to open one leading
@@ -317,6 +343,14 @@ func clearKeeping(root *os.Root, dir, rel string, w *walk, kept *bool) error {
 			// sandbox may have written an unrelated file beside the copies,
 			// and an include is a boundary on copying just as an exclusion is
 			// a boundary on taking back.
+			// The registry is not ours to take back under any entry: a
+			// depth that reaches four below AppData reaches the class
+			// hive, and the walk honoring the entry's limits would honor
+			// them straight through the profile service's file.
+			if reservedAt(filepath.ToSlash(childPath)) {
+				*kept = true
+				continue
+			}
 			if !w.copiesFile(childRel) {
 				*kept = true
 				continue

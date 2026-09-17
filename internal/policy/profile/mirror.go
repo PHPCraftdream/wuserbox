@@ -42,6 +42,17 @@ func mirror(src, dst, rel string, root *os.Root, info os.FileInfo, left *int64, 
 // walkEntry is mirror's shape with the action pulled out: dispatch to a
 // directory's children, or hand one file to sk.
 func walkEntry(sk sink, src, dst, rel string, root *os.Root, info os.FileInfo, left *int64, w *walk, prints, newPrints map[string]Print) error {
+	// A reserved path is inert to this walk: the registry is never copied
+	// into a profile, and neither is anything this walk would do to it --
+	// sk.file would lay the user's own hive over the profile service's, and
+	// a directory entered at a reserved name would clear onto it. Asked
+	// here, above the sinks, so planSink counts a preview through the same
+	// answer and --dry-run cannot disagree with the run. dst is the path
+	// relative to the profile root, which is the frame the reserved tables
+	// are written in; rel is relative to the entry and would guard nothing.
+	if reservedAt(filepath.ToSlash(dst)) {
+		return nil
+	}
 	if info.IsDir() {
 		return walkDir(sk, src, dst, rel, root, left, w, prints, newPrints)
 	}
@@ -334,6 +345,22 @@ func removeStrayChildren(root *os.Root, dst, rel string, present map[string]bool
 					continue
 				}
 			}
+		}
+		// The one stray the mirroring never takes is the registry: whatever
+		// the reserved tables name, here or anywhere under here, is Windows'
+		// work, not the source's absence. A spared file costs nothing
+		// further; a directory with the hive under it is cleared around it
+		// instead of taken whole, the way clearKeeping clears around what an
+		// entry's own limits protect. childPath, built by Join from dst, is
+		// relative to the profile root -- the tables' frame; childRel is the
+		// entry's and would make a guard that protects nothing.
+		if reservedWithin(filepath.ToSlash(childPath)) {
+			if e.IsDir() && !reservedAt(filepath.ToSlash(childPath)) {
+				if _, err := clearKeepingReserved(root, childPath); err != nil {
+					return err
+				}
+			}
+			continue
 		}
 		if err := root.RemoveAll(childPath); err != nil {
 			return err
