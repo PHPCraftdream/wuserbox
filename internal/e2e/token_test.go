@@ -249,3 +249,129 @@ func TestCheckAnswersWithTheTokenARunGets(t *testing.T) {
 		t.Fatal("the caller's own restricted token reaches this too, so the answer above proves nothing")
 	}
 }
+
+// TestAReadOnlyHandoverHoldsOnTheSecondEntry is the read-only grant measured
+// on the mechanism a real run uses, which no test here had measured: every
+// synthetic check of --ro goes through a made-up SID, and every test that
+// builds a real account hands its directory over writable. The synthetic
+// token cannot say an entry was taken away rather than never reachable --
+// that is what this fixture exists for -- and read-only is nothing but an
+// entry taken away.
+//
+// The handover has to survive two entries, each a fresh logon, so what is
+// measured is the permission list the grant left on the directory rather
+// than one process's token. The first entry runs as the plain account,
+// where only the list can refuse; the second goes through the stub, where
+// the restricted token is checked too. Each is the half the other could
+// hide.
+//
+// The icacls probes are held to the pair the other tests here are held to:
+// they are shown working first, on a directory the account holds every
+// right to, the way MakeProfile builds its own. /setowner does not force a
+// change of ownership -- the tool's own help says so -- so what it reports
+// is the right the caller holds and nothing else.
+func TestAReadOnlyHandoverHoldsOnTheSecondEntry(t *testing.T) {
+	requireAdministrator(t)
+	root, err := paths.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	openToEveryone(t, root)
+	work := filepath.Join(root, "work")     // handed over writable, the way a run's own directory is
+	handed := filepath.Join(root, "handed") // handed over read-only, the subject
+	probe := filepath.Join(root, "probe")   // the account's to change, so the probes are shown working
+	for _, dir := range []string{work, handed, probe} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const original = "read me"
+	kept := filepath.Join(handed, "readable.txt")
+	place(t, kept, original)
+	box := newRealBox(t, firstSandbox, work)
+	box.hand(t, work, grant.RW)
+	box.hand(t, handed, grant.RO)
+
+	account, err := sid.Lookup(box.account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := acl.ProtectFull(probe, account.String()); err != nil {
+		t.Fatal(err)
+	}
+	stub := stubBinary(t, root)
+
+	// Handing itself the write back, and ownership one step further back:
+	// with either right, every refusal above is the sandbox's to undo. The
+	// refusal the read-only grant leaves names the group and covers both,
+	// which is why these need no entry naming the account at all.
+	regrant := `icacls "` + handed + `" /grant *` + account.String() + `:(OI)(CI)F`
+	resettle := `icacls "` + handed + `" /setowner *` + account.String()
+
+	for _, attempt := range []string{
+		`icacls "` + probe + `" /grant *` + account.String() + `:(OI)(CI)F`,
+		`icacls "` + probe + `" /setowner *` + account.String(),
+	} {
+		if !box.tries(t, box.throughTheStub(t, stub, attempt), work) {
+			t.Fatalf("%q did not work where the account holds every right, so a refusal of it below proves nothing", attempt)
+		}
+	}
+
+	for _, entry := range []struct {
+		how     string
+		confine func(string) string
+	}{
+		{"the plain account", func(line string) string { return line }},
+		{"the account's own restricted token", func(line string) string { return box.throughTheStub(t, stub, line) }},
+	} {
+		// Reading is the positive the refusals stand on: without it, they
+		// say only that the sandbox cannot see the directory at all.
+		if !box.tries(t, entry.confine(`cmd.exe /c type "`+kept+`"`), work) {
+			t.Fatalf("reading what was handed over read-only failed through %s, so the refusals below prove nothing", entry.how)
+		}
+		// And the account still writes what it was handed writable, so the
+		// refusals below belong to this grant and not to a broken account.
+		if !box.tries(t, entry.confine(writeInto(work)), work) {
+			t.Fatalf("the sandbox could not write %s through %s, so the refusals below mean nothing", work, entry.how)
+		}
+
+		fresh := filepath.Join(handed, "fresh.txt")
+		if box.tries(t, entry.confine(`cmd.exe /c echo fresh> "`+fresh+`"`), work) {
+			t.Fatalf("a new file was written into a directory handed over read-only, through %s", entry.how)
+		}
+		if exists(fresh) {
+			t.Fatalf("%s appeared although the write through %s was refused", fresh, entry.how)
+		}
+
+		if box.tries(t, entry.confine(`cmd.exe /c echo tampered> "`+kept+`"`), work) {
+			t.Fatalf("a file in a directory handed over read-only was rewritten, through %s", entry.how)
+		}
+		if got, readErr := os.ReadFile(kept); readErr != nil || string(got) != original {
+			t.Fatalf("the content of %s changed although the rewrite through %s was refused: %q (%v)", kept, entry.how, got, readErr)
+		}
+
+		// del is run for its effect and never for its answer, the way every
+		// other deletion in this directory is asked about. Measured on
+		// Windows 10: `del /q` on a file it cannot delete prints "Access is
+		// denied." and exits 0 anyway, so reading its code would fail this
+		// test on a machine where the grant held perfectly. The file still
+		// being there is the whole of the answer.
+		box.tries(t, entry.confine(`cmd.exe /c del /q "`+kept+`"`), work)
+		if !exists(kept) {
+			t.Fatalf("%s was deleted from a directory handed over read-only, through %s", kept, entry.how)
+		}
+
+		if box.tries(t, entry.confine(regrant), work) {
+			t.Fatalf("the permissions of a directory handed over read-only were rewritten from inside, through %s", entry.how)
+		}
+		if box.tries(t, entry.confine(resettle), work) {
+			t.Fatalf("ownership of a directory handed over read-only was taken from inside, through %s", entry.how)
+		}
+		// The last write is what says the attempts above undid nothing.
+		after := filepath.Join(handed, "after.txt")
+		if box.tries(t, entry.confine(`cmd.exe /c echo after> "`+after+`"`), work) {
+			t.Fatalf("a file was written into the read-only directory after the attempts to take the rights back, through %s", entry.how)
+		}
+	}
+}
