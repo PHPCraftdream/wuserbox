@@ -148,7 +148,7 @@ func TestTheCeilingStillCountsWhatItSkips(t *testing.T) {
 	defer func() { _ = root.Close() }()
 
 	entries := []config.Entry{{Path: "big"}}
-	_, prints, err := copyEntries(home, root, entries, 1000, nil)
+	_, prints, err := copyEntries(home, root, entries, nil, 1000, nil)
 	if err != nil {
 		t.Fatalf("a copy under its budget was refused: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestTheCeilingStillCountsWhatItSkips(t *testing.T) {
 
 	// Nothing at all has changed, every file qualifies to be skipped, and
 	// 80 bytes of list against 50 of budget is still a refusal.
-	if _, _, err := copyEntries(home, root, entries, 50, prints); err == nil {
+	if _, _, err := copyEntries(home, root, entries, nil, 50, prints); err == nil {
 		t.Error("a list over its budget was allowed through because every file matched")
 	}
 }

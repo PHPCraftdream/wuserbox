@@ -33,9 +33,10 @@ func inspectProfile(entries []config.Entry, cleanup []config.Mask) []Complaint {
 	return complaints
 }
 
-// inspectProfileEntries covers points 1, 2, 4 (the entry half), 6, 7 and 8
-// of the profile: checks; inspectMasks, called from here, covers 3 (the
-// include/exclude half) and 4 (the mask half).
+// inspectProfileEntries covers points 1, 2, 4, 6, 7 and 8 of the profile:
+// checks -- 4 through the copier's own EntryCarriesNegativeDepth, which
+// answers for the entry's depth and every mask's at once; inspectMasks,
+// called from here, covers 3.
 func inspectProfileEntries(entries []config.Entry) []Complaint {
 	var complaints []Complaint
 	seen := map[string]config.Entry{}
@@ -62,11 +63,13 @@ func inspectProfileEntries(entries []config.Entry) []Complaint {
 			})
 		}
 
-		if entry.Depth != nil && *entry.Depth < 0 {
+		// The copier's own refusal, asked rather than re-decided: Copy puts
+		// this same question to the file before it touches dest, about the
+		// entry's own depth and about every mask's in one answer.
+		if err := profile.EntryCarriesNegativeDepth(entry); err != nil {
 			complaints = append(complaints, Complaint{
 				Kind: "depth", Path: entry.Path, Fatal: true,
-				Message: fmt.Sprintf("%s has depth %d, and a negative depth cannot bound anything",
-					entry.Path, *entry.Depth),
+				Message: err.Error(),
 			})
 		}
 		complaints = append(complaints, inspectMasks(entry.Path, "include", entry.Include)...)
@@ -137,9 +140,10 @@ func inspectProfileEntries(entries []config.Entry) []Complaint {
 	return complaints
 }
 
-// inspectMasks covers point 3 (an empty pattern) and the mask half of point
-// 4 (a negative depth) for one entry's include or exclude list. list names
-// which one, for the message.
+// inspectMasks covers point 3 (an empty pattern) for one entry's include or
+// exclude list. list names which one, for the message. A mask's depth is not
+// asked here: EntryCarriesNegativeDepth already answered for every mask on
+// the entry, and a second ask would be a second answer to the same question.
 func inspectMasks(entryPath, list string, masks []config.Mask) []Complaint {
 	var complaints []Complaint
 	for _, mask := range masks {
@@ -147,14 +151,6 @@ func inspectMasks(entryPath, list string, masks []config.Mask) []Complaint {
 			complaints = append(complaints, Complaint{
 				Kind: "empty", Path: entryPath, Fatal: true,
 				Message: fmt.Sprintf("%s has an empty pattern in its %s list", entryPath, list),
-			})
-			continue
-		}
-		if mask.Depth != nil && *mask.Depth < 0 {
-			complaints = append(complaints, Complaint{
-				Kind: "depth", Path: entryPath, Fatal: true,
-				Message: fmt.Sprintf("%s: %q in %s has depth %d, and a negative depth cannot bound anything",
-					entryPath, mask.Pattern, list, *mask.Depth),
 			})
 		}
 	}
@@ -174,6 +170,11 @@ func inspectCleanupGlobs(cleanup []config.Mask) []Complaint {
 			})
 			continue
 		}
+		// Not the copier's shared question, on purpose: a cleanup glob whose
+		// depth cannot bind reaches nothing and so deletes nothing -- it
+		// fails closed, where a profile entry's fails by deleting what its
+		// exclusions protect -- so validation may complain without a run
+		// needing to refuse the file over it.
 		if mask.Depth != nil && *mask.Depth < 0 {
 			complaints = append(complaints, Complaint{
 				Kind: "depth", Path: mask.Pattern, Fatal: true,

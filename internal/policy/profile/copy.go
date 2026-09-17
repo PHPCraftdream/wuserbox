@@ -68,6 +68,18 @@ func Copy(dest string, previously []config.Entry, prints map[string]Print) ([]co
 			"two entries say exactly the same thing, or remove one",
 			first.Path, describeEntryLimits(first), describeEntryLimits(second))
 	}
+	// Refused here rather than only at validation, and before clearCleanup
+	// and forget, both of which delete, so a rules file this refuses has
+	// nothing of it acted on at all -- the same contract as the duplicate
+	// refusal above. Neither of those reads an entry's depths today, so
+	// this placement is not what keeps a profile safe; it is there so the
+	// answer to "what did the run do with my file" is always "nothing, the
+	// file was refused".
+	for _, entry := range rules.Profile {
+		if err := EntryCarriesNegativeDepth(entry); err != nil {
+			return nil, nil, err
+		}
+	}
 	// Cleanup runs first: a rule about what should not be there is applied
 	// before anything decides what to bring in. It is wired in here rather
 	// than in Clear, since --no-ai means this profile is not being filled at
@@ -79,7 +91,7 @@ func Copy(dest string, previously []config.Entry, prints map[string]Print) ([]co
 	if err := forget(root, previously, rules.Profile); err != nil {
 		return nil, nil, err
 	}
-	return copyEntries(paths.Home(), root, rules.Profile, Ceiling, prints)
+	return copyEntries(paths.Home(), root, rules.Profile, previously, Ceiling, prints)
 }
 
 // Clear takes back everything an earlier Copy placed under dest, without
@@ -143,10 +155,10 @@ func openProfile(dest string) (*os.Root, error) {
 func forget(root *os.Root, previously []config.Entry, current []config.Entry) error {
 	keep := make(map[string]bool, len(current))
 	for _, entry := range current {
-		keep[strings.ToLower(filepath.ToSlash(entry.Path))] = true
+		keep[foldedEntryPath(entry.Path)] = true
 	}
 	for _, entry := range previously {
-		if keep[strings.ToLower(filepath.ToSlash(entry.Path))] {
+		if keep[foldedEntryPath(entry.Path)] {
 			continue
 		}
 		stale, err := within(entry.Path)
@@ -156,11 +168,51 @@ func forget(root *os.Root, previously []config.Entry, current []config.Entry) er
 			// alternative is deleting whatever it does point at.
 			return err
 		}
+		// A recorded entry whose limits cannot bind is refused rather than
+		// guessed at, and the record is where the refusal has to stand: the
+		// rules file's own bad depth is refused by Copy before this runs,
+		// but a run before that refusal existed wrote the rules file's depth
+		// straight into the record, and Clear -- which reads no rules file
+		// -- reaches it here. With the entry's own depth at -1 the walk
+		// would spare everything below and the take-back would report
+		// success while taking back nothing; with a mask's depth at -1 the
+		// mask reaches nothing and its exclusion stops protecting exactly
+		// when the deletion is happening. The recorded limits are the only
+		// thing that says what the sandbox keeps.
+		//
+		// The way out is named in the message, because unlike a rules file
+		// this is not a file anybody was told about: a record can only carry
+		// a limit like this if some earlier build accepted it, so the person
+		// reading this did not write it anywhere they can see. Naming the
+		// entry again is what lets a run past it -- forget skips what the
+		// current list still names -- and the copy that follows rewrites the
+		// record with limits that bind, after which the entry can be dropped
+		// for good.
+		if err := EntryCarriesNegativeDepth(entry); err != nil {
+			return fmt.Errorf("the record of what an earlier run put in this sandbox names %s with a limit "+
+				"that cannot bind, so what under it is the sandbox's own cannot be told from what this "+
+				"tool copied, and nothing will be deleted on a guess: %w. Put %s back in the profile: "+
+				"list with a depth that can bind, or with none, and run once -- that rewrites the record "+
+				"and the entry can be removed again afterwards",
+				entry.Path, err, entry.Path)
+		}
 		if err := clearEntry(root, stale, entry); err != nil {
 			return fmt.Errorf("clearing %s, which the rules file no longer names: %w", entry.Path, err)
 		}
 	}
 	return nil
+}
+
+// foldedEntryPath is the key under which two spellings of one profile path
+// count as the same entry: case-folded, because Windows matches names
+// case-insensitively, and spelled with forward slashes, because the rules
+// file and the record are free to spell the separator either way. forget
+// matches what it keeps by it, and copyEntries matches a missing source
+// against the record by it -- a rules file whose spelling of an entry
+// changed after the source went must still find the copy the record is
+// vouching for, not read as a new name and orphan it.
+func foldedEntryPath(path string) string {
+	return strings.ToLower(filepath.ToSlash(path))
 }
 
 // clearEntry takes back one stale entry: what a previous copy put under a
@@ -331,89 +383,6 @@ func within(entry string) (string, error) {
 	return clean, nil
 }
 
-// conflictingProfileEntry finds two entries in the list that share a path
-// but do not say the same thing about what to copy under it, and reports
-// the first such pair.
-//
-// A path repeated with identical limits is redundant, not dangerous --
-// copying it twice lands the same result twice -- and validation reports it
-// as the waste it is. A path repeated with different limits is not
-// redundant: { path: .codex, exclude: [sessions/**] } followed by the bare
-// ".codex" reads as two ways of saying the same thing and is not one. The
-// second entry copies .codex whole, and the mirroring behind it deletes
-// whatever the first entry's exclusion protected, because the mirror sees
-// no exclusion the second time around and the excluded path is not in the
-// source. That is real data loss, arriving from a rules file that only
-// looks redundant, and there is no reading of "list this path twice with
-// different limits" that is safe to silently pick one side of -- see
-// EntriesSayTheSameThing for the comparison, and Copy's own use of this for
-// why it runs before anything below it touches dest.
-func conflictingProfileEntry(entries []config.Entry) (first, second config.Entry, found bool) {
-	seen := make(map[string]config.Entry, len(entries))
-	for _, entry := range entries {
-		key := strings.ToLower(filepath.ToSlash(filepath.Clean(filepath.FromSlash(entry.Path))))
-		prior, ok := seen[key]
-		if !ok {
-			seen[key] = entry
-			continue
-		}
-		if !EntriesSayTheSameThing(prior, entry) {
-			return prior, entry, true
-		}
-	}
-	return config.Entry{}, config.Entry{}, false
-}
-
-// EntriesSayTheSameThing reports whether two profile: entries that name the
-// same path describe exactly the same copy: the same depth, and the same
-// include and exclude masks in the same order. This is the only condition
-// under which a path repeated in the list is redundant rather than a silent
-// change of meaning, and it is exported so validation asks this package the
-// question rather than re-deciding it with a second comparison of the same
-// fields.
-func EntriesSayTheSameThing(a, b config.Entry) bool {
-	return sameDepth(a.Depth, b.Depth) && sameMasks(a.Include, b.Include) && sameMasks(a.Exclude, b.Exclude)
-}
-
-func sameDepth(a, b *int) bool {
-	if (a == nil) != (b == nil) {
-		return false
-	}
-	return a == nil || *a == *b
-}
-
-func sameMasks(a, b []config.Mask) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].Pattern != b[i].Pattern || !sameDepth(a[i].Depth, b[i].Depth) {
-			return false
-		}
-	}
-	return true
-}
-
-// describeEntryLimits renders one entry's limits for an error message --
-// terse enough to read in one line, specific enough to show what differs
-// between two entries sharing a path.
-func describeEntryLimits(e config.Entry) string {
-	if e.Bare() {
-		return "no limits, copied whole"
-	}
-	var parts []string
-	if e.Depth != nil {
-		parts = append(parts, fmt.Sprintf("depth %d", *e.Depth))
-	}
-	if len(e.Include) > 0 {
-		parts = append(parts, fmt.Sprintf("include %v", e.Include))
-	}
-	if len(e.Exclude) > 0 {
-		parts = append(parts, fmt.Sprintf("exclude %v", e.Exclude))
-	}
-	return strings.Join(parts, ", ")
-}
-
 // Ceiling is how much one run may carry into a sandbox's profile before it is
 // stopped.
 //
@@ -434,13 +403,24 @@ const Ceiling = 64 << 20
 // test can measure the counting and the refusal without asking this machine
 // for sixty-four megabytes of temporary files.
 //
+// previously is the record the last call left, and only Copy's hands are on
+// it here: a source that has gone since that record was written is told
+// apart from a source that was never there by it, and by nothing else this
+// sees.
+//
 // prints is what the last run recorded and the map returned is this run's:
 // a skipped file carries its print forward and a copied file gets a fresh
 // one, so anything this run did not finish with is simply absent, which
 // sends the next run back to copying it.
-func copyEntries(home string, root *os.Root, entries []config.Entry, left int64, prints map[string]Print) ([]config.Entry, map[string]Print, error) {
+func copyEntries(home string, root *os.Root, entries, previously []config.Entry, left int64, prints map[string]Print) ([]config.Entry, map[string]Print, error) {
 	var copied []config.Entry
 	newPrints := make(map[string]Print, len(prints))
+	// The paths the previous record already claims, folded the way forget
+	// folds them. This is the oracle for a source os.Stat cannot ask about.
+	recorded := make(map[string]bool, len(previously))
+	for _, entry := range previously {
+		recorded[foldedEntryPath(entry.Path)] = true
+	}
 	for _, entry := range entries {
 		dst, err := within(entry.Path)
 		if err != nil {
@@ -449,19 +429,24 @@ func copyEntries(home string, root *os.Root, entries []config.Entry, left int64,
 		src := filepath.Join(home, filepath.FromSlash(entry.Path))
 		info, err := os.Stat(src)
 		if err != nil {
-			// Not on this machine, and not an error -- but the entry goes on
-			// the record all the same. A source that has gone since an
-			// earlier run copied it leaves that copy sitting in the sandbox's
-			// profile, and this list is the only thing that still knows the
-			// copy is ours: recorded without the entry, the next --no-ai
-			// reported success while stale credentials stayed inside the
-			// sandbox for good. Taking the copy back here instead would act
-			// on a disappearance that is often temporary -- a drive not yet
-			// mounted, a tool not yet installed -- and would strip the
-			// sandbox's credentials over it. A source that was never here
-			// costs one clearing attempt that finds nothing, the cheap
-			// direction.
-			copied = append(copied, entry)
+			// os.Stat cannot tell a source that has gone since an earlier
+			// run copied it from a source that was never here, and the two
+			// are opposite in what they license. The first leaves a copy
+			// sitting in the sandbox that this list is the only thing still
+			// able to vouch for -- recording nothing, a --no-ai reported
+			// success while stale credentials stayed inside for good -- so
+			// where the previous record already names the path, the entry
+			// stays on it. The second names a path this machine never had,
+			// and recording it claimed whatever was sitting there as ours:
+			// local-agent was never under the user's profile, the sandbox
+			// wrote local-agent/session.txt itself, and the next --no-ai
+			// took it back with the rest. The previous record is the only
+			// witness that can tell the two apart; taking a vanished source
+			// back here instead would act on a disappearance that is often
+			// temporary -- a drive not yet mounted, a tool not yet installed.
+			if recorded[foldedEntryPath(entry.Path)] {
+				copied = append(copied, entry)
+			}
 			continue
 		}
 		// Written down before the copying and not after. What this list is for
