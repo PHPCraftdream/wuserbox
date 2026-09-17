@@ -137,3 +137,29 @@ func TestCopyLeavesTheProfilesOwnBelongingsAlone(t *testing.T) {
 // so it has to be refused where it does not land inside the profile. The list
 // is kept where a sandbox cannot write it, which is the first defense; this
 // is what stands behind that one.
+
+// TestAnExclusionSparesTheDestinationsSpellingOfAName is the exclusion half
+// of the mask fold, end to end: the rules exclude one spelling of a name,
+// the sandbox holds a file under another the volume opens onto the same
+// file, and the mirroring asks the exclusion about the destination's
+// spelling. An exclusion is two statements at once -- do not bring this in,
+// and this is the sandbox's to keep -- and the second is the one that fails
+// when the mask folds by a different answer than the volume gives: the file
+// is removed as a stray, with no error.
+func TestAnExclusionSparesTheDestinationsSpellingOfAName(t *testing.T) {
+	if !fileSystemJoins(t, "\u03a3.json", "\u03c2.json") {
+		t.Skipf("this volume holds the two sigmas apart, so the exclusion names a different file than the destination holds and cannot spare it")
+	}
+
+	home, dest := useProfileEntries(t, []config.Entry{
+		{Path: ".claude", Exclude: config.Masks([]string{"\u03a3.json"})},
+	})
+	write(t, filepath.Join(home, ".claude", "settings.json"), "{}")
+	write(t, filepath.Join(dest, ".claude", "\u03c2.json"), "the sandbox's own")
+
+	fill(t, dest)
+
+	if got := read(t, filepath.Join(dest, ".claude", "\u03c2.json")); got != "the sandbox's own" {
+		t.Errorf("the exclusion did not spare the file the volume holds under the other spelling: %q", got)
+	}
+}

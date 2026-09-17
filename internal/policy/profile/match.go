@@ -25,6 +25,18 @@ import "strings"
 // number of whole segments, including none. Matching is case-insensitive,
 // because Windows is -- the names this is applied to come from a file system
 // that does not distinguish AUTH.JSON from auth.json either.
+//
+// Both sides fold through foldedName, the fold this package measured, and
+// not through Unicode's lowercase: ToLower maps the capital sigma to the
+// small one and leaves the final sigma alone, while this desk's volume
+// opens Σ.json and ς.json onto one and the same file, so a mask folded
+// with ToLower answered a question no volume here asks, and an exclusion
+// spelled with one sigma missed the ς.json the sandbox held and the
+// mirroring took it as a stray -- measured, no error. The fold errs toward
+// joining, and which way that errs depends on the side asking: an exclude
+// that joins more than the volume spares more, an include that joins more
+// copies more, and both are the safe side of holding apart two spellings
+// the volume opens onto one file, which is the direction that deletes.
 func matchMask(pattern, candidate string) bool {
 	target := candidate
 	if !strings.Contains(pattern, "/") {
@@ -35,8 +47,8 @@ func matchMask(pattern, candidate string) bool {
 		}
 	}
 	return matchSegments(
-		strings.Split(strings.ToLower(pattern), "/"),
-		strings.Split(strings.ToLower(target), "/"),
+		strings.Split(foldedName(pattern), "/"),
+		strings.Split(foldedName(target), "/"),
 	)
 }
 

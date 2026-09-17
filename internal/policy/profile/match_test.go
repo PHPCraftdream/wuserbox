@@ -103,3 +103,26 @@ func TestAPlainRelativePathMatchesExactlyThatPath(t *testing.T) {
 		t.Error("a pattern with no wildcards matched a shorter path")
 	}
 }
+
+// TestAMaskFoldsByTheFoldThePackageFoldsNamesBy pins the mask fold to the
+// fold this package measures, foldedName, and not to Unicode's lowercase.
+// The two sigmas are its shape: ToLower maps the capital to the small sigma
+// and leaves the final sigma alone, so a mask folded with ToLower answers a
+// question this volume does not ask, and an exclusion spelled with one
+// spelling of a name misses the file the volume holds under the other.
+// This test pins the fold itself, not the volume. What the fold still joins
+// that a volume may hold apart -- i with dotless i -- is the safe direction
+// on both sides of a mask: an exclusion that joins more than the volume
+// spares more, and an include that joins more copies more; holding apart
+// what the volume opens onto one file is the direction that deletes.
+func TestAMaskFoldsByTheFoldThePackageFoldsNamesBy(t *testing.T) {
+	if !matchMask("\u03a3.json", "\u03c2.json") {
+		t.Error("an exclusion spelled with the capital sigma did not match the final sigma, which this package's fold joins")
+	}
+	if !matchMask("\u03c2.json", "\u03a3.json") {
+		t.Error("an exclusion spelled with the final sigma did not match the capital sigma")
+	}
+	if !matchMask("i.json", "\u0131.json") {
+		t.Error("the fold stopped joining i with dotless i, which it over-joins on purpose, on the safe side")
+	}
+}
