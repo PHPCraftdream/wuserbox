@@ -274,3 +274,95 @@ func TestCleanupRefusesAGlobNamingADirectoryTheHiveSitsUnder(t *testing.T) {
 		})
 	}
 }
+
+// TestCleanupRefusesEveryGlobTheFamilyRuleBringsIn asks the refusal
+// question directly, first for globs it refused before the families were
+// the description -- the refusal must be a superset of itself, never a
+// churn -- and then for globs that reach only what the families add: the
+// TxR set no table ever listed, the container whose counter has moved
+// past 01, a .TM.blf under another machine's GUID. Fails without the fix:
+// the tables answered for one example of each family, and these globs
+// miss every example while matching real members a real profile holds.
+func TestCleanupRefusesEveryGlobTheFamilyRuleBringsIn(t *testing.T) {
+	for _, glob := range []string{
+		"NTUSER.DAT",
+		"NTUSER*",
+		"ntuser.ini",
+		"NTUSER.DAT.LOG1",
+		"NTUSER.DAT{a0876e4c-1cb1-11d9-9669-0800200c9a66}.TM.blf",
+		"NTUSER.DAT{a0876e4c-1cb1-11d9-9669-0800200c9a66}.TMContainer00000000000000000001.regtrans-ms",
+		"UsrClass.dat",
+		"UsrClass.dat.LOG2",
+		"AppData/Local/Microsoft/Windows/UsrClass.dat",
+		"*.blf",
+		"*.regtrans-ms",
+		"**",
+		"AppData/**",
+		"AppData",
+		"AppData/Local",
+		"Windows",
+		"*.TxR.*",
+		"NTUSER.DAT{*}.TxR.0.regtrans-ms",
+		"UsrClass.dat{5038ca3b-376d-11e1-99a6-000c2905161f}.TMContainer00000000000000000002.regtrans-ms",
+		"NTUSER.DAT{6*.TM.blf",
+		"AppData/Local/Microsoft/Windows/UsrClass.dat{*}.TxR.1.regtrans-ms",
+	} {
+		if err := CleanupNamesSomethingReserved(config.Masks([]string{glob})); err == nil {
+			t.Errorf("cleanup glob %q was accepted, and the walk would have taken what it reaches", glob)
+		}
+	}
+}
+
+// TestCleanupStillAcceptsGlobsNamingWhatIsNotTheProfileServices pins the
+// rule's outside edge. Temp is the sandbox's own scratch and Roaming is
+// account.MakeProfile's own doing -- no glob naming either may start
+// being refused because the registry families next door grew a
+// description. The names at the bottom are ones Windows does not write --
+// a non-hexadecimal GUID, a third transaction log, a container counter
+// without its padding, an editor's .old -- and a guard drawn exactly to
+// the family leaves them alone too.
+func TestCleanupStillAcceptsGlobsNamingWhatIsNotTheProfileServices(t *testing.T) {
+	for _, glob := range []string{
+		"AppData/Local/Temp/**",
+		"Temp",
+		"AppData/Local/Temp",
+		"AppData/Local/Roaming/**",
+		"Roaming/**",
+		"*.log",
+		"NTUSER.DAT{g*}",
+		"UsrClass.dat.LOG3",
+		"UsrClass.dat{a0876e4c-1cb1-11d9-9669-0800200c9a66}.TMContainer1.regtrans-ms",
+		"*.old",
+	} {
+		if err := CleanupNamesSomethingReserved(config.Masks([]string{glob})); err != nil {
+			t.Errorf("cleanup glob %q was refused: %v -- the guard reached past the profile service's own files", glob, err)
+		}
+	}
+}
+
+// TestCleanupRefusesAGlobReachingAFamilyMemberTheTablesNeverListed runs
+// the refusal end to end with a glob the old tables had no reason to
+// refuse: the container whose counter has moved on to 02 sits beside the
+// hive in every real profile, and a glob naming it was accepted -- and
+// the walk took it. Fails without the fix.
+func TestCleanupRefusesAGlobReachingAFamilyMemberTheTablesNeverListed(t *testing.T) {
+	_, dest := useCleanup(t, nil, []string{"UsrClass.dat{*}.TMContainer00000000000000000002.regtrans-ms"})
+	member := filepath.Join(dest, "AppData", "Local", "Microsoft", "Windows",
+		"UsrClass.dat{5038ca3b-376d-11e1-99a6-000c2905161f}.TMContainer00000000000000000002.regtrans-ms")
+	write(t, member, "windows' work")
+	write(t, filepath.Join(dest, "keep.txt"), "should not be reached either")
+
+	_, _, err := Copy(dest, nil, nil)
+	if err == nil {
+		t.Fatal("a glob reaching a transaction container was accepted")
+	}
+	if exit.Of(err) != exit.BadConfig {
+		t.Errorf("the refusal carried exit code %v, want %v (bad-config)", exit.Of(err), exit.BadConfig)
+	}
+	if _, err := os.Stat(member); err != nil {
+		t.Errorf("the container is gone even though the run was refused: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "keep.txt")); err != nil {
+		t.Errorf("cleanup cleared other files before refusing the run entirely: %v", err)
+	}
+}

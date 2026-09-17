@@ -9,9 +9,10 @@ import (
 // The registry the profile service builds into every sandbox's profile --
 // NTUSER.DAT and its transaction family at the root, UsrClass.dat and its
 // own family under AppData -- is Windows' work and the sandbox's life. The
-// reserved tables that name it live in cleanup.go beside refuseReservedCleanup,
-// the one guard that read them first; this file is the rest of the rule
-// those tables only half carried.
+// families that describe it are built once in families.go, and the two
+// questions asked of them live apart: refuseReservedCleanup's, which has
+// read the description longest, and this file's -- the name question the
+// old exact-name tables only half carried.
 //
 // A cleanup: glob naming a reserved path is refused outright, because a glob
 // that says NTUSER.DAT is someone asking for the hive and cannot be granted
@@ -53,42 +54,31 @@ import (
 // rather than buried.
 //
 // The trap this file exists to keep straight: the paths in the reserved
-// tables are relative to the profile ROOT, and the walks' rel is relative
+// families are relative to the profile ROOT, and the walks' rel is relative
 // to the ENTRY. Under an entry over AppData the hive's entry-relative path
 // is Local/Microsoft/Windows/UsrClass.dat, and a guard that compared that
 // against the table would silently protect nothing -- worse than no guard,
 // because it reads as one. Every question below is therefore asked of a
 // path rebuilt relative to the root, spelled with forward slashes the way
-// the tables are, and folded the way foldedName folds a name -- the file
+// the families are, and folded the way foldedName folds a name -- the file
 // system's answer for any capitals -- so a hive planted or spelled under
 // other capitals is still the hive.
 
-// reservedFolded is both reserved tables, put through the same fold names
-// are compared by, once: the guard is asked per child of every directory
-// walked, and the tables do not change while the program runs. A bare name
-// from reservedProfileNames carries no separator, so the prefix test in
-// reservedWithin can never fire on it -- a name is the whole of its path,
-// which is why the table is bare names -- and both tables share one loop.
-var reservedFolded = func() []string {
-	out := make([]string, 0, len(reservedProfileNames)+len(reservedProfilePaths))
-	for _, name := range reservedProfileNames {
-		out = append(out, foldedName(name))
-	}
-	for _, path := range reservedProfilePaths {
-		out = append(out, foldedName(path))
-	}
-	return out
-}()
-
 // reservedAt answers whether one path, relative to the profile root and
-// spelled with forward slashes, is itself one of the reserved files. The
+// spelled with forward slashes, names a member of a reserved family. The
 // comparison goes through foldedName, not bytes: a rules file or a
 // directory entry may spell the hive in any capitals, and Windows opens
-// them all onto it.
+// them all onto it. And it goes through the shapes, not a list of names:
+// the transaction files carry a GUID and a counter that differ machine to
+// machine and run to run, and the TxR files an index that grows, so the
+// family -- not one example of it -- is what is matched. That is the
+// sentence the old table comment got wrong: a representative name stood
+// in for the glob question, where the argument held, and was read as this
+// question's answer, where it never did.
 func reservedAt(rootRel string) bool {
 	folded := foldedName(rootRel)
-	for _, reserved := range reservedFolded {
-		if folded == reserved {
+	for _, fam := range reservedFamilies {
+		if fam.matches(folded) {
 			return true
 		}
 	}
@@ -98,17 +88,18 @@ func reservedAt(rootRel string) bool {
 // reservedWithin adds to reservedAt the directories the reserved files sit
 // under: removing such a directory whole is the same destruction with one
 // name fewer, the lesson refuseReservedCleanup already drew about cleanup
-// globs naming an ancestor. The question is asked in one direction only,
-// what this deletion takes with it -- the reserved paths are files, and a
-// file has nothing under it, so a path inside a reserved name is nobody's
-// question here.
+// globs naming an ancestor. A family sits in one fixed directory, so the
+// directories are that directory and its ancestors; the root families'
+// bare names have none, and no prefix test can fire on them. The question
+// is asked in one direction only, what this deletion takes with it -- the
+// reserved paths are files, and a file has nothing under it.
 func reservedWithin(rootRel string) bool {
 	if reservedAt(rootRel) {
 		return true
 	}
 	folded := foldedName(rootRel)
-	for _, reserved := range reservedFolded {
-		if strings.HasPrefix(reserved, folded+"/") {
+	for _, fam := range reservedFamilies {
+		if fam.dir != "" && (fam.dir == folded || strings.HasPrefix(fam.dir, folded+"/")) {
 			return true
 		}
 	}
