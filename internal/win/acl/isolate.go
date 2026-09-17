@@ -44,6 +44,14 @@ import (
 // added: handing Everyone read access to a directory it could not read before
 // would widen what every other account on the machine can see, which is the
 // opposite of the point.
+//
+// Objects the sandbox's own account owns get one entry more, capping what
+// ownership implies (owner.go). The operator's objects get none, and the cap
+// is never written as an inheritable entry. What it does not reach is a file
+// the sandbox creates between two sweeps: until the next narrow or rewrite
+// sweeps it, the file holds its owner's implicit WRITE_DAC and the sandbox
+// can re-permission it. Its contents are the sandbox's own; what that costs
+// is a path inside the user's tree opened wider than the user expects.
 func Isolate(path, account string, entries []ACE, reach uint32) error {
 	value, err := sid.Parse(account)
 	if err != nil {
@@ -69,11 +77,23 @@ func Isolate(path, account string, entries []ACE, reach uint32) error {
 	if err != nil {
 		return err
 	}
+	limited, err := sid.Parse(sid.OwnerRights)
+	if err != nil {
+		return err
+	}
+	mark, err := sid.Parse(handDownMark)
+	if err != nil {
+		return err
+	}
+	// Entries go out under the group's name and ownership accrues under the
+	// account's, so the owner check has to know every name the sandbox goes
+	// by.
+	sandbox := sandboxIdentities(account)
 
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
-		seFileObject, daclInfo, 0, 0, uintptr(unsafe.Pointer(&dacl)), 0,
+		seFileObject, daclInfo|ownerInfo, 0, 0, uintptr(unsafe.Pointer(&dacl)), 0,
 		uintptr(unsafe.Pointer(&descriptor))); r != 0 {
 		return fmt.Errorf("reading the permissions of %s: error %d", path, r)
 	}
@@ -160,7 +180,24 @@ func Isolate(path, account string, entries []ACE, reach uint32) error {
 	// Both halves narrow rather than widen, so stopping between them can only
 	// take Everyone's and Users' write access off what is inside, which is
 	// what the grant was going to do anyway.
-	if err := sweep(path, everyone, users, holder); err != nil {
+	// The directory itself, when the sandbox owns it, is capped in this same
+	// update, and the sweep caps what the sandbox owns inside. Neither is a
+	// second call: once the cap has landed the owner can no longer edit the
+	// list at all, so a cap that arrives late arrives never -- measured, and
+	// set out in owner.go.
+	if ownedByTheSandbox(ownerOf(descriptor), sandbox) {
+		list = append(list, ownerLimit(limited)...)
+	}
+	// What this list will hand down once published. Objects the sandbox
+	// owns get it written in explicitly, because their lists, once written
+	// individually, no longer hear from above (owner.go).
+	var hand []explicitAccess
+	for _, one := range list {
+		if one.inheritance != InheritNone {
+			hand = append(hand, one)
+		}
+	}
+	if err := sweep(path, everyone, users, holder, limited, sandbox, hand, mark); err != nil {
 		return err
 	}
 	return publish(path, list, true)

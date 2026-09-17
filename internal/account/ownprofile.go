@@ -241,6 +241,21 @@ func setHiveSecurity(key uintptr, account sid.Value) error {
 		// keeps it from claiming something that was never checked.
 		trusteeIsUnknown = 0
 		grantAccess      = 1
+		// SUB_CONTAINERS_ONLY_INHERIT: CONTAINER_INHERIT_ACE on the entry,
+		// which on a registry key grants the key it is set on and is
+		// inherited by every key below it, by each of those onward. The
+		// hive is empty when this list is written -- createEmptyHive makes
+		// a root and nothing else -- so what the root offers to inherit is
+		// the only list keys the first logon creates, Software among them,
+		// are born with; without it, measured 2026-09-17 on a CI runner,
+		// they took their creator's default list instead, and the profile
+		// service's does not name the account. docs/investigations/
+		// a-hive-per-slot.md. The spelling matters: an OBJECT_INHERIT-only
+		// entry is inherited by container children inherit-only, which
+		// would grant them nothing while looking like inheritance, and
+		// INHERIT_ONLY would take the grant off the root, which the
+		// account writes to.
+		subContainersOnlyInherit = 0x2
 	)
 	who := func(p uintptr) trustee {
 		return trustee{form: trusteeIsSID, kind: trusteeIsUnknown, name: p}
@@ -254,9 +269,9 @@ func setHiveSecurity(key uintptr, account sid.Value) error {
 		return err
 	}
 	entries := []explicitAccess{
-		{permissions: keyAllAccess, mode: grantAccess, trustee: who(uintptr(unsafe.Pointer(&account[0])))},
-		{permissions: keyAllAccess, mode: grantAccess, trustee: who(systemSID)},
-		{permissions: keyAllAccess, mode: grantAccess, trustee: who(adminSID)},
+		{permissions: keyAllAccess, mode: grantAccess, inheritance: subContainersOnlyInherit, trustee: who(uintptr(unsafe.Pointer(&account[0])))},
+		{permissions: keyAllAccess, mode: grantAccess, inheritance: subContainersOnlyInherit, trustee: who(systemSID)},
+		{permissions: keyAllAccess, mode: grantAccess, inheritance: subContainersOnlyInherit, trustee: who(adminSID)},
 	}
 	var newACL uintptr
 	r, _, _ := procSetEntriesInAcl.Call(uintptr(len(entries)), uintptr(unsafe.Pointer(&entries[0])),

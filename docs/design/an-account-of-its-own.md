@@ -26,7 +26,9 @@ became the sandbox's own and the restricted-token refusals went away, but the
 seeded hive refuses the account's own writes to `HKCU\Software` for a reason
 of its own — [the finding and the hypothesis are in a hive per slot](../investigations/a-hive-per-slot.md).
 "Whose the registry is" was the design's question, and it was answered;
-"what may be written into it" turned out to be a different question.
+"what may be written into it" turned out to be a different question. That
+question closed too, 2026-09-17: the refusal had a cause of its own, now
+fixed — see the investigation's last section.
 
 It also makes the restricted token usable rather than unnecessary, which is
 not what this section said when it was written. Those objects name the account
@@ -98,7 +100,10 @@ hive, and the first measurement that asked came back the opposite of what
 this paragraph assumes: PowerShell's own attempt to record its execution
 policy under `HKCU\Software` is refused
 ([a hive per slot](../investigations/a-hive-per-slot.md)). Starting works;
-saving does not, and the open question is why.
+saving does not, and the open question is why. That question was
+answered and the defect fixed the same day, 2026-09-17: the permission list
+on the hive's root reached nothing below it, and the entries now carry
+their inheritance down. The investigation's last section carries the fix.
 
 The cost in time is tens of milliseconds: about fifty to ninety for the very
 first run of a sandbox, twenty-five to a hundred to load the hive on a cold run
@@ -148,7 +153,9 @@ path back.
   and a registry-writing tool work at all, and means nothing of yours is read
   from there. Measured later: the tool runs and reads, and saving under
   `HKCU\Software` is denied — a known defect, measured and so far unexplained;
-  see [a hive per slot](../investigations/a-hive-per-slot.md).
+  see [a hive per slot](../investigations/a-hive-per-slot.md). Explained
+  and fixed 2026-09-17: the list on the hive's root reached nothing below
+  it; the grants now reach the keys the first logon creates.
 - **Files the sandbox creates are owned by the sandbox account.** You need to
   keep being able to delete them, so the project directory has to carry an
   inheritable entry for you.

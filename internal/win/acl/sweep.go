@@ -27,6 +27,12 @@ import (
 // sweep takes the changing rights of Everyone and BUILTIN\Users away from
 // everything under path that holds them in its own entries.
 //
+// Everything the sandbox's own account owns under path is written whole --
+// its entries, the hand-down, and the cap -- because a list written
+// individually no longer hears from above (owner.go). Everything else keeps
+// its own entries narrowed and the rest arriving from the top, which is what
+// lets taking the grant away reach it later.
+//
 // Rewriting the directory at the top is not enough on its own. Windows hands
 // an inheritable entry down to what is below, but handing it down only
 // replaces the handed-down part of a child's list and leaves the child's own
@@ -34,10 +40,13 @@ import (
 // its own that lets Users write, stayed writable by every other sandbox.
 // Measured, with a peer writing there after the grant.
 //
-// What is below is not pinned the way the top is. Its own entries are
-// narrowed and the rest keeps arriving from the top, which is what lets
-// taking the grant away reach it later.
-func sweep(root string, everyone, users, holder uintptr) error {
+// What is below is not pinned the way the top is -- except where it has to
+// be. Objects the sandbox's own account owns are written whole, the hand-down
+// included, because their lists stop hearing from above the moment they are
+// individually written; taking the grant away reaches them by name, through
+// the same Prune that reaches a grant pinned deeper still. Everything else
+// keeps its own entries narrowed and the rest arriving from the top.
+func sweep(root string, everyone, users, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr) error {
 	// Read the whole tree before changing any of it. Doing both in one pass
 	// left a failure halfway down with part of the tree already rewritten and
 	// the grant not written at all: narrowings nobody asked for and no record
@@ -49,7 +58,7 @@ func sweep(root string, everyone, users, holder uintptr) error {
 		return err
 	}
 	return walkTree(root, func(path string, _ fs.DirEntry) error {
-		return narrowOwn(path, everyone, users, holder)
+		return narrowOwn(path, everyone, users, holder, owner, sandbox, hand, mark)
 	})
 }
 
@@ -371,23 +380,39 @@ func readable(path string) ([]heldEntry, error) {
 // protected -- whose only write path was Users went read-only to its owner the
 // moment the tree above it was handed over. Measured, by writing a file there
 // before and after.
-func narrowOwn(path string, everyone, users, holder uintptr) error {
+//
+// An object the sandbox's own account owns is written whole instead, and what
+// the directory above is about to hand down goes in explicitly: a list
+// written individually is no longer derived from above, so the parent's
+// publish would no longer replace what it inherited -- measured, a file
+// carrying an inherited Modify from its tree's writable days kept it through
+// a read-only narrowing, and the write was accepted. The whole write, the
+// measurement and the costs live in owner.go.
+func narrowOwn(path string, everyone, users, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr) error {
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
-		seFileObject, daclInfo, 0, 0, uintptr(unsafe.Pointer(&dacl)), 0,
+		seFileObject, daclInfo|ownerInfo, 0, 0, uintptr(unsafe.Pointer(&dacl)), 0,
 		uintptr(unsafe.Pointer(&descriptor))); r != 0 {
 		return fmt.Errorf("reading the permissions of %s: error %d", path, r)
 	}
 	defer w32.Free(descriptor)
 
+	owned := ownedByTheSandbox(ownerOf(descriptor), sandbox)
 	if dacl == nil {
 		// No permission list at all, which Windows reads as everybody having
 		// everything -- the widest an object gets. It has no entries, so
 		// narrowing them reaches nothing, and a directory inside a granted tree
 		// carrying one stayed open to every sandbox on the machine after the
 		// tree was handed over. Measured, with a second sandbox writing there.
-		return giveAList(path, holder)
+		if !owned {
+			return giveAList(path, holder)
+		}
+		seed, err := fromNothing(holder)
+		if err != nil {
+			return err
+		}
+		return writeWhole(path, seed, nil, hand, owner, mark)
 	}
 
 	held, err := entriesOf(dacl)
@@ -425,10 +450,13 @@ func narrowOwn(path string, everyone, users, holder uintptr) error {
 		update = append(update, entry(who, 0, InheritNone, setAccess))
 		update = append(update, kept...)
 	}
-	if len(update) == 0 {
-		return nil
+	if !owned {
+		if len(update) == 0 {
+			return nil
+		}
+		return apply(path, append(update, handback...), false)
 	}
-	return apply(path, append(update, handback...), false)
+	return capObject(path, held, update, handback, everyone, users, hand, owner, mark)
 }
 
 // StripOwn takes away the entries an object holds itself for one account,

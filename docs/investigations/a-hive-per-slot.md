@@ -457,3 +457,79 @@ on a registry key means `NO_INHERITANCE` — this key only. What a fix has to
 change is those entries, and what it has to be checked against is this test,
 whose assertions are written to go red the day the picture moves.
 
+## The fix, 2026-09-17, and what it was allowed to reach
+
+The three entries `setHiveSecurity` builds now carry
+`SUB_CONTAINERS_ONLY_INHERIT` — `CONTAINER_INHERIT_ACE` on the ACE — which
+on a registry key grants the key it is set on and is inherited by every key
+below it, by each of those onward. That is the reach the readout above shows
+on `UsrClass.dat`'s root, "this key and its subkeys", for the same three
+trustees wuserbox was already naming; the fix makes the seeded root say what
+the profile service's own root says.
+
+The spelling matters, and the one that looks closest is the trap. On a
+registry key an `OBJECT_INHERIT`-only entry is inherited by container
+children *inherit-only*: `Software` would have received a copy that grants
+it nothing, which keeps sliding down the tree granting nothing wherever it
+lands — inheritance that looks granted and reaches nothing. Adding
+`INHERIT_ONLY` to the container flag is "subkeys only" and would have taken
+the grant off the root itself, which the fourth probe line above shows the
+account writing. `NO_PROPAGATE` would have stopped one level down and
+re-created this defect a level deeper. `CONTAINER_INHERIT` with
+`OBJECT_INHERIT` behaves identically on keys — values carry no security
+descriptors, so the object half has nothing to land on — but it spells the
+filesystem's "this folder, subfolders and files"; the narrower flag is the
+one that says what a registry key is.
+
+Why the change reaches `Software` without touching anything else: the hive
+is *empty* when the list is written. `createEmptyHive` builds a root and
+nothing else, `tightenHive` permissions that root, and `MakeProfile` puts
+the finished file in place before any logon. There is no key below the root
+at the moment the entries gain their inheritance, so there is nothing
+holding a list it was born with: every key the hive will ever hold — the
+profile service's `Software` first of all — is created after the tightening,
+under a root whose list now reaches down, and inherits at birth. The
+distinction is load-bearing, because the alternative would not have worked:
+documented `SetSecurityInfo` automatic-inheritance semantics propagate a
+parent's inheritable entries only into children whose own lists were built
+by inheritance, and a key carrying an explicit or creator-default list is
+left alone. Had `Software` existed at seeding time, the fix would have had
+to walk the hive and set the entries on each key. It does not, so that walk
+is not built. (Documented, not measured here; this desk has no
+administrator rights.)
+
+What the change was not allowed to do, and did not: the three trustees stay
+the account, SYSTEM and the administrators; the mask stays `KEY_ALL_ACCESS`;
+the root's list stays protected, so nothing flows in from `HKEY_USERS`
+either; and the list is set on the hive root and nowhere else, so
+inheritance stops inside the one hive. An outsider had nothing on the hive
+before and gains nothing now.
+
+One gap is left on purpose: every sandbox initialized before this change
+still holds a `Software` permissioned by its creator, and `MakeProfile`
+leaves an existing hive alone by design, so those sandboxes keep the defect
+until they are removed and built again.
+
+The prediction this fix was written against, for the next run of the test —
+renamed in the same change to `TestWhatTheSeededHiveAnswersItsOwnAccount`,
+because a name asserting a refusal that no longer happens is a name that
+misleads whoever reads the list before the body: the seven probes all
+succeed, where three used to be refused —
+
+```
+  create HKCU\Software\wub-probe                        exit 0
+  create HKCU\Software\Classes\wub-probe                exit 0
+  read   HKCU\Software                                  exit 0
+  write a value on the root, HKCU itself                exit 0
+  create HKCU\wub-rootkey, a subkey of the root         exit 0
+  write a value on HKCU\wub-rootkey                     exit 0
+  write a value on HKCU\Software itself                 exit 0
+```
+
+— and the descriptor readout changes with them: the root's three grants say
+"this key and its subkeys" where they said "this key only", and `Software`
+is openable at last, expected to show the same three grants marked
+inherited, under an owner that is still whoever created it. The owner and
+the exact list are reasoned, not measured — the assertions pin only the
+exit codes, as before.
+

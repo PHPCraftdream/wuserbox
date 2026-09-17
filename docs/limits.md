@@ -122,32 +122,26 @@ by what it holds is a boundary somebody will lean on where it does not.
   it. `wuserbox --revoke` and `wuserbox --rm` succeed against open files and
   refuse every new attempt straight away, but they are not a way to stop a
   program that is already running. Stop it first.
-* **`HKEY_CURRENT_USER` is the sandbox's own, starts empty — and cannot be
-  written where it matters, which is a known defect, not a design choice.**
-  The hive is seeded per sandbox, so nothing of yours is read from there, and
-  what starts blank is anything that expected your own settings: locale and
-  the like. What a program cannot do is use `HKCU\Software`, where Windows
-  programs keep their settings: the account the hive was seeded for is
-  refused there with "Access is denied", and refused for reading as much as
-  for writing. Settings a program tries to save are not there next run
-  because they never landed.
+* **`HKEY_CURRENT_USER` is the sandbox's own, starts empty, and is the
+  sandbox's to write.** The hive is seeded per sandbox, so nothing of yours
+  is read from there, and what starts blank is anything that expected your
+  own settings: locale and the like. Settings a program saves under
+  `HKCU\Software` — where Windows programs keep theirs — land in the hive
+  and are there next run. `HKCU\Software\Classes` is a second hive the
+  Windows profile service builds and permissions for the account rather
+  than wuserbox, and it behaves the same as the rest.
 
-  The reach it does have is the root and whatever it makes there itself:
-  `HKCU` directly, and any key the program creates under it, accept writes.
-  `HKCU\Software\Classes` accepts too, and that one is a separate hive the
-  Windows profile service builds and permissions for the account rather than
-  wuserbox.
-
-  The cause is known and the shape of it says what the reach will be until it
-  is fixed: the permission list wuserbox puts on the hive's root grants the
-  account everything **on the root and nothing below it**, so keys the first
-  logon creates — `Software` among them — are permissioned by whoever made
-  them, and the account is not on those lists. The hive the profile service
-  builds carries the same three grants written to reach the subkeys too,
-  which is why `Classes` behaves and `Software` does not.
-  [The investigation](investigations/a-hive-per-slot.md) carries the
-  measurement, the two permission lists side by side, and what a fix has to
-  change. This entry gets rewritten when it is fixed.
+  Corrected 2026-09-17, the day the defect was fixed. Until then this entry
+  read the opposite: the permission list wuserbox put on the hive's root
+  granted the account **on the root and nothing below it**, so keys the
+  first logon creates — `Software` among them — were permissioned by
+  whoever made them, and the account was refused there, reading as much as
+  writing. The three grants now reach the subkeys, written the way the
+  profile service writes its own. [The
+  investigation](investigations/a-hive-per-slot.md) carries the measurement,
+  the refusal transcript and the two permission lists side by side.
+  Sandboxes initialized before the fix keep the old lists until they are
+  removed and built again.
 * **A `cleanup:` glob is yours to aim, and the guard over it is a net rather
   than a proof.** The globs in the rules file delete from the sandbox's
   profile, and wuserbox refuses the run if one of them could reach the
@@ -165,6 +159,35 @@ by what it holds is a boundary somebody will lean on where it does not.
 * **Files the sandbox creates are owned by the sandbox's account**, not by you.
   You keep being able to delete them, because the project directory carries an
   entry for you, but a listing will show an owner you do not recognize.
+
+  **Ownership used to be a way out of every narrowing, and is not any more.**
+  Windows hands whoever owns an object the right to rewrite its permission
+  list, whatever that list says and even where it refuses exactly that —
+  measured on an ordinary desk, on a file whose entries denied its own owner
+  the right to change them, which the owner then changed anyway. So `--ro` and
+  `--revoke` did not hold against anything the sandbox had created: it could
+  hand itself back whatever it liked. wuserbox now writes an `OWNER RIGHTS`
+  entry on objects the sandbox's account owns, which replaces what ownership
+  implies with reading and no more, and which the owner cannot take off again.
+  Objects **you** own are not touched, so nothing of yours changes.
+
+  What it does not reach is a file the sandbox creates *between* two sweeps.
+  Until the next `--grant`, `--ro` or `--revoke` passes over it, that file
+  holds its owner's right to be re-permissioned and the sandbox can widen it.
+  The contents are the sandbox's own; what it costs is a path inside your tree
+  standing open wider than you would expect. Narrowing again closes it.
+
+  **Two entries in such a list will look wrong and are not.** `icacls` on a
+  file the sandbox created inside a handed-over tree prints an `OWNER RIGHTS:`
+  line carrying no rights at all, above the real one — the residue of
+  replacing whatever an owner-rights entry said before, where there was
+  nothing to replace. And it prints `NULL SID`, an identifier that matches no
+  account there has ever been: it grants nobody anything and is there as a
+  mark, saying that this list was written by a sweep and mirrors what the tree
+  above handed down at that moment rather than a decision anybody made about
+  this file. Without the mark a later narrowing cannot tell a list wuserbox
+  wrote from one somebody sealed on purpose, and it would either leave the
+  first stale or overwrite the second.
 * **Interface isolation is weak.** A sandboxed process shares your desktop and
   clipboard.
 * **A batch file's arguments still expand variables.** Starting a `.cmd` or
