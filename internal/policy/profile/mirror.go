@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // sink is what a walk does once it has decided, through walk.go's rules,
@@ -87,7 +88,7 @@ func walkDir(sk sink, src, dst, rel string, root *os.Root, left *int64, w *walk,
 			if !w.descends(childRel) {
 				continue
 			}
-			present[e.Name()] = true
+			present[foldedName(e.Name())] = true
 			if err := walkEntry(sk, filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()), childRel, root, info, left, w, prints, newPrints); err != nil {
 				return err
 			}
@@ -99,7 +100,7 @@ func walkDir(sk sink, src, dst, rel string, root *os.Root, left *int64, w *walk,
 		if !w.copiesFile(childRel) {
 			continue
 		}
-		present[e.Name()] = true
+		present[foldedName(e.Name())] = true
 		if err := walkEntry(sk, filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()), childRel, root, info, left, w, prints, newPrints); err != nil {
 			return err
 		}
@@ -280,7 +281,7 @@ func removeStrayChildren(root *os.Root, dst, rel string, present map[string]bool
 		return err
 	}
 	for _, e := range entries {
-		if present[e.Name()] {
+		if present[foldedName(e.Name())] {
 			continue
 		}
 		childRel := e.Name()
@@ -340,4 +341,20 @@ func removeStrayChildren(root *os.Root, dst, rel string, present map[string]bool
 		}
 	}
 	return nil
+}
+
+// foldedName is the form one child's name is carried in on the present
+// list: case-folded, the same fold foldedEntryPath puts an entry path
+// through. The list is written from the source's directory entries and read
+// against the destination's, and Windows opens either spelling onto the
+// same file -- a copy over AUTH.JSON lands in the file the source calls
+// auth.json and the entry keeps the capitals it had -- so a map keyed by
+// the bytes of one spelling reads the other as a stranger and
+// removeStrayChildren takes what the run just put there. matchMask folds
+// its own two sides, which is why the mask questions asked beside this one
+// need no help; a map lookup is not a mask match, and the fold has to
+// happen before the key goes in. It is a comparison key and nothing else:
+// the paths handed to the root keep the spelling they were read with.
+func foldedName(name string) string {
+	return strings.ToLower(name)
 }
