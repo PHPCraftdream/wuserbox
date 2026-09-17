@@ -135,3 +135,52 @@ func TestARecordClaimsOnlyWhatAnEarlierRunCopied(t *testing.T) {
 		t.Errorf("the sandbox's own file was disturbed: %q", data)
 	}
 }
+
+// TestAnEntryRespelledBetweenRunsKeepsItsCopyWhenTheSourceHasGone is the
+// respelling half of the record's vouching: the rules file can rename an
+// entry without renaming the place it lands -- "agent" respelled "./agent"
+// -- and both spellings land on the same place inside the profile, so the
+// record has to follow the place and not the spelling. Measured, before the
+// key was cleaned: forget built its keep set from the new spelling, read the
+// recorded "agent" as a name the list no longer held, and clearEntry deleted
+// the copy; copyEntries could not restore it because the source had gone --
+// a drive not mounted, a tool uninstalled -- and the run reported success.
+func TestAnEntryRespelledBetweenRunsKeepsItsCopyWhenTheSourceHasGone(t *testing.T) {
+	home, dest := useProfile(t, []string{"agent"})
+	write(t, filepath.Join(home, "agent", "auth.json"), `{"token":"real"}`)
+
+	copied := fill(t, dest)
+	if len(copied) != 1 {
+		t.Fatalf("nothing was copied in the first place, so this test proves nothing: %v", copied)
+	}
+
+	// The source goes the way sources do: temporarily, as these things
+	// usually are.
+	if err := os.RemoveAll(filepath.Join(home, "agent")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The same entry, respelled. within lands both spellings on agent, and
+	// the key forget and the record fold by has to agree with within or the
+	// copy reads as orphaned.
+	if err := (&config.Config{Profile: config.Entries([]string{"./agent"})}).Save(); err != nil {
+		t.Fatal(err)
+	}
+	copied = fill(t, dest)
+
+	if _, err := os.Stat(filepath.Join(dest, "agent", "auth.json")); err != nil {
+		t.Errorf("respelling the entry deleted the copy its source could no longer restore: %v", err)
+	}
+	if !reflect.DeepEqual(pathsOf(copied), []string{"./agent"}) {
+		t.Errorf("the record came back as %v, and nothing left vouches for the copy that survived", copied)
+	}
+
+	// And the record still vouches: the take-back a later --no-ai runs has
+	// to reach the copy by the new spelling too.
+	if err := Clear(dest, copied); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "agent", "auth.json")); !os.IsNotExist(err) {
+		t.Error("the copy outlived its source and the record both, and nothing left will ever take it back")
+	}
+}

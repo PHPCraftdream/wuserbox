@@ -3,7 +3,6 @@ package setup
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
@@ -174,9 +173,12 @@ func fillProfile(s *state.State) error {
 
 // union is what to record: exactly what the current list names where the
 // copy finished, and everything either list mentions where it did not.
-// Either way it is deduped by path, folded the same way forget folds the
-// names it keeps, because an entry named twice in one record would be
-// cleared twice and cleared wrong the second time.
+// Either way it is deduped by path, asking profile.FoldedEntryPath for the
+// key so the record folds a name the way forget keeps it and copyEntries
+// vouches for it -- an entry named twice in one record would be cleared
+// twice and cleared wrong the second time, and on a partial copy the two
+// spellings can be one respelling apart, this run's "./agent" against last
+// run's "agent".
 //
 // On a partial copy, where both lists name a path, the entry from copied
 // wins, which is why it goes in first: it carries the limits now in force,
@@ -202,7 +204,7 @@ func dedupeByPath(entries []config.Entry) []config.Entry {
 	seen := make(map[string]bool, len(entries))
 	whole := make([]config.Entry, 0, len(entries))
 	for _, entry := range entries {
-		key := strings.ToLower(filepath.ToSlash(entry.Path))
+		key := profile.FoldedEntryPath(entry.Path)
 		if seen[key] {
 			continue
 		}

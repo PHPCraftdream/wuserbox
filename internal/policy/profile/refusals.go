@@ -11,7 +11,6 @@ package profile
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
@@ -77,7 +76,7 @@ func EntryCarriesNegativeDepth(entry config.Entry) error {
 func conflictingProfileEntry(entries []config.Entry) (first, second config.Entry, found bool) {
 	seen := make(map[string]config.Entry, len(entries))
 	for _, entry := range entries {
-		key := strings.ToLower(filepath.ToSlash(filepath.Clean(filepath.FromSlash(entry.Path))))
+		key := FoldedEntryPath(entry.Path)
 		prior, ok := seen[key]
 		if !ok {
 			seen[key] = entry

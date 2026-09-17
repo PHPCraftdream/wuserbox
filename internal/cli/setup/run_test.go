@@ -65,3 +65,33 @@ func TestASuccessfulCopyRecordsExactlyWhatWasCopied(t *testing.T) {
 		t.Errorf("a finished copy recorded %v, want exactly what was copied", record)
 	}
 }
+
+// TestAnEntryNamedByTwoSpellingsIsRecordedOnce is the record's own guard
+// against the split that made forget orphan a copy: the rules file respelled
+// an entry between runs, so the record and this run's copy name one place by
+// two spellings, and a fold that follows the spelling writes both -- the
+// next --no-ai would then clear the same place twice, the second time by
+// whichever entry's limits happened to be recorded last.
+func TestAnEntryNamedByTwoSpellingsIsRecordedOnce(t *testing.T) {
+	inForce := config.Entry{Path: "./agent", Exclude: config.Masks([]string{"sessions/**"})}
+	previously := []config.Entry{{Path: "agent"}, {Path: "still-listed"}}
+	copied := []config.Entry{inForce}
+
+	record := union(previously, copied, true)
+
+	if len(record) != 2 {
+		t.Fatalf("the record holds %v, want one entry for each place either list mentions", record)
+	}
+	var agent *config.Entry
+	for i := range record {
+		if record[i].Path == "./agent" {
+			agent = &record[i]
+		}
+	}
+	if agent == nil {
+		t.Fatalf("the union lost agent altogether: %v", record)
+	}
+	if len(agent.Exclude) != 1 || agent.Exclude[0].Pattern != "sessions/**" {
+		t.Errorf("the recorded agent entry lost the exclusion now in force: %+v", *agent)
+	}
+}

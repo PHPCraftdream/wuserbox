@@ -162,3 +162,46 @@ func TestTheCeilingStillCountsWhatItSkips(t *testing.T) {
 		t.Error("a list over its budget was allowed through because every file matched")
 	}
 }
+
+// TestAnEntryRespelledBetweenRunsLeavesTheSandboxesCopyAlone is the
+// respelling half of the skip: renaming an entry in the rules file --
+// "agent" to "./agent" -- says nothing about the source, and a run that
+// treats the new spelling as a new name deletes the copy and rebuilds it
+// from the source, losing what the sandbox wrote into its own copy and
+// paying for the copy again. Measured, before the key was cleaned: exactly
+// that.
+func TestAnEntryRespelledBetweenRunsLeavesTheSandboxesCopyAlone(t *testing.T) {
+	home, dest := useProfile(t, []string{"agent"})
+	write(t, filepath.Join(home, "agent", "auth.json"), `{"token":"real"}`)
+	dst := filepath.Join(dest, "agent", "auth.json")
+
+	fill(t, dest)
+
+	// The sandbox edits its own copy -- the same size, so the skip still
+	// applies; a different size is a copy that has to be rebuilt whatever
+	// the spelling says. Then a stamp no run could have written, the same
+	// probe TestASecondRunLeavesAnUnchangedFileAlone uses.
+	write(t, dst, `{"token":"fake"}`)
+	stale := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(dst, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	// The same entry, respelled. The source has not changed, so nothing in
+	// the profile should move.
+	if err := (&config.Config{Profile: config.Entries([]string{"./agent"})}).Save(); err != nil {
+		t.Fatal(err)
+	}
+	fill(t, dest)
+
+	if got := read(t, dst); got != `{"token":"fake"}` {
+		t.Errorf("respelling the entry rebuilt the copy from the source and lost what the sandbox wrote: %q", got)
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(stale) {
+		t.Errorf("an unchanged source was recopied over a respelling, and the stamp moved to %v", info.ModTime())
+	}
+}

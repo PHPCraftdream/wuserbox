@@ -306,3 +306,37 @@ func TestARecordWhoseLimitsCannotBindIsRefused(t *testing.T) {
 		}
 	})
 }
+
+// TestCopyRefusesProfileEntriesRepeatedUnderTwoSpellings pins the duplicate
+// refusal to the same key forget and the record fold by: "agent" and
+// "./agent" are one place in the profile, so a rules file listing both with
+// different limits is the conflicting pair, not two entries, and is refused
+// before anything under dest is touched. The pin exists because the refusal
+// historically cleaned the path with its own inline copy of the fold while
+// the key did not clean at all -- two answers to "is this the same entry"
+// waiting to drift apart.
+func TestCopyRefusesProfileEntriesRepeatedUnderTwoSpellings(t *testing.T) {
+	protected := []config.Entry{{Path: "agent", Exclude: config.Masks([]string{"sessions/**"})}}
+	home, dest := useProfileEntries(t, protected)
+	write(t, filepath.Join(home, "agent", "auth.json"), `{"token":"real"}`)
+
+	copied := fill(t, dest)
+
+	// What an agent inside the sandbox actually wrote there -- never copied
+	// in by any entry, and what the first entry's exclusion exists to
+	// protect.
+	write(t, filepath.Join(dest, "agent", "sessions", "mysession.txt"), "a real session")
+
+	conflicting := append([]config.Entry{}, protected...)
+	conflicting = append(conflicting, config.Entry{Path: "./agent"})
+	if err := (&config.Config{Profile: conflicting}).Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := Copy(dest, copied, lastPrints[dest]); err == nil {
+		t.Fatal("profile: repeating agent as ./agent with different limits was accepted")
+	}
+	if got := read(t, filepath.Join(dest, "agent", "sessions", "mysession.txt")); got != "a real session" {
+		t.Errorf("the session the first entry's exclusion protected did not survive the refused run: %q", got)
+	}
+}

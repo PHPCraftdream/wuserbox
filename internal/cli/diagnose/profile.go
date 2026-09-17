@@ -193,13 +193,16 @@ func inspectCleanupGlobs(cleanup []config.Mask) []Complaint {
 	return complaints
 }
 
-// profilePathKey normalizes a profile: entry's path the way the copier
-// itself compares two entries -- case-insensitively and with forward
-// slashes, in forget (internal/policy/profile/copy.go) -- so a duplicate
-// reported here is exactly the duplicate the copier would also treat as
-// one, landing the second copy on top of the first.
+// profilePathKey normalizes a profile: entry's path by asking the copier
+// rather than by spelling the rule out again, so a duplicate reported here
+// is exactly the duplicate the copier would also treat as one, landing the
+// second copy on top of the first. The spelled-out version stood here until
+// the copier's own key was cleaned: it claimed to match forget and did not,
+// because forget folded case and separators without cleaning, and the day
+// the two disagreed is the day this report starts naming duplicates that
+// are not and missing the ones that are.
 func profilePathKey(path string) string {
-	return strings.ToLower(filepath.ToSlash(filepath.Clean(filepath.FromSlash(path))))
+	return profile.FoldedEntryPath(path)
 }
 
 // sensitiveNames maps each sensitive entry's own lowercase name to how it is

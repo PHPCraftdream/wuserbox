@@ -155,10 +155,10 @@ func openProfile(dest string) (*os.Root, error) {
 func forget(root *os.Root, previously []config.Entry, current []config.Entry) error {
 	keep := make(map[string]bool, len(current))
 	for _, entry := range current {
-		keep[foldedEntryPath(entry.Path)] = true
+		keep[FoldedEntryPath(entry.Path)] = true
 	}
 	for _, entry := range previously {
-		if keep[foldedEntryPath(entry.Path)] {
+		if keep[FoldedEntryPath(entry.Path)] {
 			continue
 		}
 		stale, err := within(entry.Path)
@@ -203,16 +203,38 @@ func forget(root *os.Root, previously []config.Entry, current []config.Entry) er
 	return nil
 }
 
-// foldedEntryPath is the key under which two spellings of one profile path
-// count as the same entry: case-folded, because Windows matches names
-// case-insensitively, and spelled with forward slashes, because the rules
-// file and the record are free to spell the separator either way. forget
-// matches what it keeps by it, and copyEntries matches a missing source
-// against the record by it -- a rules file whose spelling of an entry
-// changed after the source went must still find the copy the record is
-// vouching for, not read as a new name and orphan it.
-func foldedEntryPath(path string) string {
-	return strings.ToLower(filepath.ToSlash(path))
+// FoldedEntryPath is the key under which two spellings of one profile path
+// count as the same entry: cleaned the way within cleans, then case-folded,
+// because Windows matches names case-insensitively, and spelled with forward
+// slashes, because the rules file and the record are free to spell the
+// separator either way. forget matches what it keeps by it, copyEntries
+// matches a missing source against the record by it, and the caller dedupes
+// the record it writes down by it. Measured, before the clean went in: a
+// rules file respelling "agent" as "./agent" between runs made forget read
+// the recorded entry as a name the list no longer held and delete the copy,
+// and with the source gone -- a drive not mounted, a tool uninstalled --
+// copyEntries could not put it back, and the run reported success.
+//
+// The clean is cleanEntryPath, the one within starts from, rather than a
+// second copy of it: the key answers "where does this entry land", and two
+// answers to that are how the key and the copier part ways again. The order
+// is the order within uses -- FromSlash, then Clean on the native spelling,
+// then ToSlash, then the fold. Clean is separator-aware, so cleaning a path
+// already converted to slashes is not the operation cleaning the native
+// spelling is. Exported for the same reason EntryEscapesProfile is: the
+// record's dedupe in internal/cli/setup asks this package the question
+// rather than keeping a second copy of the rule.
+//
+// within's refusals are deliberately not part of the key: a key has to
+// answer for every spelling a record or a rules file can hold, and a path
+// within refuses -- absolute, out of the profile, the root itself -- lands
+// nowhere but still needs a stable spelling to be compared by. The
+// refusals happen where the acting is: forget asks within about every
+// recorded path it is about to clear, copyEntries about every entry it is
+// about to copy, and validation asks EntryEscapesProfile, so a refused
+// spelling is no more acted on for having a key.
+func FoldedEntryPath(path string) string {
+	return strings.ToLower(filepath.ToSlash(cleanEntryPath(path)))
 }
 
 // clearEntry takes back one stale entry: what a previous copy put under a
@@ -361,8 +383,16 @@ func EntryEscapesProfile(path string) error {
 	return err
 }
 
+// cleanEntryPath is the one cleaning of a rules file's or a record's
+// spelling of an entry: within lands the path it names and FoldedEntryPath
+// folds the key it is compared by, and both start here, so the two cannot
+// disagree about what was cleaned.
+func cleanEntryPath(entry string) string {
+	return filepath.Clean(filepath.FromSlash(entry))
+}
+
 func within(entry string) (string, error) {
-	clean := filepath.Clean(filepath.FromSlash(entry))
+	clean := cleanEntryPath(entry)
 	if filepath.IsAbs(clean) || clean == ".." ||
 		strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("%q does not name anything inside the profile", entry)
@@ -419,7 +449,7 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 	// folds them. This is the oracle for a source os.Stat cannot ask about.
 	recorded := make(map[string]bool, len(previously))
 	for _, entry := range previously {
-		recorded[foldedEntryPath(entry.Path)] = true
+		recorded[FoldedEntryPath(entry.Path)] = true
 	}
 	for _, entry := range entries {
 		dst, err := within(entry.Path)
@@ -444,7 +474,7 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 			// witness that can tell the two apart; taking a vanished source
 			// back here instead would act on a disappearance that is often
 			// temporary -- a drive not yet mounted, a tool not yet installed.
-			if recorded[foldedEntryPath(entry.Path)] {
+			if recorded[FoldedEntryPath(entry.Path)] {
 				copied = append(copied, entry)
 			}
 			continue
