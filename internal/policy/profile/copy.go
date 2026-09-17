@@ -449,7 +449,20 @@ func copyEntries(home string, root *os.Root, entries []config.Entry, left int64,
 		src := filepath.Join(home, filepath.FromSlash(entry.Path))
 		info, err := os.Stat(src)
 		if err != nil {
-			continue // not on this machine; not an error
+			// Not on this machine, and not an error -- but the entry goes on
+			// the record all the same. A source that has gone since an
+			// earlier run copied it leaves that copy sitting in the sandbox's
+			// profile, and this list is the only thing that still knows the
+			// copy is ours: recorded without the entry, the next --no-ai
+			// reported success while stale credentials stayed inside the
+			// sandbox for good. Taking the copy back here instead would act
+			// on a disappearance that is often temporary -- a drive not yet
+			// mounted, a tool not yet installed -- and would strip the
+			// sandbox's credentials over it. A source that was never here
+			// costs one clearing attempt that finds nothing, the cheap
+			// direction.
+			copied = append(copied, entry)
+			continue
 		}
 		// Written down before the copying and not after. What this list is for
 		// is knowing what to take back, and a name that was half copied has to

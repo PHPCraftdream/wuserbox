@@ -172,20 +172,32 @@ func fillProfile(s *state.State) error {
 	return copyErr
 }
 
-// union is what to record: exactly what was copied where the copy finished,
-// and everything either list mentions where it did not. Either way it is
-// deduped by path, folded the same way forget folds the names it keeps,
-// because an entry named twice in one record would be cleared twice and
-// cleared wrong the second time.
+// union is what to record: exactly what the current list names where the
+// copy finished, and everything either list mentions where it did not.
+// Either way it is deduped by path, folded the same way forget folds the
+// names it keeps, because an entry named twice in one record would be
+// cleared twice and cleared wrong the second time.
+//
+// On a partial copy, where both lists name a path, the entry from copied
+// wins, which is why it goes in first: it carries the limits now in force,
+// and the old entry would have the record arguing against the rules file
+// the user just edited. That argument was once real loss -- agent was
+// copied whole, the file gained exclude: [sessions/**], a later entry's
+// copy failed, and the record went back to the bare entry; the next
+// --no-ai, which clears from the record without reading the rules file,
+// deleted the sessions the exclusion had been written to protect. Both
+// directions of the fixed choice are safe: a newer exclusion spares more
+// when the entry is one day taken back, and a tighter depth clears less.
 func union(previously, copied []config.Entry, partial bool) []config.Entry {
 	if !partial {
 		return dedupeByPath(copied)
 	}
-	return dedupeByPath(append(append([]config.Entry{}, previously...), copied...))
+	return dedupeByPath(append(append([]config.Entry{}, copied...), previously...))
 }
 
 // dedupeByPath keeps the first of the entries that share a path, so the
-// record holds one entry per place in the profile.
+// record holds one entry per place in the profile -- and so whoever folds
+// two lists decides which entry survives by the order it hands them in.
 func dedupeByPath(entries []config.Entry) []config.Entry {
 	seen := make(map[string]bool, len(entries))
 	whole := make([]config.Entry, 0, len(entries))

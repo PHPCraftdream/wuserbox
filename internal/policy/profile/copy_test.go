@@ -119,13 +119,18 @@ func TestCopyPlacesListedEntriesAtTheSameRelativeSpot(t *testing.T) {
 	}
 }
 
+// TestCopySkipsMissingEntriesWithoutError: a source that is not on this
+// machine is not an error, and nothing is copied for it. Its entry stays on
+// the record all the same -- a copy of it may already be sitting in the
+// sandbox's profile from before the source went, and the record is the only
+// thing that knows that copy is ours to take back.
 func TestCopySkipsMissingEntriesWithoutError(t *testing.T) {
 	home, dest := useProfile(t, []string{".claude", ".codex"})
 	write(t, filepath.Join(home, ".claude", "settings.json"), "{}")
 
 	copied := fill(t, dest)
-	if !reflect.DeepEqual(pathsOf(copied), []string{".claude"}) {
-		t.Errorf("reported %v, the missing entry should have been left out silently", copied)
+	if !reflect.DeepEqual(pathsOf(copied), []string{".claude", ".codex"}) {
+		t.Errorf("reported %v, want both entries -- the missing one stays on the record", copied)
 	}
 	if _, err := os.Stat(filepath.Join(dest, ".codex")); err == nil {
 		t.Error("a name that does not exist on this machine was copied anyway")
@@ -570,5 +575,38 @@ func TestCopyRefusesProfileEntriesRepeatedWithDifferentLimits(t *testing.T) {
 
 	if got := read(t, filepath.Join(dest, ".codex", "sessions", "mysession.txt")); got != "a real session" {
 		t.Errorf("the session the first entry's exclusion protected did not survive: %q", got)
+	}
+}
+
+// TestACopyWhoseSourceHasGoneStaysOnTheRecordToClear is the one path that
+// never reached the write-down-before-copying rule: copyEntries asks after
+// the source before it gets there, and a source that is not on this machine
+// was skipped without its entry ever being appended. A run that otherwise
+// succeeded then wrote a record without it, and the copy already sitting in
+// the sandbox's profile -- auth.json, say, with the source deleted since --
+// belonged to nobody: the next --no-ai reported success while the stale
+// credentials stayed inside the sandbox for good.
+func TestACopyWhoseSourceHasGoneStaysOnTheRecordToClear(t *testing.T) {
+	home, dest := useProfile(t, []string{".codex/auth.json"})
+	auth := filepath.Join(home, ".codex", "auth.json")
+	write(t, auth, `{"token":"real"}`)
+
+	copied := fill(t, dest)
+	if len(copied) != 1 {
+		t.Fatalf("nothing was copied in the first place, so this test proves nothing: %v", copied)
+	}
+	if err := os.Remove(auth); err != nil {
+		t.Fatal(err)
+	}
+
+	// The next run: the source is gone, everything else about the run
+	// succeeds, and the record it leaves behind is all a later --no-ai has.
+	copied = fill(t, dest)
+
+	if err := Clear(dest, copied); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, ".codex", "auth.json")); !os.IsNotExist(err) {
+		t.Error("the copy outlived its source and the record both, and nothing left will ever take it back")
 	}
 }
