@@ -115,7 +115,7 @@ func enableTestPrivilege(name string) error {
 		syscall.TOKEN_ADJUST_PRIVILEGES|syscall.TOKEN_QUERY, &token); err != nil {
 		return fmt.Errorf("opening the process token: %w", err)
 	}
-	defer token.Close()
+	defer func() { _ = token.Close() }()
 	var id reclaimLUID
 	if r, _, err := procReclaimLookupPrivilegeValue.Call(0, uintptr(unsafe.Pointer(w32.UTF16(name))),
 		uintptr(unsafe.Pointer(&id))); r == 0 {
@@ -215,6 +215,41 @@ func TestTakingAGrantBackCapsWhatTheOwnerHolds(t *testing.T) {
 	}
 
 	reclaimTree(t, root)
+}
+
+// TestTakingAGrantBackNarrowsAnUnexpectedExplicitGrant covers an object whose
+// own list contains a broad grant the sandbox wrote before revoke. The cap
+// must not be defeated by carrying that grant into the replacement list.
+func TestTakingAGrantBackNarrowsAnUnexpectedExplicitGrant(t *testing.T) {
+	root := t.TempDir()
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := filepath.Join(root, "probe.txt")
+	if err := os.WriteFile(probe, []byte("probe"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	normalizeOwner(t, probe, owner)
+	t.Cleanup(func() { reclaim(t, probe) })
+
+	// The sandbox owns the object and has explicitly opened it to Everyone.
+	// This is the shape a revoke must not preserve merely because the ACE is
+	// explicit and the object's list is protected.
+	setSDDL(t, probe, `D:P(A;;FA;;;`+owner+`)(A;;FA;;;`+sid.Everyone+`)`)
+	if !EveryoneWritable(probe) {
+		t.Fatal("the broad Everyone grant was not present before TakeBack")
+	}
+
+	if err := TakeBack(probe, owner, nil); err != nil {
+		t.Fatal(err)
+	}
+	if EveryoneWritable(probe) {
+		t.Fatal("TakeBack preserved an explicit Everyone changing grant")
+	}
+	if !holds(t, probe, "OWNER RIGHTS", "(RX)") {
+		t.Fatal("TakeBack did not leave the owner cap beside the narrowed grant")
+	}
 }
 
 // TestTakingAGrantBackSparesWhatTheRecordPins is the same revoke against a

@@ -20,6 +20,7 @@ import (
 	"strings"
 	"unsafe"
 
+	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
@@ -41,6 +42,22 @@ import (
 // because Isolate publishes it, and nothing publishes here.
 func TakeBack(root, account string, pinned []string) error {
 	if _, err := sid.Parse(account); err != nil {
+		return err
+	}
+	operator, err := sid.CurrentUser()
+	if err != nil {
+		return err
+	}
+	operatorSID, err := sid.Parse(operator)
+	if err != nil {
+		return err
+	}
+	systemSID, err := sid.Parse(sid.System)
+	if err != nil {
+		return err
+	}
+	administratorsSID, err := sid.Parse(sid.Administrators)
+	if err != nil {
 		return err
 	}
 	limited, err := sid.Parse(sid.OwnerRights)
@@ -77,7 +94,7 @@ func TakeBack(root, account string, pinned []string) error {
 			}
 			return nil
 		}
-		return takeBack(name, sandbox, limited, mark)
+		return takeBack(name, sandbox, limited, mark, operatorSID, systemSID, administratorsSID)
 	})
 }
 
@@ -86,7 +103,7 @@ func TakeBack(root, account string, pinned []string) error {
 // onto it, once, in the same update -- measured on the narrowing side, once
 // the cap has landed the owner can no longer edit the list at all, so a cap
 // that arrives late arrives never (owner.go).
-func takeBack(path string, sandbox []uintptr, limited, mark uintptr) error {
+func takeBack(path string, sandbox []uintptr, limited, mark, operator, system, administrators uintptr) error {
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
@@ -160,11 +177,17 @@ func takeBack(path string, sandbox []uintptr, limited, mark uintptr) error {
 		// One account's access comes off, and nobody else's: the rest of
 		// the list -- the hand-down of an earlier moment, the operator's
 		// entries among it -- is carried over, and the whole write keeps
-		// the list protected so it goes on hearing from nobody.
+		// the list protected so it goes on hearing from nobody. Explicit
+		// changing rights are retained only for identities the operator
+		// deliberately relies on; a sandbox can write an Everyone:Full
+		// Control entry before revoke, and that entry must not survive the
+		// cap merely because it is explicit.
 		var carried []explicitAccess
 		for _, one := range held {
 			if !one.inherited && !matchesSandboxIdentity(one.access.trustee.name, sandbox) {
-				carried = append(carried, one.access)
+				if access, keep := revokeCarry(one.access, operator, system, administrators); keep {
+					carried = append(carried, access)
+				}
 			}
 		}
 		return writeWhole(path, append(clear, carried...), nil, nil, limited, mark)
@@ -184,4 +207,31 @@ func takeBack(path string, sandbox []uintptr, limited, mark uintptr) error {
 	// list-less object the sandbox owns writes a whole list of its own
 	// because leaving the absence in force would leave it so.
 	return writeWhole(path, nil, nil, nil, limited, mark)
+}
+
+// revokeCarry decides which explicit permissions may survive a revoke on an
+// object owned by the sandbox. Operator recovery and the machine principals
+// are part of the product's ACL contract. A grant to another wuserbox group
+// is an independent sandbox grant, so it remains intact too. Every other
+// changing grant is narrowed to its non-changing rights; otherwise a sandbox
+// could pre-write Everyone:Full Control and keep changing the object after
+// its own account entry and owner rights had been removed.
+func revokeCarry(access explicitAccess, operator, system, administrators uintptr) (explicitAccess, bool) {
+	if access.mode != grantAccess || access.permissions&changing == 0 {
+		return access, true
+	}
+	if sameSID(access.trustee.name, operator) || sameSID(access.trustee.name, system) ||
+		sameSID(access.trustee.name, administrators) || sandboxGroup(access.trustee.name) {
+		return access, true
+	}
+	access.permissions &^= changing
+	return access, access.permissions != 0
+}
+
+// sandboxGroup recognizes only groups created by wuserbox. Resolving a SID
+// can fail for a stale or synthetic ACL entry; failing closed narrows that
+// entry rather than treating an unknown principal as trusted.
+func sandboxGroup(value uintptr) bool {
+	name, err := sid.Name(value)
+	return err == nil && group.IsSandbox(name)
 }
