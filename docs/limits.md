@@ -216,6 +216,14 @@ by what it holds is a boundary somebody will lean on where it does not.
   that scan. Before a refresh truncates an existing copied file, it enumerates
   all names for the file object and refuses if any name is outside the
   profile. Links whose names all remain inside the profile are allowed.
+  The check is point-in-time at each
+  handover and at profile initialization; it is not a filesystem watcher.
+  Any later operation that writes a profile or reapplies a grant must check
+  the destination again. `--allow-links` applies only to an explicit
+  directory handover and is not inherited by profile maintenance. UAC is
+  required to create or repair a sandbox, but it is not a permanent hard-link
+  guarantee for a process that already has write access to a directory and
+  access to a target file.
 * **A record that cannot be read is not a sandbox that never was.** What a
   sandbox holds is written in one file per sandbox, and the entries it names
   sit on directories all over the disk with nothing else pointing at them. A

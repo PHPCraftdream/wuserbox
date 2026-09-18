@@ -14,6 +14,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/facts"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/grants"
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
@@ -374,7 +375,17 @@ func ensureProfile(s *state.State, groupName string) error {
 	if err := acct.MakeProfile(s.Profile, account); err != nil {
 		return err
 	}
-	return acct.RegisterProfile(account, s.Profile)
+	if err := acct.RegisterProfile(account, s.Profile); err != nil {
+		return err
+	}
+	// The profile is later written by the operator during every run. Refuse a
+	// pre-existing hard link that gives one of those writes another name; this
+	// check is deliberately independent of --allow-links, which only applies
+	// to an explicit directory handover.
+	if err := acl.ValidateLinks(s.Profile, false); err != nil {
+		return fmt.Errorf("checking the sandbox profile for external hard links: %w", err)
+	}
+	return nil
 }
 
 // note says what is happening, unless the caller asked for quiet or for one

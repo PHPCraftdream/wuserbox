@@ -6,6 +6,7 @@ package acl
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"syscall"
 	"unsafe"
@@ -25,6 +26,46 @@ var (
 // prompts is, so that it survives wuserbox starting itself again with
 // administrator rights.
 const EnvAllowLinks = "WUSERBOX_ALLOW_LINKS"
+
+// ValidateLinks checks the complete tree for hard-link names outside root.
+// It is a point-in-time guard for privileged operations: callers that write
+// later must ask again, because the filesystem has no watcher here.
+// allow is explicit rather than read from EnvAllowLinks so profile-owned
+// files cannot inherit --allow-links meant for a directory handover.
+func ValidateLinks(root string, allow bool) error {
+	if allow {
+		return nil
+	}
+	info, err := os.Lstat(root)
+	if err != nil {
+		return fmt.Errorf("looking at %s: %w", root, err)
+	}
+	spelled, err := finalName(root)
+	if err != nil {
+		return fmt.Errorf("resolving %s before checking hard links: %w", root, err)
+	}
+	if err := insideOnly(spelled, root, info.IsDir()); err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return fmt.Errorf("looking through %s: %w", path, walkErr)
+		}
+		if path == root {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		return insideOnly(spelled, path, entry.IsDir())
+	})
+}
 
 // insideOnly refuses a file that answers to a name outside the tree being
 // handed over.

@@ -102,7 +102,7 @@ func TestAGrantRefusesAFileWithASecondNameOutside(t *testing.T) {
 	}
 }
 
-func TestAFileRootDoesNotContainAnExternalHardLinkName(t *testing.T) {
+func TestWithinFileRootRejectsAnExternalHardLink(t *testing.T) {
 	inside, outside := t.TempDir(), t.TempDir()
 	file := filepath.Join(inside, "settings.json")
 	link := filepath.Join(outside, "settings.json")
@@ -119,6 +119,54 @@ func TestAFileRootDoesNotContainAnExternalHardLinkName(t *testing.T) {
 	}
 	if got {
 		t.Fatal("a file root accepted an external hard-link name")
+	}
+}
+
+func TestValidateLinksRejectsAnExternalHardLinkForAFileRoot(t *testing.T) {
+	inside, outside := t.TempDir(), t.TempDir()
+	file := filepath.Join(inside, "settings.json")
+	link := filepath.Join(outside, "settings.json")
+	if err := os.WriteFile(file, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(file, link); err != nil {
+		t.Skipf("hard links unavailable on this volume: %v", err)
+	}
+	if err := ValidateLinks(file, false); err == nil {
+		t.Fatal("file-root validation accepted an external hard-link name")
+	}
+	if err := ValidateLinks(file, true); err != nil {
+		t.Fatalf("explicit allow-links did not bypass the file-root check: %v", err)
+	}
+}
+
+func TestValidateLinksAllowsHardLinksThatStayInsideATree(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "one")
+	second := filepath.Join(root, "two")
+	if err := os.WriteFile(first, []byte("shared"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(first, second); err != nil {
+		t.Skipf("hard links unavailable on this volume: %v", err)
+	}
+	if err := ValidateLinks(root, false); err != nil {
+		t.Fatalf("internal hard-link names were refused: %v", err)
+	}
+}
+
+func TestValidateLinksRejectsAnExternalHardLinkInATree(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	target := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(target, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "secret.txt")
+	if err := os.Link(target, link); err != nil {
+		t.Skipf("hard links unavailable on this volume: %v", err)
+	}
+	if err := ValidateLinks(root, false); err == nil {
+		t.Fatal("tree validation accepted a hard link whose other name is outside")
 	}
 }
 

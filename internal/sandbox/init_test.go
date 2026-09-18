@@ -23,12 +23,15 @@ import (
 // would have gone looking for a program called "init" instead of building the
 // sandbox.
 func TestArgsCarriesTheDashThatMarksACommand(t *testing.T) {
-	args := Options{Dir: `C:\project`, RW: []string{`C:\extra`}, NoAI: true}.Args()
+	args := Options{Dir: `C:\project`, RW: []string{`C:\extra`}, NoAI: true, AllowLinks: true}.Args()
 	if len(args) == 0 || args[0] != "--init" {
 		t.Fatalf("the command line starts with %q, want \"--init\"", args)
 	}
 	if !strings.Contains(strings.Join(args, " "), `--dir C:\project`) {
 		t.Errorf("the project directory is missing: %v", args)
+	}
+	if !strings.Contains(strings.Join(args, " "), `--allow-links`) {
+		t.Errorf("the link policy is missing from the elevated command line: %v", args)
 	}
 }
 
