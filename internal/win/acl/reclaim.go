@@ -237,15 +237,18 @@ func revokeCarry(access explicitAccess, operator, system, administrators uintptr
 	return access, access.permissions != 0
 }
 
-// carryRevokeEntries keeps the explicit, non-inherited part of an object's
-// own list while applying the revoke policy to every changing grant. changed
-// reports whether any entry was removed or narrowed, which is what invalidates
-// the already-capped fast path.
+// carryRevokeEntries keeps every entry that is not one of the sandbox's
+// identities while applying the revoke policy to every changing grant. An
+// inherited entry is included deliberately: the inherited branch writes a
+// whole, protected list, so dropping trusted inherited access there would
+// silently remove recovery and system rights. changed reports whether any
+// entry was removed or narrowed, which is what invalidates the already-capped
+// fast path.
 func carryRevokeEntries(held []heldEntry, sandbox []uintptr, operator, system, administrators uintptr) ([]explicitAccess, bool) {
 	var carried []explicitAccess
 	changed := false
 	for _, one := range held {
-		if one.inherited || matchesSandboxIdentity(one.access.trustee.name, sandbox) {
+		if matchesSandboxIdentity(one.access.trustee.name, sandbox) {
 			continue
 		}
 		access, keep := revokeCarry(one.access, operator, system, administrators)

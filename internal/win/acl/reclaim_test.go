@@ -267,7 +267,10 @@ func TestTakingAGrantBackNarrowsAnUnexpectedExplicitGrantBesideInheritedAccess(t
 		t.Fatal(err)
 	}
 	normalizeOwner(t, parent, owner)
-	setSDDL(t, parent, `D:P(A;OICI;0x1301BF;;;`+owner+`)`)
+	// SYSTEM is the trusted inherited recovery/read path. Everyone is an
+	// inherited broad grant as well as the explicit broad grant added below;
+	// both must be narrowed, while SYSTEM must survive the whole rewrite.
+	setSDDL(t, parent, `D:P(A;OICI;0x1301BF;;;`+owner+`)(A;OICI;0x1F01FF;;;SY)(A;OICI;0x1F01FF;;;`+sid.Everyone+`)`)
 
 	probe := filepath.Join(parent, "probe.txt")
 	if err := os.WriteFile(probe, []byte("probe"), 0o644); err != nil {
@@ -286,7 +289,10 @@ func TestTakingAGrantBackNarrowsAnUnexpectedExplicitGrantBesideInheritedAccess(t
 		t.Fatal(err)
 	}
 	if EveryoneWritable(probe) {
-		t.Fatal("TakeBack preserved an explicit Everyone changing grant beside inherited access")
+		t.Fatal("TakeBack preserved an inherited or explicit Everyone changing grant")
+	}
+	if !holds(t, probe, "SYSTEM", "(F)") {
+		t.Fatal("TakeBack dropped trusted inherited SYSTEM access while writing the cap")
 	}
 	if !holds(t, probe, "OWNER RIGHTS", "(RX)") {
 		t.Fatal("TakeBack did not cap the owner on an inherited object")

@@ -270,6 +270,9 @@ func TestRevokeCapsAnInheritedObjectWithAnExplicitBroadGrant(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("revoke cleanup removed %s from the control tree: %v", name, err)
 		}
+		if _, err := os.ReadFile(path); err != nil {
+			t.Fatalf("the operator lost read access inherited from the handed tree for %s: %v", name, err)
+		}
 	}
 
 	caller, err := sid.CurrentUser()
