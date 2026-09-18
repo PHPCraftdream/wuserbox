@@ -50,9 +50,7 @@ func Name(dir string) (string, string, error) {
 	// an existing sandbox's group, account and record instead of silently
 	// creating a second sandbox. Group comments are the durable mapping even
 	// when the project itself has since disappeared.
-	if existing, err := existingName(norm); err != nil {
-		return "", "", err
-	} else if existing != "" {
+	if existing, err := existingName(norm); err == nil && existing != "" {
 		name = existing
 	}
 	return name, norm, nil
