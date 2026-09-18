@@ -179,6 +179,98 @@ func TestTakingBackRepairsAnExtraOwnerRightsGrant(t *testing.T) {
 	rewriteRefused(t, probe, owner, "an extra OWNER RIGHTS grant left WRITE_DAC after TakeBack")
 }
 
+func TestAlreadyCappedRejectsAnUnexpectedTrustee(t *testing.T) {
+	owner, err := sid.Parse(sid.OwnerRights)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mark, err := sid.Parse(handDownMark)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handSID, err := sid.Parse(unusedAccount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	everyone, err := sid.Parse(sid.Everyone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hand := []explicitAccess{entry(handSID, AccessReadExecute, InheritObjects, grantAccess)}
+	base := []heldEntry{
+		{access: hand[0]},
+		{access: entry(owner, AccessReadExecute, InheritNone, grantAccess)},
+		{access: entry(mark, AccessReadExecute, InheritNone, grantAccess)},
+	}
+	if !alreadyCapped(base, hand, owner, mark) {
+		t.Fatal("the exact expected ACL was not accepted")
+	}
+	withExtra := append(append([]heldEntry(nil), base...), heldEntry{
+		access: entry(everyone, 0x1F01FF, InheritNone, grantAccess),
+	})
+	if alreadyCapped(withExtra, hand, owner, mark) {
+		t.Fatal("an unexpected broad trustee was accepted as an already-capped ACL")
+	}
+}
+
+// TestIsolateRepairsAnExtraTrusteeOnAnAlreadyCappedOwnedChild guards the
+// other fast-path hole: an object can carry every entry the sweep expects and
+// an unrelated broad grant. The next sweep must publish the narrowed list,
+// not accept that subset as finished.
+func TestIsolateRepairsAnExtraTrusteeOnAnAlreadyCappedOwnedChild(t *testing.T) {
+	root := t.TempDir()
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	handed := filepath.Join(root, "handed")
+	if err := os.Mkdir(handed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	normalizeOwner(t, handed, owner)
+
+	// These are the entries the hand-down below will carry. The parent is
+	// deliberately kept outside the already-capped children so cleanup still
+	// has an untouched directory to go through.
+	setSDDL(t, handed, `D:P(A;OICI;0x1301BF;;;`+owner+`)(A;OICI;0x1200A9;;;`+sid.Everyone+`)`)
+	control := filepath.Join(handed, "control")
+	extra := filepath.Join(handed, "extra")
+	for _, path := range []string{control, extra} {
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		normalizeOwner(t, path, owner)
+	}
+	t.Cleanup(func() {
+		reclaim(t, extra)
+		reclaim(t, control)
+		reclaim(t, handed)
+	})
+
+	// Both children already look capped. Only extra differs: Everyone has a
+	// second, broad ACE that the old subset check ignored.
+	base := `(A;OICI;0x1200A9;;;` + sid.Everyone + `)(A;OICI;0x1200A9;;;` + owner +
+		`)(A;;0x1200A9;;;S-1-3-4)(A;;0x1200A9;;;S-1-0-0)`
+	setSDDL(t, control, `D:P`+base)
+	setSDDL(t, extra, `D:P`+base+`(A;;0x1F01FF;;;`+sid.Everyone+`)`)
+
+	entries := []ACE{
+		{Access: AccessReadExecute, Inheritance: InheritObjects | InheritContainers},
+		{Access: 0x40, Inheritance: InheritNone}, // the operator's cleanup door
+	}
+	if err := Isolate(handed, owner, entries, InheritObjects|InheritContainers, nil); err != nil {
+		t.Fatal(err)
+	}
+	if EveryoneWritable(extra) {
+		t.Fatal("the extra Everyone grant survived Isolate's already-capped fast path")
+	}
+	if EveryoneWritable(control) {
+		t.Fatal("the control child is writable by Everyone")
+	}
+	rewriteRefused(t, extra, owner,
+		"the owner cap must block rewriting the child after the broad grant is removed")
+}
+
 // TestASweepCapsWhatTheSandboxOwnsInsideTheTree is the same hole one level
 // down, where a production run actually meets it: the file was created inside
 // the tree while the grant was writable, holds nothing of its own -- the

@@ -324,7 +324,7 @@ func capObject(path string, held []heldEntry, narrowed, handback []explicitAcces
 	if hearsFromAbove(held) {
 		return writeWhole(path, narrowed, handback, hand, owner, mark)
 	}
-	if alreadyCapped(held, hand, owner) {
+	if alreadyCapped(held, hand, owner, mark) {
 		return nil
 	}
 	return writeWhole(path, nil, nil, hand, owner, mark)
@@ -343,14 +343,38 @@ func hearsFromAbove(held []heldEntry) bool {
 	return false
 }
 
-// alreadyCapped reports whether the object holds the current hand-down and
-// the cap already, entry for entry, so writing it again would change nothing.
-func alreadyCapped(held []heldEntry, hand []explicitAccess, owner uintptr) bool {
+// alreadyCapped reports whether the object holds exactly the current
+// hand-down and cap, apart from the optional mark. A subset check is unsafe:
+// an object can carry every expected entry and an unrelated broad grant too.
+// Leaving that grant in place lets a later access check go around the cap.
+func alreadyCapped(held []heldEntry, hand []explicitAccess, owner, mark uintptr) bool {
 	if !capPresent(held, owner) {
 		return false
 	}
 	for _, want := range hand {
 		if !holdsEntry(held, want) {
+			return false
+		}
+	}
+	// The mark is deliberately optional for compatibility with objects made
+	// before it was introduced. Every other entry must still be one the next
+	// whole write would intentionally retain.
+	allowed := append([]explicitAccess(nil), hand...)
+	for _, want := range ownerLimit(owner) {
+		if want.mode != setAccess {
+			allowed = append(allowed, want)
+		}
+	}
+	allowed = append(allowed, markFor(mark))
+	for _, one := range held {
+		matched := false
+		for _, want := range allowed {
+			if holdsEntry([]heldEntry{one}, want) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			return false
 		}
 	}
