@@ -34,9 +34,9 @@ type State struct {
 	NoAI bool `json:"no_ai,omitempty"`
 	// Account is the local user account made for this sandbox: a member of
 	// nothing but Group, BUILTIN\Users and group.ReadGroup. Kept here rather
-	// than recomputed from Group on every use, even though account.NameFor
-	// is a pure function of it, the same reason Group is kept rather than
-	// recomputed from Dir.
+	// than recomputed from Group on every use because older sandboxes carry a
+	// shorter legacy name and must keep it through migration, the same reason
+	// Group is kept rather than recomputed from Dir.
 	Account string `json:"account,omitempty"`
 	// Secret is Account's password, sealed with account.Protect and stored
 	// as base64. It has to be kept, not only created: CreateProcessWithLogonW
