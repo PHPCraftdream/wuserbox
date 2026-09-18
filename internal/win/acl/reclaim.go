@@ -149,20 +149,14 @@ func takeBack(path string, sandbox []uintptr, limited, mark, operator, system, a
 	}
 
 	if hearsFromAbove(held) {
-		// The list still hears from the directory above, so the cap goes in
-		// as a change rather than as a whole list, and the object keeps
-		// hearing: whatever the tree stops handing down goes with the
-		// rewrite above, and a later sweep that arrives with a grant in
-		// hand writes the list whole.
-		var update []explicitAccess
-		update = append(update, clear...)
-		if capPresent(held, limited) {
-			if len(update) == 0 {
-				return nil
-			}
-			return apply(path, update, false)
-		}
-		return apply(path, append(update, ownerLimit(limited)...), false)
+		// The list still hears from the directory above, but this object is
+		// owned by the sandbox. Writing it whole is the same rule as the
+		// narrowing sweep: remove the sandbox identities, cap ownership, and
+		// narrow every unexpected changing grant before a new restricted
+		// process can open the object. Keeping the old incremental update here
+		// left an explicit Everyone:Full Control beside the inherited grant.
+		carried, _ := carryRevokeEntries(held, sandbox, operator, system, administrators)
+		return writeWhole(path, carried, nil, nil, limited, mark)
 	}
 
 	// The object's list is its own: written whole by an earlier sweep, whose

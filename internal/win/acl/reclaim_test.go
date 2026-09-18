@@ -252,6 +252,47 @@ func TestTakingAGrantBackNarrowsAnUnexpectedExplicitGrant(t *testing.T) {
 	}
 }
 
+// TestTakingAGrantBackNarrowsAnUnexpectedExplicitGrantBesideInheritedAccess
+// covers the other TakeBack branch. A file made under a writable directory
+// has an inherited owner grant; an explicit broad grant beside it must still
+// be narrowed when the file is capped.
+func TestTakingAGrantBackNarrowsAnUnexpectedExplicitGrantBesideInheritedAccess(t *testing.T) {
+	root := t.TempDir()
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(root, "parent")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	normalizeOwner(t, parent, owner)
+	setSDDL(t, parent, `D:P(A;OICI;0x1301BF;;;`+owner+`)`)
+
+	probe := filepath.Join(parent, "probe.txt")
+	if err := os.WriteFile(probe, []byte("probe"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	normalizeOwner(t, probe, owner)
+	t.Cleanup(func() { reclaim(t, probe) })
+
+	if out, err := icacls(t, probe, "/grant", "*"+sid.Everyone+":(F)"); err != nil {
+		t.Fatalf("adding the broad control grant: %v\n%s", err, out)
+	}
+	if !EveryoneWritable(probe) {
+		t.Fatal("the broad Everyone grant was not present before TakeBack")
+	}
+	if err := TakeBack(probe, owner, nil); err != nil {
+		t.Fatal(err)
+	}
+	if EveryoneWritable(probe) {
+		t.Fatal("TakeBack preserved an explicit Everyone changing grant beside inherited access")
+	}
+	if !holds(t, probe, "OWNER RIGHTS", "(RX)") {
+		t.Fatal("TakeBack did not cap the owner on an inherited object")
+	}
+}
+
 // TestTakingBackRepairsACappedObjectWithAnUnexpectedExplicitGrant covers the
 // already-capped fast path. OWNER RIGHTS:RX is not sufficient evidence when
 // an old or externally written broad ACE remains beside it.

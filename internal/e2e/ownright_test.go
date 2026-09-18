@@ -193,6 +193,99 @@ func TestWhatTheSandboxOwnsStaysLockedAfterTheGrantIsGone(t *testing.T) {
 	}
 }
 
+// TestRevokeCapsAnInheritedObjectWithAnExplicitBroadGrant measures the
+// inherited branch of TakeBack with a fresh restricted process. A file made
+// inside the grant keeps the grant as inherited access; while that grant is
+// writable the sandbox can add an explicit Everyone grant beside it. Revoke
+// must narrow both, while a sibling without the extra grant is the control.
+func TestRevokeCapsAnInheritedObjectWithAnExplicitBroadGrant(t *testing.T) {
+	requireAdministrator(t)
+	root, err := paths.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	openToEveryone(t, root)
+	work := filepath.Join(root, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	box := newRealBox(t, firstSandbox, work)
+	box.hand(t, work, grant.RW)
+	if !box.tries(t, `cmd.exe /c mkdir own`, work) {
+		t.Fatal("the sandbox could not make its own directory inside a writable grant")
+	}
+	broad := filepath.Join(work, "own", "broad.txt")
+	control := filepath.Join(work, "own", "control.txt")
+	for _, path := range []string{broad, control} {
+		name := filepath.Base(path)
+		if !box.tries(t, `cmd.exe /c echo original> "own\`+name+`"`, work) {
+			t.Fatalf("the sandbox could not create %s", name)
+		}
+	}
+
+	// The extra grant is written by the sandbox itself, alongside the
+	// inherited grant. The control has the inherited grant only.
+	expand := `icacls "` + broad + `" /grant *` + sid.Everyone + `:(F)`
+	if !box.tries(t, expand, work) {
+		t.Fatal("the sandbox could not add the explicit Everyone grant")
+	}
+	if !acl.EveryoneWritable(broad) {
+		t.Fatal("the explicit Everyone grant was not writable before revoke")
+	}
+	if acl.EveryoneWritable(control) {
+		t.Fatal("the control unexpectedly had a broad explicit grant")
+	}
+	aclText, err := exec.Command("icacls", broad).CombinedOutput()
+	if err != nil {
+		t.Fatalf("icacls %s: %v\n%s", broad, err, aclText)
+	}
+	if !strings.Contains(string(aclText), "(I)") {
+		t.Fatalf("the broad probe has no inherited ACE; the inherited revoke branch was not exercised:\n%s", aclText)
+	}
+
+	// Both files are writable before revoke. Each later attempt runs through a
+	// new logon and therefore cannot succeed through an old open handle.
+	for _, name := range []string{"broad.txt", "control.txt"} {
+		if !box.tries(t, `cmd.exe /c echo before> "own\`+name+`"`, work) {
+			t.Fatalf("the sandbox could not rewrite %s before revoke", name)
+		}
+	}
+	if err := grant.Revoke(box.sid, work, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := grant.Prune(box.sid, work, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{broad, control} {
+		name := filepath.Base(path)
+		if box.tries(t, `cmd.exe /c echo after> "own\`+name+`"`, work) {
+			t.Fatalf("a fresh restricted process rewrote %s after revoke", name)
+		}
+		if box.tries(t, `icacls "`+path+`" /grant *`+box.sid+`:(F)`, work) {
+			t.Fatalf("a fresh restricted process changed the DACL of %s after revoke", name)
+		}
+		box.tries(t, `cmd.exe /c del /q "own\`+name+`"`, work)
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("revoke cleanup removed %s from the control tree: %v", name, err)
+		}
+	}
+
+	caller, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{broad, control} {
+		if out, err := exec.Command("icacls", path, "/grant", "*"+caller+":(F)").CombinedOutput(); err != nil {
+			t.Fatalf("the operator could not recover %s after revoke: %v\n%s", path, err, out)
+		}
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("the operator could not remove %s after recovery: %v", path, err)
+		}
+	}
+}
+
 // TestADirectRevokeCapsAFileTheSandboxOwnsWithNoNarrowingFirst is the branch
 // the review found missing: --revoke on its own, with no --ro before it. A
 // narrowing writes the cap through the sweep on its way in; a direct revoke
