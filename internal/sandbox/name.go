@@ -70,7 +70,22 @@ func projectPathsMatch(first, second string) bool {
 	if same, err := pathid.Same(first, second); err == nil {
 		return same
 	}
-	return asciiFold(filepath.Clean(first)) == asciiFold(filepath.Clean(second))
+	if asciiFold(filepath.Clean(first)) == asciiFold(filepath.Clean(second)) {
+		return true
+	}
+	// A removed target can lose its canonical spelling while its parent still
+	// exists. Match that parent by filesystem identity and keep the final
+	// component separate, so short/long aliases join but K and K do not.
+	left, err := pathid.Canonical(filepath.Dir(first))
+	if err != nil {
+		return false
+	}
+	right, err := pathid.Canonical(filepath.Dir(second))
+	if err != nil {
+		return false
+	}
+	return asciiFold(left) == asciiFold(right) &&
+		asciiFold(filepath.Base(first)) == asciiFold(filepath.Base(second))
 }
 
 func legacyCandidates(norm, original string) []string {
