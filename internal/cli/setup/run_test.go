@@ -1,6 +1,6 @@
 // Tests for what a run writes into the record of what it copied: how the
-// last run's list and this run's fold into one record, and which entry
-// survives the fold when both name the same path.
+// last run's list and this run's copy join, and which entry survives when
+// both name the same place.
 
 package setup
 
@@ -16,8 +16,7 @@ import (
 // agent had been copied whole, so the record held it bare. The rules file
 // then gained exclude: [sessions/**], a later entry's copy failed, and the
 // record went back to the union of the two lists -- with the bare entry
-// first, and dedupeByPath keeping the first entry it sees for a path. What
-// was written back carried no exclusion at all, and the next --no-ai run,
+// first, and the record kept no exclusion. The next --no-ai run,
 // which clears from the record without reading the rules file, deleted the
 // sessions the exclusion had just been written to protect.
 //
@@ -33,7 +32,7 @@ func TestAPartialCopyRecordsTheLimitsNowInForce(t *testing.T) {
 	previously := []config.Entry{{Path: "agent"}, {Path: "still-listed"}}
 	copied := []config.Entry{inForce}
 
-	record := union(previously, copied, true)
+	record := union(t.TempDir(), previously, copied, true)
 
 	if len(record) != 2 {
 		t.Fatalf("the record holds %v, want one entry for each path either list mentions", record)
@@ -60,7 +59,7 @@ func TestAPartialCopyRecordsTheLimitsNowInForce(t *testing.T) {
 // there.
 func TestASuccessfulCopyRecordsExactlyWhatWasCopied(t *testing.T) {
 	copied := []config.Entry{{Path: "agent"}}
-	record := union([]config.Entry{{Path: "taken-back-already"}}, copied, false)
+	record := union(t.TempDir(), []config.Entry{{Path: "taken-back-already"}}, copied, false)
 	if len(record) != 1 || record[0].Path != "agent" {
 		t.Errorf("a finished copy recorded %v, want exactly what was copied", record)
 	}
@@ -69,15 +68,14 @@ func TestASuccessfulCopyRecordsExactlyWhatWasCopied(t *testing.T) {
 // TestAnEntryNamedByTwoSpellingsIsRecordedOnce is the record's own guard
 // against the split that made forget orphan a copy: the rules file respelled
 // an entry between runs, so the record and this run's copy name one place by
-// two spellings, and a fold that follows the spelling writes both -- the
-// next --no-ai would then clear the same place twice, the second time by
-// whichever entry's limits happened to be recorded last.
+// two spellings. The volume-aware record keeps only the current entry, so the
+// next --no-ai does not clear the same place twice with different limits.
 func TestAnEntryNamedByTwoSpellingsIsRecordedOnce(t *testing.T) {
 	inForce := config.Entry{Path: "./agent", Exclude: config.Masks([]string{"sessions/**"})}
 	previously := []config.Entry{{Path: "agent"}, {Path: "still-listed"}}
 	copied := []config.Entry{inForce}
 
-	record := union(previously, copied, true)
+	record := union(t.TempDir(), previously, copied, true)
 
 	if len(record) != 2 {
 		t.Fatalf("the record holds %v, want one entry for each place either list mentions", record)

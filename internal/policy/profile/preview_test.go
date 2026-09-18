@@ -300,3 +300,16 @@ func TestThePlanSeesADirectoryTakenWholeFromInsideAnother(t *testing.T) {
 		t.Errorf("the plan said Files: %d, Skipped: %d; the run did Files: %d, Skipped: %d", plan.Files, plan.Skipped, copied, skipped)
 	}
 }
+
+func TestThePlanRefusesAnExistingNonDirectoryProfile(t *testing.T) {
+	home, dest := useProfile(t, []string{"agent"})
+	write(t, filepath.Join(home, "agent", "auth.json"), `{"token":"real"}`)
+	if err := os.RemoveAll(dest); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dest, "this is not a profile directory")
+
+	if _, _, err := Plan(dest, nil); err == nil {
+		t.Fatal("the plan described a non-directory destination as a usable profile")
+	}
+}

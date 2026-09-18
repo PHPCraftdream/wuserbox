@@ -376,3 +376,37 @@ func TestAnEntryRespelledOnlyInCapitalsKeepsItsCopyWhenTheSourceHasGone(t *testi
 		t.Errorf("the record came back as %v, and nothing left vouches for the copy that survived", copied)
 	}
 }
+
+func TestDedupeEntriesUsesTheVolumeForDistinctUnicodeNames(t *testing.T) {
+	dotless := "\u0131"
+	dest := t.TempDir()
+	if fileSystemJoins(t, "i", dotless) {
+		t.Skipf("this volume opens i and %s onto one place", dotless)
+	}
+	if err := os.MkdirAll(filepath.Join(dest, "i"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dest, dotless), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got := DedupeEntries(dest, []config.Entry{{Path: "i"}, {Path: dotless}})
+	if len(got) != 2 {
+		t.Fatalf("record merged distinct volume paths: %v", pathsOf(got))
+	}
+}
+
+func TestDedupeEntriesMergesCapitalRespellingsOnTheVolume(t *testing.T) {
+	if !fileSystemJoins(t, "i", "I") {
+		t.Skip("this volume keeps i and I apart")
+	}
+	dest := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dest, "i"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got := DedupeEntries(dest, []config.Entry{{Path: "i"}, {Path: "I"}})
+	if len(got) != 1 {
+		t.Fatalf("record kept two spellings of one volume path: %v", pathsOf(got))
+	}
+}

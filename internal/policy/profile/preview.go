@@ -88,9 +88,10 @@ func openForPreview(dest string) (*os.Root, error) {
 		return nil, err
 	}
 	// Something there that is not a directory: the real fill will refuse it
-	// loudly, and a preview has nothing useful to add before it does.
+	// loudly, and a preview must report the same refusal rather than describe
+	// a run against a destination the real copier cannot open.
 	if !info.IsDir() {
-		return nil, nil
+		return nil, fmt.Errorf("the profile to fill cannot be opened: %s is not a directory", dest)
 	}
 	return os.OpenRoot(dest)
 }

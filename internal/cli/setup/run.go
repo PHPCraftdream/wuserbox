@@ -157,7 +157,7 @@ func fillProfile(s *state.State) error {
 	// safe reading: naming something already gone costs one attempt that
 	// finds nothing, while forgetting something still there leaves it in the
 	// sandbox's profile for good.
-	if err := facts.RecordCopied(s.Group, union(previously, copied, copyErr != nil)); err != nil {
+	if err := facts.RecordCopied(s.Group, union(s.Profile, previously, copied, copyErr != nil)); err != nil {
 		return err
 	}
 	// Recorded on a partial copy too, for the same reason the entry list
@@ -173,18 +173,11 @@ func fillProfile(s *state.State) error {
 
 // union is what to record: exactly what the current list names where the
 // copy finished, and everything either list mentions where it did not.
-// Either way it is deduped by path, asking profile.FoldedEntryPath for the
-// key. The record has to hold one entry per place, and a join is the right
-// strength for that and only that: its wrong direction here drops a record
-// line -- the copy keeps sitting in the profile, and the next run writes
-// the line back for as long as the list still names it -- while the
-// tighter alternative leaves one place named twice and forget clearing it
-// twice, the second time by whichever entry's limits were recorded last,
-// which is how a --no-ai once deleted the sessions an exclusion had been
-// written to protect. forget and copyEntries no longer match by this key
-// -- both decide deletions, and both ask the volume instead, in the
-// profile package's fold.go -- so what the fold decides here is the
-// record's shape alone, never a deletion.
+// Either way it is deduped by place. The profile package compares existing
+// destinations with os.SameFile through an os.Root, and only falls back to
+// an exact cleaned spelling when a place is absent. A Unicode fold can join
+// two distinct names on a volume, so it is not safe for this record: losing
+// one line leaves its copy without an owner for --no-ai to take back.
 //
 // On a partial copy, where both lists name a path, the entry from copied
 // wins, which is why it goes in first: it carries the limits now in force,
@@ -196,33 +189,11 @@ func fillProfile(s *state.State) error {
 // deleted the sessions the exclusion had been written to protect. Both
 // directions of the fixed choice are safe: a newer exclusion spares more
 // when the entry is one day taken back, and a tighter depth clears less.
-func union(previously, copied []config.Entry, partial bool) []config.Entry {
+func union(dest string, previously, copied []config.Entry, partial bool) []config.Entry {
 	if !partial {
-		return dedupeByPath(copied)
+		return profile.DedupeEntries(dest, copied)
 	}
-	return dedupeByPath(append(append([]config.Entry{}, copied...), previously...))
-}
-
-// dedupeByPath keeps the first of the entries that share a path, so the
-// record holds one entry per place in the profile -- and so whoever folds
-// two lists decides which entry survives by the order it hands them in.
-// The key is FoldedEntryPath, the joining fold, on purpose: one place must
-// not be written down twice under the two spellings a case-insensitive
-// volume calls equal, and the join's own known-wrong pair -- U+0131 folded
-// into i -- costs a dropped line for a genuinely second place on the rare
-// partial-copy run that carries both, never a deletion.
-func dedupeByPath(entries []config.Entry) []config.Entry {
-	seen := make(map[string]bool, len(entries))
-	whole := make([]config.Entry, 0, len(entries))
-	for _, entry := range entries {
-		key := profile.FoldedEntryPath(entry.Path)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		whole = append(whole, entry)
-	}
-	return whole
+	return profile.DedupeEntries(dest, append(append([]config.Entry{}, copied...), previously...))
 }
 
 // onlyRunning refuses the options that describe what a sandbox is, rather than
