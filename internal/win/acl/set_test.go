@@ -67,9 +67,28 @@ func setSDDL(t *testing.T, path, text string) {
 
 func normalizeOwner(t *testing.T, path, owner string) {
 	t.Helper()
+	if alreadyOwned(path, owner) {
+		return
+	}
 	if out, err := exec.Command("icacls", path, "/setowner", "*"+owner).CombinedOutput(); err != nil {
 		t.Skipf("owner-specific fixture cannot be normalized on this machine: %s: %v\n%s", path, err, out)
 	}
+}
+
+func alreadyOwned(path, owner string) bool {
+	expected, err := sid.Parse(owner)
+	if err != nil {
+		return false
+	}
+	var dacl *aclHeader
+	var descriptor uintptr
+	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
+		seFileObject, daclInfo|ownerInfo, 0, 0, uintptr(unsafe.Pointer(&dacl)), 0,
+		uintptr(unsafe.Pointer(&descriptor))); r != 0 {
+		return false
+	}
+	defer w32.Free(descriptor)
+	return sameSID(ownerOf(descriptor), expected)
 }
 
 func TestEveryoneWritableSeesAPermission(t *testing.T) {
