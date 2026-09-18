@@ -170,6 +170,12 @@ func TestHomeTopHoldsWhereTheMachineHandsOutNothing(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Keep the machine's read-only interactive entry explicit. HomeTop needs
+	// the sandbox's own create entry for the deed, while the token still needs
+	// the ordinary read/control side of the directory check.
+	if err := acl.Set(top, sid.Authenticated, []acl.ACE{{Access: acl.AccessReadExecute, Inheritance: acl.InheritObjects | acl.InheritContainers}}); err != nil {
+		t.Fatal(err)
+	}
 
 	target := filepath.Join(top, "new.txt")
 	answer, err := access.Check(access.Sandbox{Group: box.state.SID}, target, access.Create)
@@ -177,6 +183,9 @@ func TestHomeTopHoldsWhereTheMachineHandsOutNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustSucceed(t, box.state, writeFileCommand(target))
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("the sandbox command returned success but did not create %s: %v", target, err)
+	}
 	if !answer.Allowed {
 		t.Errorf("the sandbox created the file, yet the check refused it: %s", answer.Reason)
 	}
