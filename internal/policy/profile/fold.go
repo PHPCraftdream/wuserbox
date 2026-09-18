@@ -192,6 +192,7 @@ func canonicalEntryPath(root *os.Root, path string) (string, bool) {
 			if err != nil {
 				return "", false
 			}
+			matches := 0
 			for _, child := range children {
 				childFile, err := root.Open(filepath.Join(current, child.Name()))
 				if err != nil {
@@ -201,8 +202,14 @@ func canonicalEntryPath(root *os.Root, path string) (string, bool) {
 				_ = childFile.Close()
 				if childErr == nil && os.SameFile(openedInfo, childInfo) {
 					chosen = child.Name()
-					break
+					matches++
 				}
+			}
+			// A file identity is not a directory entry identity: hard links
+			// can make several names match the opened object. There is no safe
+			// way to choose one from that set, so refuse to merge the spelling.
+			if matches != 1 {
+				return "", false
 			}
 		}
 		if chosen == "" {

@@ -426,3 +426,41 @@ func TestDedupeEntriesKeepsDistinctHardLinkNames(t *testing.T) {
 		t.Fatalf("record merged two names of one hard-linked file: %v", pathsOf(got))
 	}
 }
+
+// TestHardLinkNamesStaySeparateWhenOneIsRespelt checks the ambiguous lookup
+// path. An alternate spelling opens the same inode as both hard-link names,
+// so file identity cannot decide which directory entry was named. Dedupe
+// must keep both records, and Clear must then remove both names explicitly.
+func TestHardLinkNamesStaySeparateWhenOneIsRespelt(t *testing.T) {
+	dest := t.TempDir()
+	first := filepath.Join(dest, "first")
+	second := filepath.Join(dest, "second")
+	if err := os.WriteFile(first, []byte("same inode"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(first, second); err != nil {
+		t.Skipf("hard links unavailable on this volume: %v", err)
+	}
+
+	root, err := os.OpenRoot(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if recordVouches(root, []string{"first"}, "FIRST") {
+		t.Fatal("an ambiguous alternate spelling was treated as proof of one hard-link entry")
+	}
+
+	entries := DedupeEntries(dest, []config.Entry{{Path: "FIRST"}, {Path: "SECOND"}})
+	if len(entries) != 2 {
+		t.Fatalf("dedupe merged ambiguous hard-link names: %v", pathsOf(entries))
+	}
+	if err := Clear(dest, entries); err != nil {
+		t.Fatal(err)
+	}
+	if left, err := os.ReadDir(dest); err != nil {
+		t.Fatal(err)
+	} else if len(left) != 0 {
+		t.Errorf("clear left hard-link directory entries behind: %v", left)
+	}
+}

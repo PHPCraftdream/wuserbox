@@ -79,7 +79,7 @@ scoops:
       token: "{{ .Env.BUCKET_TOKEN }}"
     directory: bucket
     homepage: https://github.com/PHPCraftdream/wuserbox
-    description: Run a command that reads everything you can read, but writes only where you allow
+    description: Run commands on Windows under a separate account with writes limited to permitted directories
     license: MIT OR Apache-2.0
     commit_author:
       name: goreleaser

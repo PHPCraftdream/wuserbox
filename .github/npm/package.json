@@ -1,7 +1,7 @@
 {
   "name": "wuserbox",
   "version": "0.0.0",
-  "description": "Run a command on Windows that reads everything you can read, but writes only where you allow",
+  "description": "Run commands on Windows under a separate account with writes limited to permitted directories",
   "keywords": [
     "windows",
     "sandbox",
