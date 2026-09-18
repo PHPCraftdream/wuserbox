@@ -157,7 +157,7 @@ func TestWithoutTheRecordASweepReachesWhatTheSandboxSealed(t *testing.T) {
 	// fixture tree exists. The sandbox identity is the current account in this
 	// synthetic test, so an operator ACE would be mistaken for a permission
 	// the cap must preserve.
-	setSDDL(t, handed, `D:P(A;OICI;0x1301BF;;;`+unusedAccount+`)`)
+	setSDDL(t, handed, `D:P(A;OICI;0x40;;;`+owner+`)(A;OICI;0x1301BF;;;`+unusedAccount+`)`)
 	setSDDL(t, sealed, `D:P(A;OICI;FA;;;`+owner+`)`)
 	setSDDL(t, sealedFile, `D:P(A;;FA;;;`+owner+`)`)
 	t.Cleanup(func() { reclaim(t, kept); reclaim(t, sealed); reclaim(t, sealedFile); reclaim(t, handed) })
