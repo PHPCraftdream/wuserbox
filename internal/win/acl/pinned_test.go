@@ -121,7 +121,11 @@ func TestASealedObjectTheRecordHoldsIsLeftAlone(t *testing.T) {
 // them and what is inside them -- the walk descends into a capped directory
 // now, and finds kept there.
 func TestWithoutTheRecordASweepReachesWhatTheSandboxSealed(t *testing.T) {
-	root := t.TempDir()
+	root, err := os.MkdirTemp("", "wub-pinned-no-record-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	owner, err := sid.CurrentUser()
 	if err != nil {
 		t.Fatal(err)
