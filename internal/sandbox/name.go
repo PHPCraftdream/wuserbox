@@ -36,10 +36,7 @@ func Name(dir string) (string, string, error) {
 	// A disappeared project cannot be resolved to a filesystem entry. The
 	// legacy group name is still a durable handle for its existing sandbox,
 	// so check it before deriving a new identity key.
-	legacyCandidates := []string{legacyName(norm)}
-	if raw, err := filepath.Abs(filepath.Clean(strings.Trim(strings.TrimSpace(dir), `"'`))); err == nil {
-		legacyCandidates = append(legacyCandidates, legacyName(raw))
-	}
+	legacyCandidates := legacyCandidates(norm, dir)
 	for _, legacy := range legacyCandidates {
 		if _, exists, err := group.Comment(legacy); err != nil {
 			return "", "", err
@@ -58,6 +55,29 @@ func Name(dir string) (string, string, error) {
 		name = existing
 	}
 	return name, norm, nil
+}
+
+func legacyCandidates(norm, original string) []string {
+	var out []string
+	add := func(path string) {
+		name := legacyName(path)
+		for _, prior := range out {
+			if prior == name {
+				return
+			}
+		}
+		out = append(out, name)
+	}
+	add(norm)
+	raw, err := filepath.Abs(filepath.Clean(strings.Trim(strings.TrimSpace(original), `"'`)))
+	if err != nil {
+		return out
+	}
+	add(raw)
+	if parent, err := pathid.Canonical(filepath.Dir(raw)); err == nil {
+		add(filepath.Join(parent, filepath.Base(raw)))
+	}
+	return out
 }
 
 func nameForKey(norm, key string) string {
