@@ -23,6 +23,61 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
+func TestPinnedPathsKeepOnlyDescendantsOfTheCurrentRoot(t *testing.T) {
+	root := t.TempDir()
+	rootOnly, err := makePinnedPaths([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootOnly, err = rootOnly.relevant(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rootOnly.keys) != 0 || len(rootOnly.resolved) != 0 {
+		t.Fatalf("root-only keep-list was not removed before snapshot: keys=%d resolved=%d",
+			len(rootOnly.keys), len(rootOnly.resolved))
+	}
+
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	set, err := makePinnedPaths([]string{root, child, outside})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relevant, err := set.relevant(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(relevant.keys) != 1 {
+		t.Fatalf("relevant keep-list has %d entries, want only the descendant", len(relevant.keys))
+	}
+	if len(relevant.resolved) != 0 {
+		t.Fatal("filtering the keep-list performed a tree snapshot")
+	}
+	kept, err := relevant.contains(child)
+	if err != nil || !kept {
+		t.Fatalf("the real descendant was not retained: kept=%v err=%v", kept, err)
+	}
+	if kept, err := relevant.contains(root); err != nil || kept {
+		t.Fatalf("the current root was retained in the keep-list: kept=%v err=%v", kept, err)
+	}
+}
+
+func TestPinnedPathsFailClosedWhenRelevanceCannotBeResolved(t *testing.T) {
+	root := t.TempDir()
+	missing := filepath.Join(root, "missing")
+	set, err := makePinnedPaths([]string{missing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := set.relevant(root); err == nil {
+		t.Fatal("an unresolved pinned path was silently omitted")
+	}
+}
+
 // TestASealedObjectTheRecordHoldsIsLeftAlone replaces the old sealed-object
 // test, which pinned the opposite of this fix: that an object whose list is
 // its own is spared. The list can be the sandbox's own work, so what spares

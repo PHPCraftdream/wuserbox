@@ -211,6 +211,10 @@ func Isolate(path, account string, entries []ACE, reach uint32, pinned []string)
 	if err != nil {
 		return err
 	}
+	spared, err = spared.relevant(path)
+	if err != nil {
+		return err
+	}
 	if err := sweep(path, everyone, users, holder, limited, sandbox, hand, mark, spared); err != nil {
 		return err
 	}

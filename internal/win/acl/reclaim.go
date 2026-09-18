@@ -20,7 +20,6 @@ import (
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
-	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
@@ -76,17 +75,14 @@ func TakeBack(root, account string, pinned []string) error {
 	if err != nil {
 		return err
 	}
+	spared, err = spared.relevant(root)
+	if err != nil {
+		return err
+	}
 	if len(spared.keys) != 0 {
 		if err := spared.prepare(root); err != nil {
 			return err
 		}
-	}
-	if len(spared.keys) != 0 {
-		rootKey, err := pathid.Key(root)
-		if err != nil {
-			return fmt.Errorf("resolving revoke root %s: %w", root, err)
-		}
-		delete(spared.keys, rootKey)
 	}
 	return filepath.WalkDir(root, func(name string, entry fs.DirEntry, err error) error {
 		switch {

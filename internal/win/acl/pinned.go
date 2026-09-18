@@ -15,8 +15,14 @@ import (
 // a distinct object being spared by mistake.
 type pinnedPaths struct {
 	keys       map[string]struct{}
+	entries    []pinnedEntry
 	resolved   map[string]string
 	resolvedMu *sync.RWMutex
+}
+
+type pinnedEntry struct {
+	path string
+	key  string
 }
 
 func makePinnedPaths(paths []string) (pinnedPaths, error) {
@@ -31,8 +37,45 @@ func makePinnedPaths(paths []string) (pinnedPaths, error) {
 			return pinnedPaths{}, fmt.Errorf("resolving pinned path %s: %w", path, err)
 		}
 		set.keys[key] = struct{}{}
+		set.entries = append(set.entries, pinnedEntry{path: path, key: key})
 	}
 	return set, nil
+}
+
+// relevant keeps only record paths that are real descendants of root. The
+// root itself is published directly by Isolate and is excluded from sweep;
+// paths outside the current grant cannot be spared by its walk either. Both
+// decisions use filesystem identity, never lexical or Unicode path rules.
+// An identity lookup failure is returned: silently dropping an entry could
+// turn a keep-list into a different security decision.
+func (set pinnedPaths) relevant(root string) (pinnedPaths, error) {
+	out := pinnedPaths{
+		keys:       make(map[string]struct{}, len(set.entries)),
+		resolved:   make(map[string]string),
+		resolvedMu: &sync.RWMutex{},
+	}
+	for _, one := range set.entries {
+		inside, err := pathid.Within(root, one.path)
+		if err != nil {
+			return pinnedPaths{}, fmt.Errorf("checking pinned path %s against %s: %w", one.path, root, err)
+		}
+		if !inside {
+			continue
+		}
+		// Within in the reverse direction is true only for the same entry.
+		// For a file root this also rejects an external hard-link name, whose
+		// file identity is shared but whose directory entry is not inside root.
+		isRoot, err := pathid.Within(one.path, root)
+		if err != nil {
+			return pinnedPaths{}, fmt.Errorf("checking whether pinned path %s is the root %s: %w", one.path, root, err)
+		}
+		if isRoot {
+			continue
+		}
+		out.keys[one.key] = struct{}{}
+		out.entries = append(out.entries, one)
+	}
+	return out, nil
 }
 
 func (set pinnedPaths) contains(path string) (bool, error) {
