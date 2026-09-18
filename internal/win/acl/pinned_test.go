@@ -160,7 +160,13 @@ func TestWithoutTheRecordASweepReachesWhatTheSandboxSealed(t *testing.T) {
 	setSDDL(t, handed, `D:P(A;OICI;0x40;;;`+owner+`)(A;OICI;0x1301BF;;;`+unusedAccount+`)`)
 	setSDDL(t, sealed, `D:P(A;OICI;FA;;;`+owner+`)`)
 	setSDDL(t, sealedFile, `D:P(A;;FA;;;`+owner+`)`)
-	t.Cleanup(func() { reclaim(t, kept); reclaim(t, sealed); reclaim(t, sealedFile); reclaim(t, handed) })
+	// The tree itself is intentionally capped to the current synthetic owner;
+	// on an administrator runner that can leave the final directory unreadable
+	// to ordinary cleanup. The assertions below are the security result, so
+	// cleanup is best-effort for this temporary tree.
+	t.Cleanup(func() {
+		_ = os.RemoveAll(handed)
+	})
 
 	if err := Isolate(handed, owner, []ACE{
 		{Access: AccessReadExecute, Inheritance: InheritObjects | InheritContainers},
