@@ -15,6 +15,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/facts"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/grants"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
+	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
@@ -74,6 +75,24 @@ func Init(o Options) (*state.State, error) {
 
 // build does the work of Init with the sandbox's record already held.
 func build(name, dir string, o Options) (*state.State, error) {
+	s, err := state.Load(name)
+	if err != nil {
+		return nil, err
+	}
+	// The name is derived from the filesystem-resolved directory entry. Do not
+	// let a record from a stale or colliding identity steer this init into a
+	// different directory: verify the entry before changing the group comment,
+	// account, or any permissions.
+	if s != nil && s.Dir != "" {
+		same, err := pathid.Same(s.Dir, dir)
+		if err != nil {
+			return nil, fmt.Errorf("cannot verify that sandbox %s belongs to %s: %w", name, dir, err)
+		}
+		if !same {
+			return nil, fmt.Errorf("sandbox %s belongs to %s, not %s", name, s.Dir, dir)
+		}
+		s.Dir = dir
+	}
 	if comment, exists, err := group.Comment(name); err != nil {
 		return nil, err
 	} else if !exists {
@@ -86,10 +105,6 @@ func build(name, dir string, o Options) (*state.State, error) {
 	}
 
 	account, err := sid.Lookup(name)
-	if err != nil {
-		return nil, err
-	}
-	s, err := state.Load(name)
 	if err != nil {
 		return nil, err
 	}

@@ -102,6 +102,55 @@ func TestAGrantRefusesAFileWithASecondNameOutside(t *testing.T) {
 	}
 }
 
+// TestAGrantRefusesAHardLinkAcrossFilesystemDistinctUnicodeDirectories is
+// the same boundary with names that Go's Unicode fold incorrectly equates.
+// The volume is the authority: if it keeps K and the Kelvin sign distinct,
+// the outside hard link must still stop the grant.
+func TestAGrantRefusesAHardLinkAcrossFilesystemDistinctUnicodeDirectories(t *testing.T) {
+	parent := t.TempDir()
+	inside := filepath.Join(parent, "K")
+	outside := filepath.Join(parent, "\u212A")
+	if err := os.Mkdir(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Skipf("this volume does not distinguish K and Kelvin sign: %v", err)
+	}
+	insideInfo, err := os.Stat(inside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outsideInfo, err := os.Stat(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(insideInfo, outsideInfo) {
+		t.Skip("the volume reports K and Kelvin sign as the same directory")
+	}
+
+	target := filepath.Join(outside, "notes.txt")
+	if err := os.WriteFile(target, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(inside, "link.txt")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/H", link, target).CombinedOutput(); err != nil {
+		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
+	}
+
+	err = Isolate(inside, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers, nil)
+	if err == nil {
+		t.Fatal("handed over a tree whose hard link exits through a filesystem-distinct Unicode name")
+	}
+	if !strings.Contains(err.Error(), "--allow-links") {
+		t.Errorf("the refusal does not say how to go ahead anyway: %v", err)
+	}
+	if holds(t, target, unusedAccount, "") {
+		t.Error("the outside file was reached despite the Unicode boundary refusal")
+	}
+}
+
 // TestAllowLinksHandsTheTreeOverAnyway is the other half: the refusal above is
 // a default and not a wall. Somebody who knows what the links in their tree
 // are -- a local git clone, a pnpm store -- says so and the grant goes ahead.

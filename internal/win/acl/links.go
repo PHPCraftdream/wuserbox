@@ -7,10 +7,10 @@ package acl
 import (
 	"fmt"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"unsafe"
 
+	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
@@ -18,7 +18,6 @@ var (
 	procFindFirstFileName = w32.Kernel32.NewProc("FindFirstFileNameW")
 	procFindNextFileName  = w32.Kernel32.NewProc("FindNextFileNameW")
 	procFindClose         = w32.Kernel32.NewProc("FindClose")
-	procGetFinalPathName  = w32.Kernel32.NewProc("GetFinalPathNameByHandleW")
 )
 
 // EnvAllowLinks hands the tree over even where a file in it answers to another
@@ -74,7 +73,11 @@ func insideOnly(root, path string, isDir bool) error {
 			path, names, err)
 	}
 	for _, other := range others {
-		if within(root, other) {
+		inside, err := within(root, other)
+		if err != nil {
+			return fmt.Errorf("checking whether %s is inside %s: %w", other, root, err)
+		}
+		if inside {
 			continue
 		}
 		return fmt.Errorf(
@@ -87,17 +90,8 @@ func insideOnly(root, path string, isDir bool) error {
 }
 
 // within reports whether path is root or lies under it.
-func within(root, path string) bool {
-	root = filepath.Clean(root)
-	path = filepath.Clean(path)
-	if strings.EqualFold(root, path) {
-		return true
-	}
-	prefix := root
-	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
-		prefix += string(filepath.Separator)
-	}
-	return strings.HasPrefix(strings.ToLower(path), strings.ToLower(prefix))
+func within(root, path string) (bool, error) {
+	return pathid.Within(root, path)
 }
 
 // finalName is the one spelling Windows itself uses for a path: long names
@@ -110,29 +104,7 @@ func within(root, path string) bool {
 // a file answers to come back as C:\Users\runneradmin\.... Everything compared
 // here goes through this first.
 func finalName(path string) (string, error) {
-	const readAttributes = 0x80
-	handle, err := syscall.CreateFile(w32.UTF16(path), readAttributes,
-		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE, nil,
-		syscall.OPEN_EXISTING, syscall.FILE_FLAG_BACKUP_SEMANTICS, 0)
-	if err != nil {
-		return "", fmt.Errorf("opening %s to spell it out: %w", path, err)
-	}
-	defer func() { _ = syscall.CloseHandle(handle) }()
-
-	const volumeNameDOS = 0x0
-	buffer := make([]uint16, syscall.MAX_LONG_PATH)
-	written, _, callErr := procGetFinalPathName.Call(uintptr(handle),
-		uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)), volumeNameDOS)
-	if written == 0 || int(written) >= len(buffer) {
-		return "", fmt.Errorf("spelling out %s: %w", path, callErr)
-	}
-	// Windows answers in its own extended form: \\?\C:\... for a local path,
-	// \\?\UNC\server\share\... for one on the network.
-	name := syscall.UTF16ToString(buffer[:written])
-	if rest, found := strings.CutPrefix(name, `\\?\UNC\`); found {
-		return `\\` + rest, nil
-	}
-	return strings.TrimPrefix(name, `\\?\`), nil
+	return pathid.Canonical(path)
 }
 
 // otherNames lists every name the file at path answers to, as full paths.

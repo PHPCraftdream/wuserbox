@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,6 +63,33 @@ func TestNameDiffersPerDirectory(t *testing.T) {
 	}
 	if first == second {
 		t.Errorf("two directories share the name %q", first)
+	}
+}
+
+// TestNameKeepsFilesystemDistinctUnicodeDirectoriesApart guards the boundary
+// between Go's Unicode fold and the naming table of the volume. NTFS volumes
+// used by CI distinguish these two directory entries even though
+// strings.EqualFold does not.
+func TestNameKeepsFilesystemDistinctUnicodeDirectoriesApart(t *testing.T) {
+	parent := t.TempDir()
+	latin := filepath.Join(parent, "K")
+	kelvin := filepath.Join(parent, "\u212A")
+	if err := os.Mkdir(latin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(kelvin, 0o755); err != nil {
+		t.Skipf("this volume does not distinguish K and Kelvin sign: %v", err)
+	}
+	first, _, err := Name(latin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := Name(kelvin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatalf("filesystem-distinct directories share sandbox identity %q", first)
 	}
 }
 

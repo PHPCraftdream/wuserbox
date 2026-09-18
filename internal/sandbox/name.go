@@ -10,6 +10,7 @@ import (
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
+	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
 )
 
 // Name maps a directory to its sandbox group name and returns the normalized
@@ -24,7 +25,15 @@ func Name(dir string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	digest := sha256.Sum256([]byte(strings.ToLower(norm)))
+	// A Go Unicode fold is not the filesystem's case table: NTFS can keep
+	// names such as K and the Kelvin sign apart. Existing paths therefore use
+	// the spelling resolved by Windows itself; a missing path uses the
+	// fail-safe ASCII-only fallback in pathid.Key.
+	key, err := pathid.Key(norm)
+	if err != nil {
+		return "", "", err
+	}
+	digest := sha256.Sum256([]byte(key))
 	name := fmt.Sprintf("%s%s-%s", group.Prefix, slug(filepath.Base(norm)), hex.EncodeToString(digest[:4]))
 	return name, norm, nil
 }
