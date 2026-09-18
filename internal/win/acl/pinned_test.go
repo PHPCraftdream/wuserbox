@@ -47,11 +47,6 @@ func TestASealedObjectTheRecordHoldsIsLeftAlone(t *testing.T) {
 	if err := os.Mkdir(handed, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Keep the operator's own Full Control out of the hand-down. The
-	// sandbox identity is the current account in this synthetic test, so an
-	// operator ACE would be mistaken for a permission the cap must preserve
-	// and would make the fixture environment-dependent.
-	setSDDL(t, handed, `D:P(A;OICI;0x1301BF;;;`+unusedAccount+`)`)
 	sealed := filepath.Join(handed, "sealed")
 	if err := os.Mkdir(sealed, 0o755); err != nil {
 		t.Fatal(err)
@@ -158,6 +153,11 @@ func TestWithoutTheRecordASweepReachesWhatTheSandboxSealed(t *testing.T) {
 		t.Fatal(err)
 	}
 	normalizeOwner(t, sealedFile, owner)
+	// Keep the operator's own Full Control out of the hand-down after the
+	// fixture tree exists. The sandbox identity is the current account in this
+	// synthetic test, so an operator ACE would be mistaken for a permission
+	// the cap must preserve.
+	setSDDL(t, handed, `D:P(A;OICI;0x1301BF;;;`+unusedAccount+`)`)
 	setSDDL(t, sealed, `D:P(A;OICI;FA;;;`+owner+`)`)
 	setSDDL(t, sealedFile, `D:P(A;;FA;;;`+owner+`)`)
 	t.Cleanup(func() { reclaim(t, kept); reclaim(t, sealed); reclaim(t, sealedFile); reclaim(t, handed) })
