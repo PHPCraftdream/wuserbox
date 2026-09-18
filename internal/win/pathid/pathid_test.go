@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestWithinFileRootRejectsAnExternalHardLink(t *testing.T) {
+func TestWithinFileRootRejectsAnExternalHardLinkByFileIdentity(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	file := filepath.Join(root, "settings.json")
