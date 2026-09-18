@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
@@ -120,5 +121,49 @@ func TestMakingAProfileAgainLeavesWhatIsAlreadyThere(t *testing.T) {
 
 	if _, err := os.Stat(kept); err != nil {
 		t.Errorf("building the profile again took away what was already in it: %v", err)
+	}
+}
+
+// TestMakingAProfileRejectsAnExternalHardLinkBeforePermissioningIt pins the
+// ordering that protects the object behind a profile link: ProtectFull must
+// never run before the link scan has rejected the profile.
+func TestMakingAProfileRejectsAnExternalHardLinkBeforePermissioningIt(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "profile")
+	outside := filepath.Join(t.TempDir(), "control.txt")
+	inside := filepath.Join(profile, "control.txt")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outside, []byte("do not touch"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(outside, inside); err != nil {
+		t.Skipf("hard links unavailable on this volume: %v", err)
+	}
+
+	before, err := exec.Command("icacls", outside).CombinedOutput()
+	if err != nil {
+		t.Fatalf("reading the control file ACL: %v\n%s", err, before)
+	}
+	beforeContent, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MakeProfile(profile, me(t)); err == nil {
+		t.Fatal("profile with an external hard-link name was accepted")
+	}
+	after, err := exec.Command("icacls", outside).CombinedOutput()
+	if err != nil {
+		t.Fatalf("reading the control file ACL after refusal: %v\n%s", err, after)
+	}
+	if strings.TrimSpace(string(after)) != strings.TrimSpace(string(before)) {
+		t.Fatalf("refused profile changed the external object's ACL:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	afterContent, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterContent) != string(beforeContent) {
+		t.Fatalf("refused profile changed the external object's content: before %q, after %q", beforeContent, afterContent)
 	}
 }

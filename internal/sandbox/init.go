@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -372,18 +373,22 @@ func ensureProfile(s *state.State, groupName string) error {
 		return err
 	}
 	s.Profile = ProfileDir(groupName)
+	// MakeProfile changes the profile directory's DACL and may create the
+	// registry hive. Inspect an existing tree before either operation: a hard
+	// link in it would make that ACL change apply to an object outside the
+	// profile, and rejecting it afterwards cannot undo the change.
+	if _, err := os.Lstat(s.Profile); err == nil {
+		if err := acl.ValidateLinks(s.Profile, false); err != nil {
+			return fmt.Errorf("checking the sandbox profile before permissioning it: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("checking whether the sandbox profile exists: %w", err)
+	}
 	if err := acct.MakeProfile(s.Profile, account); err != nil {
 		return err
 	}
 	if err := acct.RegisterProfile(account, s.Profile); err != nil {
 		return err
-	}
-	// The profile is later written by the operator during every run. Refuse a
-	// pre-existing hard link that gives one of those writes another name; this
-	// check is deliberately independent of --allow-links, which only applies
-	// to an explicit directory handover.
-	if err := acl.ValidateLinks(s.Profile, false); err != nil {
-		return fmt.Errorf("checking the sandbox profile for external hard links: %w", err)
 	}
 	return nil
 }

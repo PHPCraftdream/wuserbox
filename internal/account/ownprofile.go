@@ -46,6 +46,17 @@ const hkeyUsers = 0x80000003
 // rights: tightening a hive needs SE_BACKUP_NAME and SE_RESTORE_NAME, which
 // only an elevated token can turn on.
 func MakeProfile(dir string, account sid.Value) error {
+	// ProtectFull below replaces the profile DACL and propagates its inherited
+	// entries to existing children. Refuse an external hard-link name before
+	// any profile mutation, or that one operation would also permission the
+	// object behind the outside name before init could reject the profile.
+	if _, err := os.Lstat(dir); err == nil {
+		if err := acl.ValidateLinks(dir, false); err != nil {
+			return fmt.Errorf("checking the profile for external hard links: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking whether the profile exists: %w", err)
+	}
 	// The profile's own directory first, and by name: everything above it
 	// belongs to whoever is running this, and a sandbox cannot reach into it
 	// -- it holds its profile outright but has no write access to the
