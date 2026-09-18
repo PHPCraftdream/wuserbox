@@ -33,9 +33,83 @@ func Name(dir string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	digest := sha256.Sum256([]byte(key))
-	name := fmt.Sprintf("%s%s-%s", group.Prefix, slug(filepath.Base(norm)), hex.EncodeToString(digest[:4]))
+	name := nameForKey(norm, key)
+	// The key changed when filesystem identity replaced Unicode folding. Keep
+	// an existing sandbox's group, account and record instead of silently
+	// creating a second sandbox. Group comments are the durable mapping even
+	// when the project itself has since disappeared.
+	if existing, err := existingName(norm); err != nil {
+		return "", "", err
+	} else if existing != "" {
+		name = existing
+	}
 	return name, norm, nil
+}
+
+func nameForKey(norm, key string) string {
+	digest := sha256.Sum256([]byte(key))
+	return fmt.Sprintf("%s%s-%s", group.Prefix, slug(filepath.Base(norm)), hex.EncodeToString(digest[:4]))
+}
+
+// legacyName is the identity used before filesystem-entry keys were adopted.
+// It is retained for diagnostics and for callers that need to explain a
+// migration, never as the identity for a new sandbox.
+func legacyName(norm string) string {
+	digest := sha256.Sum256([]byte(asciiFold(norm)))
+	return fmt.Sprintf("%s%s-%s", group.Prefix, slug(filepath.Base(norm)), hex.EncodeToString(digest[:4]))
+}
+
+func existingName(norm string) (string, error) {
+	groups, err := group.List()
+	if err != nil {
+		return "", fmt.Errorf("cannot inspect existing sandboxes: %w", err)
+	}
+	var found string
+	for _, entry := range groups {
+		if entry.Dir == "" {
+			continue
+		}
+		same, err := samePathIdentity(entry.Dir, norm)
+		if err != nil {
+			return "", err
+		}
+		if !same {
+			continue
+		}
+		if found != "" && found != entry.Name {
+			return "", fmt.Errorf("project %s belongs to multiple sandboxes (%s and %s); refusing to choose one", norm, found, entry.Name)
+		}
+		found = entry.Name
+	}
+	return found, nil
+}
+
+func samePathIdentity(first, second string) (bool, error) {
+	a, err := pathid.Key(first)
+	if err != nil {
+		// Group enumeration is machine-wide: another user's sandbox may point
+		// at a directory this process cannot inspect. It cannot be a verified
+		// match, so ignore it unless its spelling is exactly the requested
+		// path, in which case creating a second sandbox would be unsafe.
+		if asciiFold(filepath.Clean(first)) == asciiFold(filepath.Clean(second)) {
+			return false, fmt.Errorf("cannot verify existing sandbox path %s: %w", first, err)
+		}
+		return false, nil
+	}
+	b, err := pathid.Key(second)
+	if err != nil {
+		return false, nil
+	}
+	return asciiFold(a) == asciiFold(b), nil
+}
+
+func asciiFold(path string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, path)
 }
 
 // ProfileDir is where a sandbox's own thin profile lives, beside its temp

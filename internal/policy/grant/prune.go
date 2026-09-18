@@ -5,10 +5,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
+	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
 )
 
 // Prune takes an account's access away from everything under path that would
@@ -39,8 +39,8 @@ import (
 func Prune(account, path string, held []string) error {
 	keep := make(map[string]bool, len(held))
 	for _, one := range held {
-		if !strings.EqualFold(one, path) {
-			keep[strings.ToLower(one)] = true
+		if pathKey(one) != pathKey(path) {
+			keep[pathKey(one)] = true
 		}
 	}
 	return lock.HoldTree(path, func() error {
@@ -48,9 +48,9 @@ func Prune(account, path string, held []string) error {
 			switch {
 			case err != nil:
 				return fmt.Errorf("looking through %s: %w", name, err)
-			case strings.EqualFold(name, path):
+			case pathKey(name) == pathKey(path):
 				return nil // the grant on it has already been dealt with
-			case keep[strings.ToLower(name)]:
+			case keep[pathKey(name)]:
 				if entry.IsDir() {
 					return filepath.SkipDir
 				}
@@ -61,4 +61,22 @@ func Prune(account, path string, held []string) error {
 			return acl.StripOwn(name, account)
 		})
 	})
+}
+
+func pathKey(path string) string {
+	if key, err := pathid.Key(path); err == nil {
+		return asciiFold(key)
+	}
+	return "fallback:" + asciiFold(filepath.Clean(path))
+}
+
+func asciiFold(path string) string {
+	var out []rune
+	for _, r := range path {
+		if r >= 'A' && r <= 'Z' {
+			r += 'a' - 'A'
+		}
+		out = append(out, r)
+	}
+	return string(out)
 }

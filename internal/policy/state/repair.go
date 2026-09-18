@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 )
 
@@ -144,7 +145,7 @@ func (s *State) narrow(path string) error {
 
 // isOwn reports whether a path is one the sandbox is built around.
 func (s *State) isOwn(path string) bool {
-	return strings.EqualFold(path, s.Dir) || strings.EqualFold(path, s.Temp)
+	return config.SamePath(path, s.Dir) || config.SamePath(path, s.Temp)
 }
 
 // forget drops a permission from the record without touching the file system.
@@ -159,6 +160,15 @@ func (s *State) forget(path string) error {
 
 // inside reports whether child sits under parent. A path is not inside itself.
 func inside(child, parent string) bool {
-	prefix := strings.TrimSuffix(strings.ToLower(parent), `\`) + `\`
-	return strings.HasPrefix(strings.ToLower(child), prefix)
+	prefix := strings.TrimSuffix(asciiFold(parent), `\`) + `\`
+	return strings.HasPrefix(asciiFold(child), prefix)
+}
+
+func asciiFold(path string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, path)
 }

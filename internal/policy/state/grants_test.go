@@ -55,6 +55,29 @@ func TestHasIgnoresCase(t *testing.T) {
 	}
 }
 
+// TestHasDoesNotMergeFilesystemDistinctUnicodePaths is the bookkeeping half
+// of the grant boundary: removing a grant by a sibling's Unicode spelling
+// must not find or remove the original record.
+func TestHasDoesNotMergeFilesystemDistinctUnicodePaths(t *testing.T) {
+	parent := t.TempDir()
+	latin := filepath.Join(parent, "K")
+	kelvin := filepath.Join(parent, "\u212A")
+	if err := os.Mkdir(latin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(kelvin, 0o755); err != nil {
+		t.Skipf("this volume does not distinguish K and Kelvin sign: %v", err)
+	}
+	s := newState(t)
+	s.Grants = []grant.Spec{{Path: latin, Kind: grant.RW}}
+	if s.Has(kelvin) {
+		t.Fatal("a filesystem-distinct sibling was treated as the recorded grant")
+	}
+	if _, found := s.Kind(kelvin); found {
+		t.Fatal("Kind found a filesystem-distinct sibling")
+	}
+}
+
 func TestRemoveDropsTheGrant(t *testing.T) {
 	s := newState(t)
 	target := t.TempDir()

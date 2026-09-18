@@ -2,8 +2,8 @@ package state
 
 import (
 	"fmt"
-	"strings"
 
+	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 )
 
@@ -24,7 +24,7 @@ func (s *State) Kind(path string) (grant.Kind, bool) {
 
 func (s *State) find(path string) (int, bool) {
 	for i, g := range s.Grants {
-		if strings.EqualFold(g.Path, path) {
+		if config.SamePath(g.Path, path) {
 			return i, true
 		}
 	}

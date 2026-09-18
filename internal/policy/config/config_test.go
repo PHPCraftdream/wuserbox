@@ -214,6 +214,25 @@ func TestRuleForStillMatchesAVanishedDirectory(t *testing.T) {
 	}
 }
 
+// TestRulesDoNotMergeFilesystemDistinctUnicodeDirectories guards the path
+// identity used by grants selection. NTFS distinguishes these names even
+// though strings.EqualFold says they are equal.
+func TestRulesDoNotMergeFilesystemDistinctUnicodeDirectories(t *testing.T) {
+	parent := t.TempDir()
+	latin := filepath.Join(parent, "K")
+	kelvin := filepath.Join(parent, "\u212A")
+	if err := os.Mkdir(latin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(kelvin, 0o755); err != nil {
+		t.Skipf("this volume does not distinguish K and Kelvin sign: %v", err)
+	}
+	rules := &Config{Projects: []Rule{{Dir: latin, RW: []string{filepath.Join(parent, "grant")}}}}
+	if got := rules.GrantsFor(kelvin); got != nil {
+		t.Fatalf("the Kelvin-sign project selected the K project rule: %+v", got)
+	}
+}
+
 // TestAddMovesAPathBetweenTheLists is the regression guard for a rule that
 // contradicted itself: narrowing a directory used to leave it in both lists,
 // and the reader would apply the writable entry and then the readable one, so

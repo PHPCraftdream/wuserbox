@@ -82,7 +82,7 @@ func For(in Input) (Plan, error) {
 func (p *Plan) add(path string, kind grant.Kind, source Source) {
 	clean := filepath.Clean(path)
 	for i := range p.Entries {
-		if paths.Same(p.Entries[i].Path, clean) {
+		if config.SamePath(p.Entries[i].Path, clean) {
 			p.Entries[i].Kind = kind
 			p.Entries[i].Source = source
 			return

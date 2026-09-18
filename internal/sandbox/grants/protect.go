@@ -178,7 +178,16 @@ func alreadyRetired() string {
 // folded is how two spellings of the same entry are compared: Windows does
 // not care about case, and a rules file may be written with either separator.
 func folded(entry string) string {
-	return strings.ToLower(filepath.ToSlash(entry))
+	return asciiFold(filepath.ToSlash(entry))
+}
+
+func asciiFold(path string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, path)
 }
 
 // ReserveSensitiveNames takes the sensitive entries of the profile root that
@@ -246,7 +255,7 @@ func RefuseHomeFiles(s *state.State) error {
 // such as the ".tmp.1234" companion of a config file being replaced.
 func isAllowed(path string, allowed []string) bool {
 	for _, a := range allowed {
-		if strings.EqualFold(path, a) || strings.HasPrefix(strings.ToLower(path), strings.ToLower(a)+".") {
+		if asciiFold(path) == asciiFold(a) || strings.HasPrefix(asciiFold(path), asciiFold(a)+".") {
 			return true
 		}
 	}

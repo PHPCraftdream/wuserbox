@@ -6,6 +6,7 @@ import (
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
 )
 
 // RuleFor returns the rule for a project directory. With create set it appends
@@ -27,7 +28,26 @@ func (c *Config) RuleFor(dir string, create bool) *Rule {
 // be written the Windows way, the shell way, with a variable or with a tilde,
 // so a file edited by hand matches what the commands pass in.
 func SamePath(a, b string) bool {
-	return strings.EqualFold(canonical(a), canonical(b))
+	return identity(canonical(a)) == identity(canonical(b))
+}
+
+// identity uses the filesystem's directory-entry spelling when it can, and
+// only folds ASCII in the missing-path fallback. Unicode EqualFold is not a
+// Windows path comparison: NTFS can keep K and the Kelvin sign apart.
+func identity(path string) string {
+	if key, err := pathid.Key(path); err == nil {
+		return asciiFold(key)
+	}
+	return "fallback:" + asciiFold(filepath.Clean(path))
+}
+
+func asciiFold(path string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, path)
 }
 
 // canonical reduces a path to one spelling. It falls back to a plain cleanup

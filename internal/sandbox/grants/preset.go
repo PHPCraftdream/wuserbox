@@ -2,8 +2,8 @@ package grants
 
 import (
 	"os"
-	"strings"
 
+	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/preset"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
@@ -19,14 +19,12 @@ import (
 // copying instead. RetireAIGrants is what clears a grant a sandbox built
 // before that existed still holds, and it runs regardless of this flag.
 func DropPreset(s *state.State) error {
-	unwanted := map[string]bool{strings.ToLower(preset.Home().Path): true}
+	unwanted := []string{preset.Home().Path}
 	// A project can sit inside one of those directories, and then the preset
 	// and the project name the same path. The project is why the sandbox
 	// exists, so it is never what a flag about agent directories takes away.
-	delete(unwanted, strings.ToLower(s.Dir))
-	delete(unwanted, strings.ToLower(s.Temp))
 	for _, granted := range append([]string(nil), pathsOf(s)...) {
-		if !unwanted[strings.ToLower(granted)] {
+		if !matchesAny(granted, unwanted) || config.SamePath(granted, s.Dir) || config.SamePath(granted, s.Temp) {
 			continue
 		}
 		if err := s.Remove(granted); err != nil {
@@ -48,18 +46,16 @@ func DropPreset(s *state.State) error {
 // question it answers -- does this sandbox still hold a grant nothing hands
 // out any more -- does not depend on that flag.
 func RetireAIGrants(s *state.State) error {
-	unwanted := make(map[string]bool, len(preset.AI()))
+	var unwanted []string
 	for _, spec := range preset.AI() {
-		unwanted[strings.ToLower(spec.Path)] = true
+		unwanted = append(unwanted, spec.Path)
 	}
 	// A project can sit inside, or exactly at, one of those directories, and
 	// then the preset and the project name the same path. The project is why
 	// the sandbox exists, so it is never what retiring a preset grant takes
 	// away.
-	delete(unwanted, strings.ToLower(s.Dir))
-	delete(unwanted, strings.ToLower(s.Temp))
 	for _, granted := range append([]string(nil), pathsOf(s)...) {
-		if !unwanted[strings.ToLower(granted)] {
+		if !matchesAny(granted, unwanted) || config.SamePath(granted, s.Dir) || config.SamePath(granted, s.Temp) {
 			continue
 		}
 		if err := s.Remove(granted); err != nil {
@@ -67,6 +63,15 @@ func RetireAIGrants(s *state.State) error {
 		}
 	}
 	return nil
+}
+
+func matchesAny(path string, candidates []string) bool {
+	for _, candidate := range candidates {
+		if config.SamePath(path, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func pathsOf(s *state.State) []string {

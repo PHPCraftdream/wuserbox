@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 )
 
@@ -90,6 +91,43 @@ func TestNameKeepsFilesystemDistinctUnicodeDirectoriesApart(t *testing.T) {
 	}
 	if first == second {
 		t.Fatalf("filesystem-distinct directories share sandbox identity %q", first)
+	}
+}
+
+// TestNameKeepsAnExistingGroupAfterTheIdentityKeyChanges is the migration
+// guard. An old group comment is the durable mapping, including after the
+// project directory has disappeared, so a later --rm can still find it.
+func TestNameKeepsAnExistingGroupAfterTheIdentityKeyChanges(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "legacy-project")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	norm, err := paths.Resolve(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := legacyName(norm)
+	if err := group.Add(legacy, norm); err != nil {
+		t.Skipf("local group fixture requires administrator rights: %v", err)
+	}
+	t.Cleanup(func() { _ = group.Delete(legacy) })
+
+	got, _, err := Name(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != legacy {
+		t.Fatalf("existing sandbox was renamed from %s to %s", legacy, got)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err = Name(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != legacy {
+		t.Fatalf("missing project lost existing sandbox identity: got %s, want %s", got, legacy)
 	}
 }
 
