@@ -357,17 +357,24 @@ func alreadyCapped(held []heldEntry, hand []explicitAccess, owner uintptr) bool 
 	return true
 }
 
-// capPresent reports whether the list carries the cap: an owner-rights entry
-// granting read-and-execute, which is what the replacement and the grant in
-// ownerLimit together leave behind.
+// capPresent reports whether the list carries an effective cap. A matching
+// RX entry is not enough: another OWNER RIGHTS grant can restore WRITE_DAC or
+// WRITE_OWNER, so every such grant must be free of changing rights.
 func capPresent(held []heldEntry, owner uintptr) bool {
+	found := false
 	for _, one := range held {
-		if one.access.mode == grantAccess && one.access.permissions == AccessReadExecute &&
-			sameSID(one.access.trustee.name, owner) {
-			return true
+		if one.access.mode != grantAccess || !sameSID(one.access.trustee.name, owner) {
+			continue
+		}
+		if one.access.permissions&changing != 0 {
+			return false
+		}
+		if one.access.permissions == AccessReadExecute &&
+			one.access.inheritance == InheritNone && !one.inherited {
+			found = true
 		}
 	}
-	return false
+	return found
 }
 
 // holdsEntry reports whether the list holds one entry that says the same

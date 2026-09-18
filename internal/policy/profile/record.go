@@ -12,9 +12,10 @@ import (
 // can keep names such as i and dotless ı apart even though Unicode uppercasing
 // joins them, so using that key for the .copied record can make it forget one
 // place and later clear another. When the profile contains both places, ask
-// the volume with os.SameFile through the root. If a place is absent, retain
-// it unless its cleaned spelling is exactly the same: dropping an absent
-// entry would lose the only record that can take back a copy once it returns.
+// the volume's stored directory-entry spelling through the root. If a place is
+// absent, retain it unless its cleaned spelling is exactly the same: dropping
+// an absent entry would lose the only record that can take back a copy once it
+// returns.
 func DedupeEntries(dest string, entries []config.Entry) []config.Entry {
 	if len(entries) < 2 {
 		return append([]config.Entry(nil), entries...)

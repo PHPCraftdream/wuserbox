@@ -127,16 +127,12 @@ func FoldedEntryPath(path string) string {
 }
 
 // sameEntryPlace answers whether two spellings of a profile entry name one
-// and the same place under the profile root, and it is the ownership
-// comparison: forget keeps a recorded entry by it and copyEntries vouches
-// a missing source by it, and both decide deletions, which is why no fold
-// answers here. The question goes to the volume instead of to a spelling:
-// both sides are opened through the root -- which resolves each component
-// the way the file system does, so i and I open the one directory -- and
-// os.SameFile compares the two handles by volume serial and file index,
-// the answer GetFileInformationByHandle gives. Measured on this desk's
-// NTFS: i and I open one directory and SameFile says so; i and U+0131 open
-// two and SameFile holds them apart, where foldedName joins them.
+// and the same directory entry, and it is the ownership comparison: forget
+// keeps a recorded entry by it and copyEntries vouches a missing source by it,
+// and both decide deletions, which is why no fold answers here. The volume is
+// asked for the stored spelling of every component. That joins i and I, but
+// keeps two hard-link names apart: file identity is not the directory entry
+// whose name Clear must remove.
 //
 // A spelling that opens nothing names no place, and no place is not
 // another spelling's place: false, and deliberately not a guess. Which way
@@ -144,31 +140,52 @@ func FoldedEntryPath(path string) string {
 // spellings themselves for a recorded entry whose place the disk cannot
 // witness, because "does the list still name it" has to outlive the copy;
 // the vouch does not fall back at all, because a claim about a copy has to
-// be witnessed by the copy. The cost is two opens per question, asked once
-// per recorded entry per run, on lists the size of the rules file's.
+// be witnessed by the copy. The cost is one directory enumeration per path
+// component, asked once per recorded entry per run, on lists the size of the
+// rules file's.
 func sameEntryPlace(root *os.Root, first, second string) bool {
-	opened, ok := entryPlace(root, first)
+	opened, ok := canonicalEntryPath(root, first)
 	if !ok {
 		return false
 	}
-	other, ok := entryPlace(root, second)
-	return ok && os.SameFile(opened, other)
+	other, ok := canonicalEntryPath(root, second)
+	return ok && opened == other
 }
 
-// entryPlace opens one entry spelling through the root and hands back the
-// handle's stat, whose volume serial and file index are what os.SameFile
-// reads. A path within refuses -- absolute, or climbing out -- opens
-// nothing, which is the right answer for a key that is only ever asked
-// about spellings forget and copyEntries are about to act inside.
-func entryPlace(root *os.Root, path string) (os.FileInfo, bool) {
-	f, err := root.Open(cleanEntryPath(path))
-	if err != nil {
-		return nil, false
+// canonicalEntryPath resolves the stored directory-entry spelling without
+// collapsing hard links. A path within refuses -- absolute, or climbing out
+// -- and a missing component has no witnessed place.
+func canonicalEntryPath(root *os.Root, path string) (string, bool) {
+	clean := cleanEntryPath(path)
+	if clean == "." || filepath.IsAbs(clean) || clean == ".." ||
+		strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", false
 	}
-	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, false
+	current := "."
+	for _, component := range strings.Split(clean, string(filepath.Separator)) {
+		dir, err := root.Open(current)
+		if err != nil {
+			return "", false
+		}
+		children, err := dir.ReadDir(-1)
+		_ = dir.Close()
+		if err != nil {
+			return "", false
+		}
+		chosen := ""
+		for _, child := range children {
+			if child.Name() == component {
+				chosen = child.Name()
+				break
+			}
+			if chosen == "" && strings.EqualFold(child.Name(), component) {
+				chosen = child.Name()
+			}
+		}
+		if chosen == "" {
+			return "", false
+		}
+		current = filepath.Join(current, chosen)
 	}
-	return info, true
+	return current, true
 }

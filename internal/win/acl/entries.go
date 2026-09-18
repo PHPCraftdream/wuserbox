@@ -243,7 +243,7 @@ func heldBy(path, account string, wanted uint32) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("reading the permissions of %s: %w", path, err)
 	}
-	found := false
+	var granted, refused uint32
 	for _, one := range held {
 		const trusteeIsSID = 0
 		if one.access.trustee.form != trusteeIsSID || one.access.permissions&wanted == 0 {
@@ -253,11 +253,11 @@ func heldBy(path, account string, wanted uint32) (bool, error) {
 			continue
 		}
 		if one.access.mode == denyAccess {
-			return false, nil
+			refused |= one.access.permissions & wanted
 		}
 		if one.access.mode == grantAccess {
-			found = true
+			granted |= one.access.permissions & wanted
 		}
 	}
-	return found, nil
+	return granted&^refused != 0, nil
 }

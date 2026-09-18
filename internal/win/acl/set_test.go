@@ -101,6 +101,20 @@ func TestEveryoneWritableIgnoresReadOnlyPermissions(t *testing.T) {
 	}
 }
 
+func TestEveryoneWritableSeesWriteBesideAPartialDeleteDeny(t *testing.T) {
+	dir := t.TempDir()
+	t.Cleanup(func() { _ = Remove(dir, sid.Everyone) })
+	if err := Set(dir, sid.Everyone, []ACE{{Access: AccessModify, Inheritance: InheritObjects}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Deny(dir, sid.Everyone, 0x10000); err != nil { // DELETE only
+		t.Fatal(err)
+	}
+	if !EveryoneWritable(dir) {
+		t.Fatal("a deny for DELETE hid Everyone's remaining write rights")
+	}
+}
+
 func TestSetNeedsEntries(t *testing.T) {
 	if err := Set(t.TempDir(), unusedAccount, nil); err == nil {
 		t.Error("expected an error when no entries are given")

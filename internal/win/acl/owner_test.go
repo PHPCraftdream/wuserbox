@@ -155,6 +155,29 @@ func TestIsolateCapsWhatTheOwnerOfAFileHoldsImplicitly(t *testing.T) {
 	}
 }
 
+// TestTakingBackRepairsAnExtraOwnerRightsGrant guards the cap's fast path.
+// One harmless RX entry must not make a second OWNER RIGHTS grant harmless.
+func TestTakingBackRepairsAnExtraOwnerRightsGrant(t *testing.T) {
+	root := t.TempDir()
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := filepath.Join(root, "probe.txt")
+	t.Cleanup(func() { reclaim(t, probe) })
+	if err := os.WriteFile(probe, []byte("probe"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setSDDL(t, probe, `D:P(A;;0x1200A9;;;S-1-3-4)(A;;0x40000;;;S-1-3-4)`)
+	if err := TakeBack(probe, owner, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !holds(t, probe, "OWNER RIGHTS", "(RX)") {
+		t.Fatal("taking back an object with an extra owner-rights grant did not leave the cap")
+	}
+	rewriteRefused(t, probe, owner, "an extra OWNER RIGHTS grant left WRITE_DAC after TakeBack")
+}
+
 // TestASweepCapsWhatTheSandboxOwnsInsideTheTree is the same hole one level
 // down, where a production run actually meets it: the file was created inside
 // the tree while the grant was writable, holds nothing of its own -- the

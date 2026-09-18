@@ -410,3 +410,19 @@ func TestDedupeEntriesMergesCapitalRespellingsOnTheVolume(t *testing.T) {
 		t.Fatalf("record kept two spellings of one volume path: %v", pathsOf(got))
 	}
 }
+
+func TestDedupeEntriesKeepsDistinctHardLinkNames(t *testing.T) {
+	dest := t.TempDir()
+	first := filepath.Join(dest, "first")
+	second := filepath.Join(dest, "second")
+	if err := os.WriteFile(first, []byte("same inode"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(first, second); err != nil {
+		t.Skipf("hard links unavailable on this volume: %v", err)
+	}
+	got := DedupeEntries(dest, []config.Entry{{Path: "first"}, {Path: "second"}})
+	if len(got) != 2 {
+		t.Fatalf("record merged two names of one hard-linked file: %v", pathsOf(got))
+	}
+}
