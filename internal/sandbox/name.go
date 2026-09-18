@@ -33,6 +33,15 @@ func Name(dir string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	// A disappeared project cannot be resolved to a filesystem entry. The
+	// legacy group name is still a durable handle for its existing sandbox,
+	// so check it before deriving a new identity key.
+	legacy := legacyName(norm)
+	if _, exists, err := group.Comment(legacy); err != nil {
+		return "", "", err
+	} else if exists {
+		return legacy, norm, nil
+	}
 	name := nameForKey(norm, key)
 	// The key changed when filesystem identity replaced Unicode folding. Keep
 	// an existing sandbox's group, account and record instead of silently
@@ -55,7 +64,9 @@ func nameForKey(norm, key string) string {
 // It is retained for diagnostics and for callers that need to explain a
 // migration, never as the identity for a new sandbox.
 func legacyName(norm string) string {
-	digest := sha256.Sum256([]byte(asciiFold(norm)))
+	// This is the pre-pathid algorithm; keep Unicode lowercasing here solely
+	// to find sandboxes created before the identity migration.
+	digest := sha256.Sum256([]byte(strings.ToLower(norm)))
 	return fmt.Sprintf("%s%s-%s", group.Prefix, slug(filepath.Base(norm)), hex.EncodeToString(digest[:4]))
 }
 
