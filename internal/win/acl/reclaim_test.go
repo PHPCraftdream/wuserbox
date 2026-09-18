@@ -151,6 +151,7 @@ func TestTakingAGrantBackCapsWhatTheOwnerHolds(t *testing.T) {
 	if err := os.Mkdir(target, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, target, owner)
 	// The tree is held writable in the shape a production run meets, written
 	// outright first so that only these entries answer below: the revoke
 	// takes the account's entries off the directory, and what the directory
@@ -172,10 +173,12 @@ func TestTakingAGrantBackCapsWhatTheOwnerHolds(t *testing.T) {
 	if err := os.WriteFile(made, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, made, owner)
 	wide := filepath.Join(target, "wide.txt")
 	if err := os.WriteFile(wide, []byte("wide open"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, wide, owner)
 
 	// The positive control, shown after the files exist and before anything
 	// caps them: the owner's implicit WRITE_DAC rewrites the list of a file
@@ -228,6 +231,7 @@ func TestTakingAGrantBackSparesWhatTheRecordPins(t *testing.T) {
 	if err := os.Mkdir(target, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, target, owner)
 	setSDDL(t, target, `D:P(A;OICI;0x1301BF;;;`+owner+`)`)
 
 	if err := Isolate(target, owner, []ACE{
@@ -240,10 +244,12 @@ func TestTakingAGrantBackSparesWhatTheRecordPins(t *testing.T) {
 	if err := os.WriteFile(made, []byte("the sandbox wrote this"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, made, owner)
 	pinned := filepath.Join(target, "pinned.txt")
 	if err := os.WriteFile(pinned, []byte("granted in its own right"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, pinned, owner)
 
 	if err := TakeBack(target, owner, []string{pinned}); err != nil {
 		t.Fatal(err)
@@ -290,6 +296,7 @@ func TestTakingAGrantBackTakesDownWhatTheSandboxHandedItself(t *testing.T) {
 	if err := os.Mkdir(target, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, target, owner)
 	setSDDL(t, target, `D:P(A;OICI;0x1301BF;;;`+owner+`)`)
 
 	if err := Isolate(target, owner, []ACE{
@@ -302,10 +309,12 @@ func TestTakingAGrantBackTakesDownWhatTheSandboxHandedItself(t *testing.T) {
 	if err := os.WriteFile(made, []byte("made plain"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, made, owner)
 	self := filepath.Join(target, "self.txt")
 	if err := os.WriteFile(self, []byte("the sandbox wrote this"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, self, owner)
 	// A protected list granting the owner full control: the shape a sandbox
 	// writes while it holds every right, with nothing inherited and no mark.
 	setSDDL(t, self, `D:P(A;;FA;;;`+owner+`)`)

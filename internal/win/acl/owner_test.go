@@ -95,6 +95,7 @@ func TestIsolateCapsWhatTheOwnerOfAFileHoldsImplicitly(t *testing.T) {
 	if err := os.WriteFile(guarded, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, guarded, owner)
 	t.Cleanup(func() { reclaim(t, guarded) })
 
 	// Both probes shown working where every right is held, so the refusals
@@ -173,6 +174,7 @@ func TestASweepCapsWhatTheSandboxOwnsInsideTheTree(t *testing.T) {
 	if err := os.Mkdir(handed, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, handed, owner)
 	made := filepath.Join(handed, "made.txt")
 	const original = "the sandbox wrote this"
 	t.Cleanup(func() { reclaim(t, made); reclaim(t, handed) })
@@ -187,6 +189,7 @@ func TestASweepCapsWhatTheSandboxOwnsInsideTheTree(t *testing.T) {
 	if err := os.WriteFile(made, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, made, owner)
 
 	rewriteWorks(t, probe, owner)
 
@@ -253,6 +256,7 @@ func TestAWritableGrantKeepsWorkingUnderTheCap(t *testing.T) {
 	if err := os.WriteFile(made, []byte("the sandbox wrote this"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, made, owner)
 
 	if err := Isolate(made, owner, []ACE{
 		{Access: AccessModify, Inheritance: InheritNone},
@@ -286,6 +290,7 @@ func TestIsolateLeavesAnObjectTheOperatorOwnsAlone(t *testing.T) {
 	if err := os.Mkdir(handed, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, handed, owner)
 	made := filepath.Join(handed, "made.txt")
 	if err := os.WriteFile(made, []byte("the operator wrote this"), 0o644); err != nil {
 		t.Fatal(err)

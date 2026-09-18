@@ -51,18 +51,22 @@ func TestASealedObjectTheRecordHoldsIsLeftAlone(t *testing.T) {
 	if err := os.Mkdir(sealed, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, sealed, owner)
 	kept := filepath.Join(sealed, "kept.txt")
 	if err := os.WriteFile(kept, []byte("kept"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, kept, owner)
 	sealedFile := filepath.Join(handed, "sealed.txt")
 	if err := os.WriteFile(sealedFile, []byte("sealed"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, sealedFile, owner)
 	plain := filepath.Join(handed, "plain.txt")
 	if err := os.WriteFile(plain, []byte("plain"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, plain, owner)
 	// Sealed against everybody but its owner, who holds every right: the
 	// shape of a list that is its own and nothing inherited under it -- and
 	// the shape the sandbox itself can write while it owns the object.
@@ -138,14 +142,17 @@ func TestWithoutTheRecordASweepReachesWhatTheSandboxSealed(t *testing.T) {
 	if err := os.Mkdir(sealed, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, sealed, owner)
 	kept := filepath.Join(sealed, "kept.txt")
 	if err := os.WriteFile(kept, []byte("kept"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, kept, owner)
 	sealedFile := filepath.Join(handed, "sealed.txt")
 	if err := os.WriteFile(sealedFile, []byte("sealed"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, sealedFile, owner)
 	setSDDL(t, sealed, `D:P(A;OICI;FA;;;`+owner+`)`)
 	setSDDL(t, sealedFile, `D:P(A;;FA;;;`+owner+`)`)
 	t.Cleanup(func() { reclaim(t, kept); reclaim(t, sealed); reclaim(t, sealedFile); reclaim(t, handed) })
