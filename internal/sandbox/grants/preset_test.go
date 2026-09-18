@@ -248,6 +248,53 @@ func TestEnsurePutsBackAPermissionThatWasRemoved(t *testing.T) {
 	}
 }
 
+// TestReapplySkipsAFreshDisjointGrant keeps the first init from sweeping a
+// newly recorded tree twice. The revoke below makes a second Apply observable:
+// a repair pass would restore the permission, while the optimized pass leaves
+// the deliberately removed entry absent.
+func TestReapplySkipsAFreshDisjointGrant(t *testing.T) {
+	s := newState(t)
+	target := tempDir(t)
+	s.BeginInit()
+	defer s.EndInit()
+	if err := s.Ensure(target, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if err := grant.Revoke(s.SID, target, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := Reapply(s); err != nil {
+		t.Fatal(err)
+	}
+	answer, err := access.Check(access.Sandbox{Group: s.SID}, target, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Allowed {
+		t.Fatal("a fresh disjoint grant was applied a second time")
+	}
+}
+
+func TestFreshGrantStillReappliesWhenTreesOverlap(t *testing.T) {
+	parent := tempDir(t)
+	child := filepath.Join(parent, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := newState(t)
+	if err := s.Add(parent, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	s.BeginInit()
+	defer s.EndInit()
+	if err := s.Ensure(child, grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if !overlapsAnother(s, s.Grants[len(s.Grants)-1]) {
+		t.Fatal("a fresh child grant was treated as disjoint from its parent")
+	}
+}
+
 // TestReapplyReachesADirectoryGivenByHand is the regression guard for a repair
 // that only covered what it could recompute. A directory handed over once with
 // grant or --rw lives in the record and nowhere else, so init walked straight

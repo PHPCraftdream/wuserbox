@@ -118,6 +118,8 @@ func build(name, dir string, o Options) (*state.State, error) {
 	if s == nil {
 		s = &state.State{Group: name, Dir: dir, Temp: filepath.Join(paths.StateDir(), "tmp", name)}
 	}
+	s.BeginInit()
+	defer s.EndInit()
 	s.SID = account.String()
 	// Anything a stopped command left half done is finished before this one
 	// builds on top of it.

@@ -7,6 +7,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/preset"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
+	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
 )
 
 // DropPreset takes back the profile-root grant the agent preset hands out
@@ -95,9 +96,48 @@ func Reapply(s *state.State) error {
 		if _, err := os.Stat(held.Path); err != nil {
 			continue // gone; the record is kept, there is nothing to apply to
 		}
+		if s.Fresh(held.Path, held.Kind) && !overlapsAnother(s, held) {
+			// This grant was just written and applied by this init. Repeating a
+			// full tree sweep is pure work unless another grant reaches the same
+			// tree and can change its result later in this batch.
+			continue
+		}
 		present = append(present, held)
 	}
 	return state.ApplyTogether(s.SID, present, pathsOf(s))
+}
+
+// overlapsAnother keeps the repair pass for a freshly recorded grant when a
+// different grant reaches the same tree. The other apply may change inherited
+// entries below or above it, so skipping either one would make the result
+// depend on order. Errors deliberately mean overlap: optimization must fail
+// closed and leave the repair path intact.
+func overlapsAnother(s *state.State, fresh grant.Spec) bool {
+	for _, other := range s.Grants {
+		if other.Path == fresh.Path && other.Kind == fresh.Kind {
+			continue
+		}
+		if pathsOverlap(fresh.Path, other.Path) {
+			return true
+		}
+	}
+	return false
+}
+
+func pathsOverlap(first, second string) bool {
+	if config.SamePath(first, second) {
+		return true
+	}
+	for _, pair := range [][2]string{{first, second}, {second, first}} {
+		inside, err := pathid.Within(pair[0], pair[1])
+		if err != nil {
+			return true
+		}
+		if inside {
+			return true
+		}
+	}
+	return false
 }
 
 // ApplyPreset hands over the profile root, when it was asked for, and takes

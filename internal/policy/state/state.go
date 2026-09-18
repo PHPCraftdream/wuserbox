@@ -42,4 +42,44 @@ type State struct {
 	// as base64. It has to be kept, not only created: CreateProcessWithLogonW
 	// needs the password on every run, not only when the account is made.
 	Secret string `json:"secret,omitempty"`
+
+	// fresh holds grants first recorded during one init. It is deliberately
+	// transient: it only lets init avoid replaying work it has just completed;
+	// the file on disk remains the authority for the next run.
+	fresh      []grant.Spec
+	trackFresh bool
+}
+
+// BeginInit starts tracking grants first recorded by this init. The list is
+// not persisted: an interrupted init must still be repaired on the next run.
+func (s *State) BeginInit() {
+	s.fresh = nil
+	s.trackFresh = true
+}
+
+// EndInit discards the transient init bookkeeping.
+func (s *State) EndInit() {
+	s.fresh = nil
+	s.trackFresh = false
+}
+
+// Fresh reports whether this init first recorded path with this kind. A
+// caller can skip replaying it only after checking for overlapping grants.
+func (s *State) Fresh(path string, kind grant.Kind) bool {
+	if !s.trackFresh {
+		return false
+	}
+	for _, spec := range s.fresh {
+		if spec.Kind == kind && spec.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *State) markFresh(path string, kind grant.Kind) {
+	if !s.trackFresh {
+		return
+	}
+	s.fresh = append(s.fresh, grant.Spec{Path: path, Kind: kind})
 }

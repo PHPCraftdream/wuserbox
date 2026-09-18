@@ -112,6 +112,9 @@ func (s *State) record(path string, kind grant.Kind, always, explicit bool) erro
 		}
 		return err
 	}
+	if !found {
+		s.markFresh(path, kind)
+	}
 	// Making a directory read-only has to reach what is inside it: a
 	// permission set directly on a subdirectory is read before the refusal
 	// handed down from here, and would go on allowing what this just refused.
