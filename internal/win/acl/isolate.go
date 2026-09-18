@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
@@ -208,9 +207,9 @@ func Isolate(path, account string, entries []ACE, reach uint32, pinned []string)
 			hand = append(hand, one)
 		}
 	}
-	spared := make(map[string]bool, len(pinned))
-	for _, one := range pinned {
-		spared[strings.ToLower(one)] = true
+	spared, err := makePinnedPaths(pinned)
+	if err != nil {
+		return err
 	}
 	if err := sweep(path, everyone, users, holder, limited, sandbox, hand, mark, spared); err != nil {
 		return err

@@ -41,7 +41,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"unsafe"
 
@@ -313,8 +312,12 @@ func matchesSandboxIdentity(trustee uintptr, sandbox []uintptr) bool {
 // list: pinned holds the paths the operator granted in their own right, and
 // a directory named there is skipped with its subtree, the same keep-list
 // rule grant.Prune has always applied.
-func capObject(path string, held []heldEntry, narrowed, handback []explicitAccess, hand []explicitAccess, owner, mark uintptr, pinned map[string]bool) error {
-	if pinned[strings.ToLower(path)] {
+func capObject(path string, held []heldEntry, narrowed, handback []explicitAccess, hand []explicitAccess, owner, mark uintptr, pinned pinnedPaths) error {
+	spared, err := pinned.contains(path)
+	if err != nil {
+		return err
+	}
+	if spared {
 		info, err := os.Lstat(path)
 		if err == nil && info.IsDir() {
 			return filepath.SkipDir

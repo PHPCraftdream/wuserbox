@@ -44,11 +44,16 @@ import (
 // the same Prune that reaches a grant pinned deeper still. Everything else
 // keeps its own entries narrowed and the rest arriving from the top.
 //
-// pinned is the record's paths for this sandbox, lowercased by the caller,
+// pinned is the record's paths for this sandbox, keyed by filesystem entry,
 // and it decides which owned objects are spared: a path recorded there was
 // granted by the operator in their own right, and no list the sandbox could
 // have written may stand in for that decision (owner.go).
-func sweep(root string, everyone, users, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned map[string]bool) error {
+func sweep(root string, everyone, users, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) error {
+	if len(pinned.keys) != 0 {
+		if err := pinned.prepare(root); err != nil {
+			return err
+		}
+	}
 	// Read the whole tree before changing any of it. Doing both in one pass
 	// left a failure halfway down with part of the tree already rewritten and
 	// the grant not written at all: narrowings nobody asked for and no record
@@ -56,7 +61,7 @@ func sweep(root string, everyone, users, holder, owner uintptr, sandbox []uintpt
 	// can change underneath between the passes -- but it turns the ordinary
 	// reason for stopping, an entry of a kind that cannot be carried over,
 	// into a refusal before anything has moved.
-	if err := inspect(root); err != nil {
+	if err := inspect(root, pinned); err != nil {
 		return err
 	}
 	return walkTree(root, func(path string, _ fs.DirEntry) error {
@@ -72,7 +77,7 @@ func sweep(root string, everyone, users, holder, owner uintptr, sandbox []uintpt
 // file. Whichever answer comes back wrong first stops the rest: nothing has
 // been written at that point, so stopping early costs only the reading that
 // was already under way.
-func inspect(root string) error {
+func inspect(root string, pinned pinnedPaths) error {
 	counting := os.Getenv(EnvAllowLinks) == ""
 	// The one spelling of the tree that the names below can be compared with.
 	// Where it cannot be worked out, the given one stands in: that can only
@@ -95,6 +100,11 @@ func inspect(root string) error {
 		}
 	}
 	return together(root, func(path string, entry fs.DirEntry) error {
+		if len(pinned.keys) != 0 {
+			if _, err := pinned.contains(path); err != nil {
+				return err
+			}
+		}
 		if _, err := readable(path); err != nil {
 			return err
 		}
@@ -221,7 +231,7 @@ func readable(path string) ([]heldEntry, error) {
 // that spares an owned object: a path the record names was granted in the
 // operator's own right, and a list the sandbox could have written is no
 // evidence of that (owner.go).
-func narrowOwn(path string, everyone, users, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned map[string]bool) error {
+func narrowOwn(path string, everyone, users, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) error {
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),

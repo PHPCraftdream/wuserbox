@@ -17,10 +17,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
+	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
@@ -72,11 +72,21 @@ func TakeBack(root, account string, pinned []string) error {
 	if err != nil {
 		return err
 	}
-	spared := make(map[string]bool, len(pinned))
-	for _, one := range pinned {
-		if !strings.EqualFold(one, root) {
-			spared[strings.ToLower(one)] = true
+	spared, err := makePinnedPaths(pinned)
+	if err != nil {
+		return err
+	}
+	if len(spared.keys) != 0 {
+		if err := spared.prepare(root); err != nil {
+			return err
 		}
+	}
+	if len(spared.keys) != 0 {
+		rootKey, err := pathid.Key(root)
+		if err != nil {
+			return fmt.Errorf("resolving revoke root %s: %w", root, err)
+		}
+		delete(spared.keys, rootKey)
 	}
 	return filepath.WalkDir(root, func(name string, entry fs.DirEntry, err error) error {
 		switch {
@@ -88,7 +98,11 @@ func TakeBack(root, account string, pinned []string) error {
 		case entry.Type()&os.ModeSymlink != 0:
 			return nil // a name for somewhere else, whose permissions are its own
 		}
-		if spared[strings.ToLower(name)] {
+		kept, err := spared.contains(name)
+		if err != nil {
+			return err
+		}
+		if kept {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}

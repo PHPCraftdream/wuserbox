@@ -215,6 +215,108 @@ func TestWithoutTheRecordASweepReachesWhatTheSandboxSealed(t *testing.T) {
 	}
 }
 
+// TestPinnedEntriesUseFilesystemIdentityNotUnicodeFold keeps a pinned K
+// directory separate from its filesystem-distinct Kelvin-sign sibling. Both
+// are own lists, so only the record can spare one; Isolate and TakeBack must
+// preserve that exact entry and cap the other one.
+func TestPinnedEntriesUseFilesystemIdentityNotUnicodeFold(t *testing.T) {
+	root := reclaimRoot(t)
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	normalizeOwner(t, target, owner)
+	setSDDL(t, target, `D:P(A;OICI;0x1301BF;;;`+owner+`)`)
+
+	pinned := filepath.Join(target, "K")
+	other := filepath.Join(target, "\u212A")
+	if err := os.Mkdir(pinned, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(other, 0o755); err != nil {
+		t.Skipf("this volume does not distinguish K and Kelvin sign: %v", err)
+	}
+	first, err := os.Stat(pinned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.Stat(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(first, second) {
+		t.Skip("the volume reports K and Kelvin sign as the same directory")
+	}
+
+	pinnedFile := filepath.Join(pinned, "kept.txt")
+	otherFile := filepath.Join(other, "capped.txt")
+	for _, path := range []string{pinnedFile, otherFile} {
+		if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		normalizeOwner(t, path, owner)
+	}
+	// Protected own lists model directories independently granted by the
+	// operator. Unicode folding must not make the second one look pinned.
+	setSDDL(t, pinned, `D:P(A;OICI;FA;;;`+owner+`)`)
+	setSDDL(t, pinnedFile, `D:P(A;;FA;;;`+owner+`)`)
+	setSDDL(t, other, `D:P(A;OICI;FA;;;`+owner+`)`)
+	setSDDL(t, otherFile, `D:P(A;;FA;;;`+owner+`)`)
+
+	entries := []ACE{
+		{Access: AccessReadExecute, Inheritance: InheritObjects | InheritContainers},
+		{Access: 0x40, Inheritance: InheritObjects | InheritContainers},
+	}
+	if err := Isolate(target, owner, entries, InheritObjects|InheritContainers, []string{pinned}); err != nil {
+		t.Fatal(err)
+	}
+	rewriteWorks(t, pinnedFile, owner)
+	rewriteRefused(t, otherFile, owner,
+		"the filesystem-distinct Kelvin-sign entry was mistaken for the pinned K entry")
+
+	// Repeat the same pair through the revoke path. Isolate has already capped
+	// target, so a separate writable root models the operator taking a grant
+	// back while its owner still has the write-DAC needed for that one update.
+	revoked := filepath.Join(root, "revoked")
+	if err := os.Mkdir(revoked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	normalizeOwner(t, revoked, owner)
+	setSDDL(t, revoked, `D:P(A;OICI;0x1301BF;;;`+owner+`)`)
+	revokedPinned := filepath.Join(revoked, "K")
+	revokedOther := filepath.Join(revoked, "\u212A")
+	if err := os.Mkdir(revokedPinned, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(revokedOther, 0o755); err != nil {
+		t.Skipf("this volume does not distinguish K and Kelvin sign: %v", err)
+	}
+	for _, path := range []string{revokedPinned, revokedOther} {
+		normalizeOwner(t, path, owner)
+		setSDDL(t, path, `D:P(A;OICI;FA;;;`+owner+`)`)
+	}
+	revokedPinnedFile := filepath.Join(revokedPinned, "kept.txt")
+	revokedOtherFile := filepath.Join(revokedOther, "capped.txt")
+	for _, path := range []string{revokedPinnedFile, revokedOtherFile} {
+		if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		normalizeOwner(t, path, owner)
+		setSDDL(t, path, `D:P(A;;FA;;;`+owner+`)`)
+	}
+	if err := TakeBack(revoked, owner, []string{revokedPinned}); err != nil {
+		t.Fatal(err)
+	}
+	rewriteWorks(t, revokedPinnedFile, owner)
+	rewriteRefused(t, revokedOtherFile, owner,
+		"revoke spared the filesystem-distinct Kelvin-sign entry with the pinned K entry")
+}
+
 // The identity list the owner check compares against fails closed. The
 // cheapest account that cannot be resolved is one that is not identifier
 // text at all.
