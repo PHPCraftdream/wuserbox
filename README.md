@@ -71,7 +71,10 @@ Two Windows mechanisms, nothing else:
    group, and the group is what decides what the sandbox may touch.
 
 2. **A local account per project**, the group's only member, such as
-   `wub-d6e9a21f`. The command runs as *that account* — not as you. It cannot
+   `wub-4c2f8a1bd6e9a21f`. The current name carries a second hash so two
+   groups with the same legacy suffix cannot share an account; older sandboxes
+   keep their shorter account name through migration. The command runs as
+   *that account* — not as you. It cannot
    log on at the sign-in screen and cannot log on remotely. Your own Full
    Control over your own profile is not something it carries, because it is
    not you.
