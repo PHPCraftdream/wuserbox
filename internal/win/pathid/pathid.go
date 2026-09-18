@@ -68,6 +68,26 @@ func Key(path string) (string, error) {
 // filesystem's directory-entry identities. It follows ordinary path aliases,
 // but does not let a Unicode string fold turn a sibling into a child.
 func Within(root, path string) (bool, error) {
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return false, fmt.Errorf("inspecting %s: %w", root, err)
+	}
+	// A file has no descendants. Comparing file IDs here would mistake an
+	// external hard-link name for the named directory entry, and would let a
+	// single-file grant escape through that second name. Canonical resolves the
+	// actual directory-entry spelling, so aliases still work while hard links
+	// do not.
+	if !rootInfo.IsDir() {
+		rootName, err := Canonical(root)
+		if err != nil {
+			return false, err
+		}
+		pathName, err := Canonical(path)
+		if err != nil {
+			return false, err
+		}
+		return rootName == pathName, nil
+	}
 	wanted, err := of(root)
 	if err != nil {
 		return false, err

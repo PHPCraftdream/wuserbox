@@ -427,10 +427,11 @@ func TestDedupeEntriesKeepsDistinctHardLinkNames(t *testing.T) {
 	}
 }
 
-// TestHardLinkNamesStaySeparateWhenOneIsRespelt checks the ambiguous lookup
-// path. An alternate spelling opens the same inode as both hard-link names,
-// so file identity cannot decide which directory entry was named. Dedupe
-// must keep both records, and Clear must then remove both names explicitly.
+// TestHardLinkNamesStaySeparateWhenOneIsRespelt checks the directory-entry
+// lookup path. A case-only alternate spelling is resolved by Windows to the
+// exact stored entry, even when another hard-link name shares its inode.
+// Dedupe must keep both records, and Clear must then remove both names
+// explicitly.
 func TestHardLinkNamesStaySeparateWhenOneIsRespelt(t *testing.T) {
 	dest := t.TempDir()
 	first := filepath.Join(dest, "first")
@@ -447,8 +448,11 @@ func TestHardLinkNamesStaySeparateWhenOneIsRespelt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = root.Close() }()
-	if recordVouches(root, []string{"first"}, "FIRST") {
-		t.Fatal("an ambiguous alternate spelling was treated as proof of one hard-link entry")
+	if !recordVouches(root, []string{"first"}, "FIRST") {
+		t.Fatal("a case-only spelling of the recorded directory entry lost its proof")
+	}
+	if recordVouches(root, []string{"first"}, "SECOND") {
+		t.Fatal("a different hard-link name was treated as the recorded entry")
 	}
 
 	entries := DedupeEntries(dest, []config.Entry{{Path: "FIRST"}, {Path: "SECOND"}})
@@ -462,5 +466,47 @@ func TestHardLinkNamesStaySeparateWhenOneIsRespelt(t *testing.T) {
 		t.Fatal(err)
 	} else if len(left) != 0 {
 		t.Errorf("clear left hard-link directory entries behind: %v", left)
+	}
+}
+
+// TestCopyKeepsAnExactRecordThroughARespellingAndHardLink checks the full
+// record lifecycle. The source vanishes after the first copy, while the
+// sandbox has made another hard-link name for the destination. A case-only
+// respelling must still vouch for the exact recorded directory entry, and
+// Clear must remove that entry without guessing at the other name.
+func TestCopyKeepsAnExactRecordThroughARespellingAndHardLink(t *testing.T) {
+	home, dest := useProfile(t, []string{"first"})
+	write(t, filepath.Join(home, "first"), "copied")
+
+	copied := fill(t, dest)
+	if len(copied) != 1 {
+		t.Fatalf("nothing was copied in the first place, so this proves nothing: %v", copied)
+	}
+	if err := os.Link(filepath.Join(dest, "first"), filepath.Join(dest, "second")); err != nil {
+		t.Skipf("hard links unavailable on this volume: %v", err)
+	}
+	if err := os.Remove(filepath.Join(home, "first")); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&config.Config{Profile: config.Entries([]string{"FIRST"})}).Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	copied = fill(t, dest)
+	if len(copied) != 1 || copied[0].Path != "FIRST" {
+		t.Fatalf("the vanished source lost its exact record through the hard link: %v", copied)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "first")); err != nil {
+		t.Fatalf("the surviving copy was not retained: %v", err)
+	}
+
+	if err := Clear(dest, copied); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "first")); !os.IsNotExist(err) {
+		t.Errorf("Clear did not remove the recorded directory entry: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "second")); err != nil {
+		t.Errorf("Clear removed the sandbox's other hard-link name: %v", err)
 	}
 }

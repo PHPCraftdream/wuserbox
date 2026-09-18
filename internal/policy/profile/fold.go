@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
 )
 
 // Two instruments answer "are these two spellings one thing" here, because
@@ -131,8 +133,9 @@ func FoldedEntryPath(path string) string {
 // keeps a recorded entry by it and copyEntries vouches a missing source by it,
 // and both decide deletions, which is why no fold answers here. The volume is
 // asked for the stored spelling of every component. That joins i and I, but
-// keeps two hard-link names apart: file identity is not the directory entry
-// whose name Clear must remove.
+// keeps two hard-link names apart: their canonical paths remain different
+// even though file identity is shared, and the directory entry is what Clear
+// must remove.
 //
 // A spelling that opens nothing names no place, and no place is not
 // another spelling's place: false, and deliberately not a guess. Which way
@@ -187,7 +190,7 @@ func canonicalEntryPath(root *os.Root, path string) (string, bool) {
 			if err != nil {
 				return "", false
 			}
-			openedInfo, err := opened.Stat()
+			openedPath, err := pathid.Canonical(opened.Name())
 			_ = opened.Close()
 			if err != nil {
 				return "", false
@@ -198,16 +201,16 @@ func canonicalEntryPath(root *os.Root, path string) (string, bool) {
 				if err != nil {
 					continue
 				}
-				childInfo, childErr := childFile.Stat()
+				childPath, childErr := pathid.Canonical(childFile.Name())
 				_ = childFile.Close()
-				if childErr == nil && os.SameFile(openedInfo, childInfo) {
+				if childErr == nil && childPath == openedPath {
 					chosen = child.Name()
 					matches++
 				}
 			}
-			// A file identity is not a directory entry identity: hard links
-			// can make several names match the opened object. There is no safe
-			// way to choose one from that set, so refuse to merge the spelling.
+			// Canonical paths retain the stored directory-entry spelling. Hard
+			// links therefore match only the name Windows actually resolved,
+			// rather than merging every name for the same file identity.
 			if matches != 1 {
 				return "", false
 			}

@@ -102,6 +102,26 @@ func TestAGrantRefusesAFileWithASecondNameOutside(t *testing.T) {
 	}
 }
 
+func TestAFileRootDoesNotContainAnExternalHardLinkName(t *testing.T) {
+	inside, outside := t.TempDir(), t.TempDir()
+	file := filepath.Join(inside, "settings.json")
+	link := filepath.Join(outside, "settings.json")
+	if err := os.WriteFile(file, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(file, link); err != nil {
+		t.Skipf("hard links unavailable on this volume: %v", err)
+	}
+
+	got, err := within(file, link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Fatal("a file root accepted an external hard-link name")
+	}
+}
+
 // TestAGrantRefusesAHardLinkAcrossFilesystemDistinctUnicodeDirectories is
 // the same boundary with names that Go's Unicode fold incorrectly equates.
 // The volume is the authority: if it keeps K and the Kelvin sign distinct,
