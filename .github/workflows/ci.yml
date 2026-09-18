@@ -151,4 +151,17 @@ jobs:
           # It is still written to go red when the picture moves again. That
           # is the wanted signal, not a breakage: the investigation and
           # docs/limits.md are corrected in the same change that moves it.
-          go test ./internal/account/ -run TestWhatTheSeededHiveAnswersItsOwnAccount -count=1 -v
+          if ! output=$(go test ./internal/account/ -run TestWhatTheSeededHiveAnswersItsOwnAccount -count=1 -v); then
+            echo "$output"
+            echo "::error::the registry hive measurement failed"
+            exit 1
+          fi
+          echo "$output"
+          if echo "$output" | grep -q -- "--- SKIP"; then
+            echo "::error::the registry hive measurement was skipped"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q -- "--- PASS: TestWhatTheSeededHiveAnswersItsOwnAccount"; then
+            echo "::error::the registry hive measurement did not pass"
+            exit 1
+          fi

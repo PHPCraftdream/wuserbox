@@ -130,6 +130,7 @@ func TestWhatTheSeededHiveAnswersItsOwnAccount(t *testing.T) {
 	}
 	probes := []probe{
 		{"create HKCU\\Software\\wub-probe (the write the finding measured)", `add HKCU\Software\wub-probe /f`},
+		{"create a nested key below HKCU\\Software\\wub-probe", `add HKCU\Software\wub-probe\nested /f`},
 		{"create HKCU\\Software\\Classes\\wub-probe", `add HKCU\Software\Classes\wub-probe /f`},
 		{"read HKCU\\Software", `query HKCU\Software`},
 		{"write a value on the root, HKCU itself", `add HKCU /ve /d wub /f`},
@@ -171,12 +172,13 @@ func TestWhatTheSeededHiveAnswersItsOwnAccount(t *testing.T) {
 		because string
 	}{
 		{0, false, "Software is born inheriting the root's list now that the entries carry their inheritance down, instead of taking its creator's default"},
-		{1, false, "Software\\Classes is UsrClass.dat, and the profile service permissions its root to the account with entries that reach the subkeys"},
-		{2, false, "the list Software inherits grants reading as much as writing -- the defect refused this read, which is how it showed on both sides"},
-		{3, false, "the root itself is where the tightened list grants the account everything"},
-		{4, false, "a key the account creates under the root is the account's own, permissioned from its creator"},
-		{5, false, "and stays the account's own -- the inheritance changes who reaches the hive, not who owns what the account makes"},
-		{6, false, "Software accepts a value because the list it was born with is the root's, inherited, and it names the account"},
+		{1, false, "a key nested below Software inherits the same list, not only Software itself"},
+		{2, false, "Software\\Classes is UsrClass.dat, and the profile service permissions its root to the account with entries that reach the subkeys"},
+		{3, false, "the list Software inherits grants reading as much as writing -- the defect refused this read, which is how it showed on both sides"},
+		{4, false, "the root itself is where the tightened list grants the account everything"},
+		{5, false, "a key the account creates under the root is the account's own, permissioned from its creator"},
+		{6, false, "and stays the account's own -- the inheritance changes who reaches the hive, not who owns what the account makes"},
+		{7, false, "Software accepts a value because the list it was born with is the root's, inherited, and it names the account"},
 	} {
 		if refused := results[want.at].exit != 0; refused != want.refused {
 			verb := "was refused"

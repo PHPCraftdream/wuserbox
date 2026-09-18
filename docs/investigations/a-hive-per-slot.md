@@ -382,7 +382,7 @@ hypothesis, and the descriptor read out of `Software` will name whoever it
 was regardless. What would refute the whole shape: the root itself refusing
 a write from the account. Nothing measured so far tests that.
 
-The measurement now runs where the rights are:
+The original measurement ran where the rights were:
 `TestWhereTheSeededHiveRefusesItsOwnAccount`
 (`internal/account/ownprofile_hive_test.go`) builds a real account, seeds
 the hive the way `MakeProfile` does, registers it, and asks reg.exe — one
@@ -390,12 +390,12 @@ logon per probe, the way a run starts everything — to write at the root, at
 `Software`, at a fresh subkey of each, and at `Software\Classes`. It then
 loads the hive itself and reports, in words, who owns the root, `Software`
 and `Software\Classes` and what each permission list grants, the key that
-refuses beside the key that accepts. It asserts only what the transcript
-above already measured — `Software` refuses, `Software\Classes` accepts,
-reads work — so that when the picture changes, because the defect was fixed
-or because this hypothesis is wrong, the test goes red with the new
-descriptors attached, and this section and `docs/limits.md` are the two
-things to update in the same change.
+refuses beside the key that accepts. It asserted only what the transcript
+above measured — `Software` refused, `Software\Classes` accepted, and reads
+worked. The test was renamed and its oracle was updated when the inheritance
+fix landed; the historical name and refusal transcript remain here so the
+cause of the defect is not lost. The current post-fix measurement and oracle
+are described in the final section.
 
 ## The hypothesis measured, 2026-09-17, and settled
 
@@ -513,11 +513,12 @@ until they are removed and built again.
 The prediction this fix was written against, for the next run of the test —
 renamed in the same change to `TestWhatTheSeededHiveAnswersItsOwnAccount`,
 because a name asserting a refusal that no longer happens is a name that
-misleads whoever reads the list before the body: the seven probes all
+misleads whoever reads the list before the body: the eight probes all
 succeed, where three used to be refused —
 
 ```
   create HKCU\Software\wub-probe                        exit 0
+  create HKCU\Software\wub-probe\nested                 exit 0
   create HKCU\Software\Classes\wub-probe                exit 0
   read   HKCU\Software                                  exit 0
   write a value on the root, HKCU itself                exit 0
@@ -532,4 +533,3 @@ is openable at last, expected to show the same three grants marked
 inherited, under an owner that is still whoever created it. The owner and
 the exact list are reasoned, not measured — the assertions pin only the
 exit codes, as before.
-

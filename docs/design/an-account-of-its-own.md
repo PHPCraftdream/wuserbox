@@ -95,15 +95,14 @@ rather than from the registry. What starts blank is anything that expected the
 default profile's own settings — locale and the like — which is inferred rather
 than measured.
 
-What that measurement never asked was whether the tools could *save* into the
-hive, and the first measurement that asked came back the opposite of what
-this paragraph assumes: PowerShell's own attempt to record its execution
-policy under `HKCU\Software` is refused
-([a hive per slot](../investigations/a-hive-per-slot.md)). Starting works;
-saving does not, and the open question is why. That question was
-answered and the defect fixed the same day, 2026-09-17: the permission list
-on the hive's root reached nothing below it, and the entries now carry
-their inheritance down. The investigation's last section carries the fix.
+The first measurement that asked whether tools could *save* into the hive
+found PowerShell's attempt to record its execution policy under
+`HKCU\Software` refused ([a hive per slot](../investigations/a-hive-per-slot.md)).
+The cause was the permission list on the hive's root reaching nothing below
+it. The entries now carry their inheritance down, so new profiles accept the
+same writes. The investigation's last section carries the fix. A profile
+already built keeps its existing hive and must be removed and rebuilt to pick
+up the new permissions.
 
 The cost in time is tens of milliseconds: about fifty to ninety for the very
 first run of a sandbox, twenty-five to a hundred to load the hive on a cold run
@@ -151,11 +150,9 @@ path back.
   has to become narrower and honest.
 - **`HKEY_CURRENT_USER` becomes the sandbox's own**, which is what lets a shell
   and a registry-writing tool work at all, and means nothing of yours is read
-  from there. Measured later: the tool runs and reads, and saving under
-  `HKCU\Software` is denied — a known defect, measured and so far unexplained;
-  see [a hive per slot](../investigations/a-hive-per-slot.md). Explained
-  and fixed 2026-09-17: the list on the hive's root reached nothing below
-  it; the grants now reach the keys the first logon creates.
+  from there. New profiles accept writes under `HKCU\Software`; profiles
+  built before the inheritance fix retain the old permissions until the
+  sandbox is removed and rebuilt. See [a hive per slot](../investigations/a-hive-per-slot.md).
 - **Files the sandbox creates are owned by the sandbox account.** You need to
   keep being able to delete them, so the project directory has to carry an
   inheritable entry for you.

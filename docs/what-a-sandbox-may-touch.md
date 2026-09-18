@@ -9,9 +9,11 @@ version is in the [README](../README.md); this is the whole of it.
 
 * the project directory;
 * the sandbox's own thin profile, which `HOME`, `APPDATA`, `TEMP` and `TMP`
-  point inside — everything in it but the registry hive, which the account
-  the profile belongs to cannot write into. That last part is a known defect
-  rather than a boundary drawn on purpose; [limits](limits.md) records it.
+  point inside — including its own registry hive. New profiles grant the
+  sandbox account access through the hive's key tree, so programs can save
+  under `HKCU\Software`. Profiles initialized before that inheritance fix
+  keep their old hive permissions; remove and recreate the sandbox to rebuild
+  the hive. [Limits](limits.md) records this upgrade boundary.
 
 That is the whole list. Your real `~/.config`, `~/.claude` and the other
 agent directories are **not** handed over: what an agent needs from them is
@@ -142,4 +144,3 @@ Code running in the sandbox must not be able to widen its own permissions:
   really there; wuserbox says so instead of creating it.
 * Each project has its own group and its own temp directory, so one sandbox
   cannot write into another's project.
-

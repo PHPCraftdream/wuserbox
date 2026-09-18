@@ -39,7 +39,10 @@ const hkeyUsers = 0x80000003
 //
 // Safe to call again on a profile already built: the directory and its
 // subdirectories are made idempotently, and a hive already on disk is left
-// exactly as it was tightened the first time. Requires administrator
+// exactly as it was tightened the first time. This deliberately does not
+// migrate an older hive to a new ACL shape; removing and recreating the
+// sandbox is the upgrade path so existing registry data is not rewritten
+// under a different security descriptor. Requires administrator
 // rights: tightening a hive needs SE_BACKUP_NAME and SE_RESTORE_NAME, which
 // only an elevated token can turn on.
 func MakeProfile(dir string, account sid.Value) error {
