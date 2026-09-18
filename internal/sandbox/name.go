@@ -36,11 +36,16 @@ func Name(dir string) (string, string, error) {
 	// A disappeared project cannot be resolved to a filesystem entry. The
 	// legacy group name is still a durable handle for its existing sandbox,
 	// so check it before deriving a new identity key.
-	legacy := legacyName(norm)
-	if _, exists, err := group.Comment(legacy); err != nil {
-		return "", "", err
-	} else if exists {
-		return legacy, norm, nil
+	legacyCandidates := []string{legacyName(norm)}
+	if raw, err := filepath.Abs(filepath.Clean(strings.Trim(strings.TrimSpace(dir), `"'`))); err == nil {
+		legacyCandidates = append(legacyCandidates, legacyName(raw))
+	}
+	for _, legacy := range legacyCandidates {
+		if _, exists, err := group.Comment(legacy); err != nil {
+			return "", "", err
+		} else if exists {
+			return legacy, norm, nil
+		}
 	}
 	name := nameForKey(norm, key)
 	// The key changed when filesystem identity replaced Unicode folding. Keep
