@@ -46,6 +46,21 @@ func holds(t *testing.T, path, account, text string) bool {
 // the only way to build entry kinds this package deliberately cannot write.
 func setSDDL(t *testing.T, path, text string) {
 	t.Helper()
+	// CI runners may create temporary files owned by Administrators rather
+	// than by the test account. The owner-cap tests model a sandbox whose
+	// account owns the object, so make that fixture fact explicit before the
+	// descriptor below removes the caller's implicit DACL rights.
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("icacls", path, "/setowner", "*"+owner).CombinedOutput(); err != nil {
+		// Ordinary local runs often already create these fixtures owned by
+		// the caller but cannot exercise /setowner. The admin CI runner can
+		// normalize a runner-owned fixture; if it cannot, the owner-specific
+		// assertion below fails instead of silently passing.
+		t.Logf("could not normalize the fixture owner of %s: %v\n%s", path, err, out)
+	}
 	var descriptor uintptr
 	if r, _, err := procStringToSecurityDescriptor.Call(uintptr(unsafe.Pointer(w32.UTF16(text))), 1,
 		uintptr(unsafe.Pointer(&descriptor)), 0); r == 0 {
