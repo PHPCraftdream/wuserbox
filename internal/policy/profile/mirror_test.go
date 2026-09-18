@@ -71,6 +71,35 @@ func TestCopyRefusesAnExternalHardLinkBeforeTruncatingIt(t *testing.T) {
 	}
 }
 
+// TestCopyRefusesASymlinkToAnInternalExternalHardLinkBeforeTruncatingIt closes
+// the indirect form of the same boundary: Lstat sees the destination link,
+// but opening it would reach the internal name's external file object.
+func TestCopyRefusesASymlinkToAnInternalExternalHardLinkBeforeTruncatingIt(t *testing.T) {
+	home, dest := useProfile(t, []string{".gitconfig"})
+	write(t, filepath.Join(home, ".gitconfig"), "source contents\n")
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	write(t, outside, "outside contents\n")
+	internal := filepath.Join(dest, "internal.txt")
+	if err := os.Link(outside, internal); err != nil {
+		t.Skipf("this machine would not make a hard link: %v", err)
+	}
+	link := filepath.Join(dest, ".gitconfig")
+	if out, err := exec.Command("cmd.exe", "/c", "mklink", link, internal).CombinedOutput(); err != nil {
+		t.Skipf("this machine would not make a symbolic link: %v\n%s", err, out)
+	}
+
+	_, _, err := Copy(dest, nil, nil)
+	if err == nil {
+		t.Fatal("copy followed a destination symbolic link")
+	}
+	if !strings.Contains(err.Error(), "symbolic link or reparse point") {
+		t.Fatalf("copy refused the link without an actionable diagnostic: %v", err)
+	}
+	if got := read(t, outside); got != "outside contents\n" {
+		t.Fatalf("copy modified the external hard-link target: %q", got)
+	}
+}
+
 // TestCopyAllowsHardLinksWhoseNamesStayInTheProfile keeps the useful case:
 // deduplicated files inside one profile are safe because every name remains
 // within the profile boundary.

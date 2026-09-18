@@ -257,20 +257,26 @@ func mirrorFile(src, dst string, root *os.Root) error {
 		}
 	}
 	// os.Root pins the pathname, not the file object. A sandbox can leave a
-	// hard-link name in its profile, and O_TRUNC would then modify every name
-	// for that object, including one outside the profile. Startup checks the
-	// tree, but the profile may have been writable since that check. Refuse the
-	// write when the destination already has an external name; links whose
-	// names all stay under this profile remain valid and are preserved.
-	if info, readable := lookAt(root, dst); readable && info.Mode().IsRegular() {
-		full := filepath.Join(root.Name(), filepath.FromSlash(dst))
-		outside, err := pathid.OutsideNames(root.Name(), full)
-		if err != nil {
-			return fmt.Errorf("checking destination %s for external hard links: %w", dst, err)
+	// link or reparse point in its profile, and O_TRUNC would then modify the
+	// object reached through that name. In particular, a symlink to an
+	// internal hard-link name can reach an external file while Lstat sees only
+	// the symlink. Refuse links before opening the destination. A plain file
+	// whose names all stay under this profile remains valid and is checked
+	// below.
+	if info, readable := lookAt(root, dst); readable {
+		if info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+			return fmt.Errorf("refusing to overwrite %s: destination is a symbolic link or reparse point", dst)
 		}
-		if len(outside) > 0 {
-			return fmt.Errorf("refusing to overwrite %s: it is also hard-linked outside the sandbox profile (%s)",
-				dst, strings.Join(outside, ", "))
+		if info.Mode().IsRegular() {
+			full := filepath.Join(root.Name(), filepath.FromSlash(dst))
+			outside, err := pathid.OutsideNames(root.Name(), full)
+			if err != nil {
+				return fmt.Errorf("checking destination %s for external hard links: %w", dst, err)
+			}
+			if len(outside) > 0 {
+				return fmt.Errorf("refusing to overwrite %s: it is also hard-linked outside the sandbox profile (%s)",
+					dst, strings.Join(outside, ", "))
+			}
 		}
 	}
 	out, err := root.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
