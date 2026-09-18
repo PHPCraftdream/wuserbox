@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/base/trace"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
@@ -250,7 +251,12 @@ func ApplyTogether(account string, specs []grant.Spec, pinned []string) error {
 		go func() {
 			defer wg.Done()
 			for spec := range queue {
-				if err := grant.Apply(account, spec.Path, spec.Kind, pinned); err != nil {
+				done := trace.Current().Phase("grant_root",
+					trace.Field{Key: "path", Value: spec.Path},
+					trace.Field{Key: "kind", Value: string(spec.Kind)})
+				err := grant.Apply(account, spec.Path, spec.Kind, pinned)
+				done(err)
+				if err != nil {
 					failures <- err
 				}
 			}

@@ -4,16 +4,24 @@
 package lock
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/base/trace"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
+
+// ErrHeld says a bounded lock wait ended while another process still held the
+// lock. It is separate from an I/O failure so callers can explain a busy
+// setup without treating it as success.
+var ErrHeld = errors.New("the lock is still held")
 
 var (
 	procLockFileEx   = w32.Kernel32.NewProc("LockFileEx")
@@ -42,8 +50,24 @@ const Rules = "rules"
 // itself when it needs administrator rights. Nothing inside work may start
 // another wuserbox for the same sandbox, because that one waits for this
 // lock.
-func Hold(name string, work func() error) error {
+func Hold(name string, work func() error) (err error) {
+	done := trace.Current().Phase("lock_wait", trace.Field{Key: "lock", Value: name})
 	release, err := take(name)
+	done(err)
+	if err != nil {
+		return err
+	}
+	defer release()
+	err = work()
+	return err
+}
+
+// HoldWait is Hold with a bounded wait. A timeout never runs work, so callers
+// fail closed and may retry once the holder is gone.
+func HoldWait(name string, wait time.Duration, work func() error) error {
+	done := trace.Current().Phase("lock_wait", trace.Field{Key: "lock", Value: name})
+	release, err := takeWait(name, exclusive, wait)
+	done(err)
 	if err != nil {
 		return err
 	}
@@ -63,8 +87,38 @@ const (
 // how to let it go.
 func take(name string) (func(), error) { return takeAs(name, exclusive) }
 
+const (
+	lockFailImmediately = uintptr(0x1)
+	lockPoll            = 50 * time.Millisecond
+	holdLockViolation   = syscall.Errno(33)
+)
+
+func takeWait(name string, how uintptr, wait time.Duration) (func(), error) {
+	if wait < 0 {
+		wait = 0
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		release, err := takeAsMode(name, how, lockFailImmediately)
+		if err == nil {
+			return release, nil
+		}
+		if !errors.Is(err, holdLockViolation) || !time.Now().Before(deadline) {
+			if errors.Is(err, holdLockViolation) {
+				return nil, fmt.Errorf("waiting for the lock %s: %w", name, ErrHeld)
+			}
+			return nil, err
+		}
+		time.Sleep(lockPoll)
+	}
+}
+
 // takeAs is take, told how much of the name to claim.
 func takeAs(name string, how uintptr) (func(), error) {
+	return takeAsMode(name, how, 0)
+}
+
+func takeAsMode(name string, how, flags uintptr) (func(), error) {
 	dir := filepath.Join(paths.StateDir(), "locks")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("preparing the lock directory %s: %w", dir, err)
@@ -85,7 +139,7 @@ func takeAs(name string, how uintptr) (func(), error) {
 	var overlapped syscall.Overlapped
 	// Without LOCKFILE_FAIL_IMMEDIATELY this call waits for the holder rather
 	// than returning, so there is nothing here that polls.
-	if r, _, callErr := procLockFileEx.Call(uintptr(handle), how, 0, 1, 0,
+	if r, _, callErr := procLockFileEx.Call(uintptr(handle), how|flags, 0, 1, 0,
 		uintptr(unsafe.Pointer(&overlapped))); r == 0 {
 		_ = syscall.CloseHandle(handle)
 		return nil, fmt.Errorf("waiting for the lock %s: %w", path, callErr)

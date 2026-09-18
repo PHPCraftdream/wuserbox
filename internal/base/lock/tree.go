@@ -2,6 +2,8 @@ package lock
 
 import (
 	"path/filepath"
+
+	"github.com/PHPCraftdream/wuserbox/internal/base/trace"
 )
 
 // HoldTree runs work while nothing else changes the permissions anywhere in
@@ -29,7 +31,9 @@ import (
 // operations can never hold what the other is waiting for: each waits only on
 // a directory deeper than everything it holds already.
 func HoldTree(root string, work func() error) error {
+	done := trace.Current().Phase("lock_tree_wait", trace.Field{Key: "root", Value: root})
 	release, err := takeTree(root)
+	done(err)
 	if err != nil {
 		return err
 	}

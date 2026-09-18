@@ -14,6 +14,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/base/trace"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/exec"
@@ -40,6 +41,13 @@ type adjustment struct {
 // rights when the group is missing or a permission cannot be applied as the
 // plain user.
 func prepare(options sandbox.Options) (*state.State, error) {
+	done := trace.Current().Phase("prepare")
+	s, err := prepareImpl(options)
+	done(err)
+	return s, err
+}
+
+func prepareImpl(options sandbox.Options) (*state.State, error) {
 	name, _, err := sandbox.Name(options.Dir)
 	if err != nil {
 		return nil, err
@@ -56,6 +64,9 @@ func prepare(options sandbox.Options) (*state.State, error) {
 	}
 	if !made.rebuild {
 		return made.state, nil
+	}
+	if path := trace.Current().Path(); path != "" {
+		report(options, "bootstrap trace: %s", path)
 	}
 	repaired, err := rebuild(options, name)
 	if err != nil {
@@ -168,9 +179,12 @@ func rebuild(options sandbox.Options, name string) (*state.State, error) {
 	if err != nil {
 		return nil, err
 	}
+	done := trace.Current().Phase("elevation_request", trace.Field{Key: "sandbox", Value: name})
 	if err := Elevate(rebuildOptions(options, existing).Args()); err != nil {
+		done(err)
 		return nil, err
 	}
+	done(nil)
 	s, err := state.Load(name)
 	if err != nil {
 		return nil, err
@@ -302,7 +316,13 @@ func Init(args []string) error {
 		return Preview(options)
 	}
 	if !token.IsAdmin() {
-		return Elevate(options.Args())
+		if path := trace.Current().Path(); path != "" {
+			report(options, "bootstrap trace: %s", path)
+		}
+		done := trace.Current().Phase("elevation_request")
+		err := Elevate(options.Args())
+		done(err)
+		return err
 	}
 	name, _, err := sandbox.Name(options.Dir)
 	if err != nil {
@@ -322,7 +342,9 @@ func Init(args []string) error {
 		return err
 	}
 	defer release()
+	done := trace.Current().Phase("elevated_init")
 	s, err := sandbox.Init(options)
+	done(err)
 	if err != nil {
 		return err
 	}
@@ -336,7 +358,9 @@ func Init(args []string) error {
 	// program will start in is a lie a script cannot see through -- and the
 	// two flags a script is most likely to be using, --quiet and --json, were
 	// exactly the ones that swallowed the warning this used to be.
+	done = trace.Current().Phase("prove_it_starts")
 	if err := exec.ProveItStarts(s); err != nil {
+		done(err)
 		return exit.Errorf(exit.Failed,
 			"sandbox %s is built and kept, and no program will start in it: %v.\n"+
 				"  Every run starts wuserbox again as the sandbox's own account, so that account "+
@@ -345,6 +369,7 @@ func Init(args []string) error {
 				"Nothing has to be built twice: what is already there is waiting for it.",
 			s.Group, err, s.Dir)
 	}
+	done(nil)
 	fmt.Printf("%s\t%s\n", s.Group, s.Dir)
 	return nil
 }

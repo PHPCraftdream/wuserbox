@@ -124,6 +124,25 @@ func TestMakingAProfileAgainLeavesWhatIsAlreadyThere(t *testing.T) {
 	}
 }
 
+func TestMakingAProfileRunsTheLinkPreflightOnce(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "profile")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	previous := validateProfileLinks
+	calls := 0
+	validateProfileLinks = func(path string, allow bool) error {
+		calls++
+		return previous(path, allow)
+	}
+	defer func() { validateProfileLinks = previous }()
+
+	_ = MakeProfile(profile, me(t))
+	if calls != 1 {
+		t.Fatalf("profile link preflight ran %d times, want once", calls)
+	}
+}
+
 // TestMakingAProfileRejectsAnExternalHardLinkBeforePermissioningIt pins the
 // ordering that protects the object behind a profile link: ProtectFull must
 // never run before the link scan has rejected the profile.

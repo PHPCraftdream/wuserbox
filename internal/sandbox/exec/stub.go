@@ -25,6 +25,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
+	"github.com/PHPCraftdream/wuserbox/internal/base/trace"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
@@ -164,7 +165,9 @@ func StubLine(self, groupSID, commandLine string) (string, error) {
 // is a program to start next, that call is what stands behind Shield here
 // too. What passes here is the chain a run depends on rather than a model of
 // it.
-func ProveItStarts(s *state.State) error {
+func ProveItStarts(s *state.State) (err error) {
+	done := trace.Current().Phase("prove_it_starts", trace.Field{Key: "sandbox", Value: s.Group})
+	defer func() { done(err) }()
 	if s.Account == "" {
 		return nil // an older sandbox, which runs the old way and needs no stub
 	}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
+	"github.com/PHPCraftdream/wuserbox/internal/base/trace"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
@@ -37,10 +38,16 @@ import (
 // empty until `--init` runs again to add one -- and keeps running the old
 // way meanwhile, rather than refusing to run until it is upgraded.
 func Run(s *state.State, commandLine string) (int, error) {
+	done := trace.Current().Phase("command_launch")
+	var code int
+	var err error
 	if s.Account == "" {
-		return runRestricted(s, commandLine)
+		code, err = runRestricted(s, commandLine)
+	} else {
+		code, err = runAsAccount(s, commandLine)
 	}
-	return runAsAccount(s, commandLine)
+	done(err)
+	return code, err
 }
 
 // runRestricted is what every run did before this sandbox had an account of

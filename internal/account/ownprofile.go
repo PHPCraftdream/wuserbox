@@ -22,12 +22,15 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/PHPCraftdream/wuserbox/internal/base/trace"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
 const hkeyUsers = 0x80000003
+
+var validateProfileLinks = acl.ValidateLinks
 
 // MakeProfile builds the directory a sandbox's own thin profile lives in:
 // the three subdirectories a shell expects, a permission list naming only
@@ -45,18 +48,24 @@ const hkeyUsers = 0x80000003
 // under a different security descriptor. Requires administrator
 // rights: tightening a hive needs SE_BACKUP_NAME and SE_RESTORE_NAME, which
 // only an elevated token can turn on.
-func MakeProfile(dir string, account sid.Value) error {
+func MakeProfile(dir string, account sid.Value) (err error) {
 	// ProtectFull below replaces the profile DACL and propagates its inherited
 	// entries to existing children. Refuse an external hard-link name before
 	// any profile mutation, or that one operation would also permission the
 	// object behind the outside name before init could reject the profile.
+	preflightDone := trace.Current().Phase("profile_preflight", trace.Field{Key: "root", Value: dir})
 	if _, err := os.Lstat(dir); err == nil {
-		if err := acl.ValidateLinks(dir, false); err != nil {
+		if err := validateProfileLinks(dir, false); err != nil {
+			preflightDone(err)
 			return fmt.Errorf("checking the profile for external hard links: %w", err)
 		}
 	} else if !os.IsNotExist(err) {
+		preflightDone(err)
 		return fmt.Errorf("checking whether the profile exists: %w", err)
 	}
+	preflightDone(nil)
+	makeDone := trace.Current().Phase("profile_make", trace.Field{Key: "root", Value: dir})
+	defer func() { makeDone(err) }()
 	// The profile's own directory first, and by name: everything above it
 	// belongs to whoever is running this, and a sandbox cannot reach into it
 	// -- it holds its profile outright but has no write access to the

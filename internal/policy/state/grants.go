@@ -3,6 +3,7 @@ package state
 import (
 	"fmt"
 
+	"github.com/PHPCraftdream/wuserbox/internal/base/trace"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 )
@@ -69,7 +70,11 @@ func (s *State) Ensure(path string, kind grant.Kind) error {
 	return s.record(path, kind, true, true)
 }
 
-func (s *State) record(path string, kind grant.Kind, always, explicit bool) error {
+func (s *State) record(path string, kind grant.Kind, always, explicit bool) (err error) {
+	done := trace.Current().Phase("grant_root",
+		trace.Field{Key: "path", Value: path},
+		trace.Field{Key: "kind", Value: string(kind)})
+	defer func() { done(err) }()
 	index, found := s.find(path)
 	// A change that was begun and never finished is not unchanged, whatever
 	// the kind says: the record ran ahead of the file system, and the two have

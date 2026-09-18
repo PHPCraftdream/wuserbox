@@ -13,6 +13,7 @@ import (
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/base/trace"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/preset"
@@ -28,7 +29,9 @@ import (
 // The rules file is created first if it is missing. Otherwise a sandbox that
 // may write in the profile root could create it, and the next ordinary run
 // would read its own rules and hand itself more directories.
-func ProtectSettings(s *state.State) error {
+func ProtectSettings(s *state.State) (err error) {
+	done := trace.Current().Phase("protect_settings")
+	defer func() { done(err) }()
 	if err := ensureRules(); err != nil {
 		return err
 	}
@@ -40,7 +43,18 @@ func ProtectSettings(s *state.State) error {
 	targets := append(own, preset.Sensitive()...)
 	var failures []string
 	for _, path := range targets {
-		if _, err := os.Stat(path); err != nil {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			failures = append(failures, fmt.Errorf("checking %s: %w", path, err).Error())
+			continue
+		}
+		protected, err := acl.IsProtected(path)
+		if err != nil {
+			failures = append(failures, err.Error())
+			continue
+		}
+		if protected {
 			continue
 		}
 		if err := acl.Protect(path); err != nil {

@@ -15,9 +15,10 @@ import (
 )
 
 var (
-	procGetNamedSecurityInfo = w32.Advapi32.NewProc("GetNamedSecurityInfoW")
-	procSetNamedSecurityInfo = w32.Advapi32.NewProc("SetNamedSecurityInfoW")
-	procSetEntriesInAcl      = w32.Advapi32.NewProc("SetEntriesInAclW")
+	procGetNamedSecurityInfo         = w32.Advapi32.NewProc("GetNamedSecurityInfoW")
+	procSetNamedSecurityInfo         = w32.Advapi32.NewProc("SetNamedSecurityInfoW")
+	procSetEntriesInAcl              = w32.Advapi32.NewProc("SetEntriesInAclW")
+	procGetSecurityDescriptorControl = w32.Advapi32.NewProc("GetSecurityDescriptorControl")
 )
 
 const (
@@ -202,9 +203,84 @@ var (
 // Where that group does not exist yet, nothing takes its place. A protected
 // file the sandbox cannot read is the safe half of that choice.
 func Protect(path string) error {
-	user, err := sid.CurrentUser()
+	text, err := protectedText(path)
 	if err != nil {
 		return err
+	}
+	return setProtectedSDDL(path, text)
+}
+
+// IsProtected reports whether path already has exactly the DACL Protect would
+// install. It reads the complete list and the protected-DACL control bit; a
+// root-only or bit-only check would skip a repair after an extra ACE was added.
+// A true result means the write and its inheritance propagation can be safely
+// skipped.
+func IsProtected(path string) (bool, error) {
+	expected, freeExpected, err := protectedDACL(path)
+	if err != nil {
+		return false, err
+	}
+	defer freeExpected()
+
+	var actual *aclHeader
+	var descriptor uintptr
+	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
+		seFileObject, daclInfo, 0, 0, uintptr(unsafe.Pointer(&actual)), 0,
+		uintptr(unsafe.Pointer(&descriptor))); r != 0 {
+		return false, fmt.Errorf("reading the permissions of %s: error %d", path, r)
+	}
+	defer w32.Free(descriptor)
+	if descriptor == 0 || actual == nil {
+		return false, nil
+	}
+	var control uint16
+	var revision uint32
+	if r, _, callErr := procGetSecurityDescriptorControl.Call(descriptor,
+		uintptr(unsafe.Pointer(&control)), uintptr(unsafe.Pointer(&revision))); r == 0 {
+		return false, fmt.Errorf("reading the protection state of %s: %w", path, callErr)
+	}
+	const daclProtected = 0x1000
+	if control&daclProtected == 0 {
+		return false, nil
+	}
+	want, err := entriesOf(expected)
+	if err != nil {
+		return false, fmt.Errorf("reading expected permissions for %s: %w", path, err)
+	}
+	have, err := entriesOf(actual)
+	if err != nil {
+		return false, fmt.Errorf("reading the permissions of %s: %w", path, err)
+	}
+	if len(have) != len(want) {
+		return false, nil
+	}
+	for i := range want {
+		if have[i].inherited != want[i].inherited ||
+			have[i].access.mode != want[i].access.mode ||
+			!sameProtectedPermissions(have[i].access.permissions, want[i].access.permissions) ||
+			have[i].access.inheritance != want[i].access.inheritance ||
+			!sameSID(have[i].access.trustee.name, want[i].access.trustee.name) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func sameProtectedPermissions(have, want uint32) bool {
+	const (
+		genericAll = 0x10000000
+		fileAll    = 0x1f01ff
+	)
+	if have == fileAll && want == genericAll {
+		return true
+	}
+	return have == want
+}
+
+func protectedText(path string) (string, error) {
+	user, err := sid.CurrentUser()
+	if err != nil {
+		return "", err
 	}
 	inheritance := inheritanceFor(path)
 	text := fmt.Sprintf("D:PAI(A;%s;GA;;;%s)(A;%s;GA;;;SY)(A;%s;GA;;;BA)",
@@ -215,7 +291,28 @@ func Protect(path string) error {
 	if reader, err := sid.Lookup(group.ReadGroupFor(user)); err == nil {
 		text += fmt.Sprintf("(A;%s;0x%x;;;%s)", inheritance, AccessReadExecute, reader.String())
 	}
-	return setProtectedSDDL(path, text)
+	return text, nil
+}
+
+func protectedDACL(path string) (*aclHeader, func(), error) {
+	text, err := protectedText(path)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	var descriptor uintptr
+	if r, _, callErr := procStringToSecurityDescriptor.Call(uintptr(unsafe.Pointer(w32.UTF16(text))), 1,
+		uintptr(unsafe.Pointer(&descriptor)), 0); r == 0 {
+		return nil, func() {}, fmt.Errorf("building expected permissions for %s: %w", path, callErr)
+	}
+	var present, defaulted int32
+	var dacl *aclHeader
+	if r, _, callErr := procGetSecurityDescriptorDacl.Call(descriptor,
+		uintptr(unsafe.Pointer(&present)), uintptr(unsafe.Pointer(&dacl)),
+		uintptr(unsafe.Pointer(&defaulted))); r == 0 {
+		w32.Free(descriptor)
+		return nil, func() {}, fmt.Errorf("reading expected permissions for %s: %w", path, callErr)
+	}
+	return dacl, func() { w32.Free(descriptor) }, nil
 }
 
 // ProtectFull replaces the permissions of path with a fixed list granting

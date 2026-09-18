@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,12 +9,12 @@ import (
 	acct "github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/base/trace"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/preset"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/facts"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/grants"
-	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
@@ -26,7 +25,9 @@ import (
 // agent preset, the standing rules and the extra directories passed in.
 // Creating a group needs administrator rights; changing permissions needs
 // ownership of the target.
-func Init(o Options) (*state.State, error) {
+func Init(o Options) (result *state.State, err error) {
+	done := trace.Current().Phase("sandbox_init")
+	defer func() { done(err) }()
 	name, dir, err := Name(o.Dir)
 	if err != nil {
 		return nil, err
@@ -36,7 +37,9 @@ func Init(o Options) (*state.State, error) {
 	// separate one. Failing here does not stop the build: without it, only
 	// the profile reads that depended on it are missing, the same as any
 	// other grant an unprivileged run could not finish.
+	readDone := trace.Current().Phase("read_group_provisioning")
 	if err := grants.EnsureReadGroup(); err != nil {
+		readDone(err)
 		// Said in full, because the sandbox that comes out of this works and
 		// is quietly less useful than the one that was asked for: reads under
 		// the profile fail, and the program inside will report those as
@@ -45,6 +48,8 @@ func Init(o Options) (*state.State, error) {
 			"that reads your profile failed (%v).\n"+
 			"  Everything else is in place. Run `wuserbox --init` again as an administrator to finish it.",
 			paths.Home(), err)
+	} else {
+		readDone(nil)
 	}
 	var built *state.State
 	// Everything from reading the record to writing it back is one operation.
@@ -176,8 +181,12 @@ func build(name, dir string, o Options) (*state.State, error) {
 	// because nothing that merely reports on a sandbox can afford to: a walk
 	// of a real profile takes seconds, not milliseconds. Same trade as the
 	// moment above, for the same reason.
+	measureDone := trace.Current().Phase("measure", trace.Field{Key: "sandbox", Value: name})
 	if _, err := facts.Measure(name, s.Profile, s.Temp); err != nil {
+		measureDone(err)
 		note(o, "could not measure what %s takes on disk: %v", name, err)
+	} else {
+		measureDone(nil)
 	}
 	return s, nil
 }
@@ -197,7 +206,10 @@ func build(name, dir string, o Options) (*state.State, error) {
 // record after this point still leaves an account whose password nobody
 // remembers, but it is one this same run just made and is still in the
 // middle of finishing, not one a save already promised was ready to use.
-func ensureAccount(s *state.State, groupName, dir string) error {
+func ensureAccount(s *state.State, groupName, dir string) (err error) {
+	done := trace.Current().Phase("account_creation_or_reuse",
+		trace.Field{Key: "sandbox", Value: groupName})
+	defer func() { done(err) }()
 	name, err := accountName(s, groupName, dir)
 	if err != nil {
 		return err
@@ -375,23 +387,19 @@ func ensureProfile(s *state.State, groupName string) error {
 		return err
 	}
 	s.Profile = ProfileDir(groupName)
-	// MakeProfile changes the profile directory's DACL and may create the
-	// registry hive. Inspect an existing tree before either operation: a hard
-	// link in it would make that ACL change apply to an object outside the
-	// profile, and rejecting it afterwards cannot undo the change.
-	if _, err := os.Lstat(s.Profile); err == nil {
-		if err := acl.ValidateLinks(s.Profile, false); err != nil {
-			return fmt.Errorf("checking the sandbox profile before permissioning it: %w", err)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("checking whether the sandbox profile exists: %w", err)
-	}
+	// MakeProfile performs the link preflight immediately before its first
+	// mutation. Keep that check in one place: doing it here as well only walks
+	// an existing profile twice on every init, while the profile may still
+	// change between the two checks.
 	if err := acct.MakeProfile(s.Profile, account); err != nil {
 		return err
 	}
+	hiveDone := trace.Current().Phase("hive_registration", trace.Field{Key: "root", Value: s.Profile})
 	if err := acct.RegisterProfile(account, s.Profile); err != nil {
+		hiveDone(err)
 		return err
 	}
+	hiveDone(nil)
 	return nil
 }
 

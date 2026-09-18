@@ -1,6 +1,7 @@
 package lock
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,47 @@ import (
 	"testing"
 	"time"
 )
+
+func TestAHoldWaitReportsAStuckHolderWithoutRunningWork(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	release, err := take("wub-bounded-wait")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	called := false
+	if err := HoldWait("wub-bounded-wait", 100*time.Millisecond, func() error {
+		called = true
+		return nil
+	}); !errors.Is(err, ErrHeld) {
+		t.Fatalf("bounded wait returned %v, want ErrHeld", err)
+	}
+	if called {
+		t.Fatal("work ran while another process still held the lock")
+	}
+}
+
+func TestAHoldWaitRunsAfterTheHolderLeaves(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	release, err := take("wub-bounded-release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		release()
+	}()
+	called := false
+	if err := HoldWait("wub-bounded-release", time.Second, func() error {
+		called = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("work did not run after the holder released the lock")
+	}
+}
 
 // TestAHeldNameShutsOutAnotherProcess is what the whole mechanism is for: the
 // commands that race are separate runs of wuserbox, started by the user, by a

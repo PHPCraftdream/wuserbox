@@ -28,6 +28,12 @@ func TestProtectSettingsLocksTheRulesFile(t *testing.T) {
 	if err := ProtectSettings(s); err != nil {
 		t.Fatal(err)
 	}
+	// A second sandbox must not rewrite the same protected settings. The
+	// complete ACL check is what makes this skip safe rather than a root-only
+	// guess.
+	if err := ProtectSettings(s); err != nil {
+		t.Fatalf("rechecking already protected settings: %v", err)
+	}
 	// The owner keeps full access, which is what makes the tool usable.
 	if err := os.WriteFile(rulesPath, []byte("projects: []\n"), 0o644); err != nil {
 		t.Errorf("the owner lost access to the rules: %v", err)

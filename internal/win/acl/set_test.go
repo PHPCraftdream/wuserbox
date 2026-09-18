@@ -299,6 +299,28 @@ func TestProtectWorksOnDirectories(t *testing.T) {
 	}
 }
 
+func TestIsProtectedRequiresTheCompleteExpectedList(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "settings.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Protect(file); err != nil {
+		t.Fatal(err)
+	}
+	if protected, err := IsProtected(file); err != nil || !protected {
+		t.Fatalf("a freshly protected file was not recognized: protected=%v err=%v", protected, err)
+	}
+	if err := Set(file, unusedAccount, []ACE{{Access: AccessReadExecute}}); err != nil {
+		t.Fatal(err)
+	}
+	if protected, err := IsProtected(file); err != nil || protected {
+		t.Fatalf("an extra ACE was accepted as the expected protection: protected=%v err=%v", protected, err)
+	}
+	if err := Protect(file); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestAProtectedObjectInsideAGrantedTreeStaysProtected is a guard against a
 // change that would look like a fix.
 //

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
+	"github.com/PHPCraftdream/wuserbox/internal/base/trace"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/profile"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
@@ -73,9 +74,12 @@ func Run(args []string) error {
 		return err
 	}
 	defer release()
+	copyDone := trace.Current().Phase("profile_copy")
 	if err := fillProfile(s); err != nil {
+		copyDone(err)
 		return err
 	}
+	copyDone(nil)
 	// Failing to write this is not a reason to refuse the run: it costs a
 	// listing one accurate moment, and the run itself is what was asked for.
 	if err := facts.MarkUsed(s.Group); err != nil {

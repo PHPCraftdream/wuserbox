@@ -2,12 +2,19 @@ package grants
 
 import (
 	"os"
+	"time"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
+
+// readGroupWait keeps a second first-start from looking hung behind a
+// provisioning run that stopped while ACLs were being propagated through a
+// large home directory. The operation remains serialized and fail-closed;
+// only the wait is bounded.
+const readGroupWait = 10 * time.Second
 
 // EnsureReadGroup makes the profile of whoever is running this readable to
 // the read group belonging to them, which is the one identity a sandbox can
@@ -81,7 +88,7 @@ func dropLegacyReadGroup(home string) error {
 // branch that grants a profile could only be tried by granting the profile of
 // whoever was running the tests.
 func ensureReadable(name, home string) error {
-	return lock.Hold(name, func() error {
+	return lock.HoldWait(name, readGroupWait, func() error {
 		account, err := sid.Lookup(name)
 		if err != nil {
 			if err := group.Add(name, "wuserbox: reads a profile from inside a sandbox"); err != nil {
