@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -59,9 +60,200 @@ func sweep(root string, everyone, users, holder, owner uintptr, sandbox []uintpt
 	if err := inspect(root, pinned); err != nil {
 		return err
 	}
-	return walkTree(root, func(path string, _ fs.DirEntry) error {
-		return narrowOwn(path, everyone, users, holder, owner, sandbox, hand, mark, pinned)
-	})
+	return narrowTree(root, everyone, users, holder, owner, sandbox, hand, mark, pinned)
+}
+
+// narrowTree reads objects in parallel, but publishes ACL changes in the
+// order filepath.WalkDir presents them. Most objects need no change: their
+// own ACL has no changing grant, or they already carry the exact owner cap.
+// Those decisions can be made from a parallel read. Objects that may need a
+// write are read again by narrowOwn immediately before the ordered write; the
+// reread is what preserves the parent-before-child dependency when a parent
+// changes inherited permissions.
+func narrowTree(root string, everyone, users, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) error {
+	type object struct {
+		seq  uint64
+		path string
+	}
+	type result struct {
+		seq      uint64
+		path     string
+		decision narrowDecision
+		err      error
+	}
+
+	jobs := make(chan object, workers()*2)
+	results := make(chan result, workers()*2)
+	stop := make(chan struct{})
+	var stopOnce sync.Once
+	cancel := func() { stopOnce.Do(func() { close(stop) }) }
+
+	var hands sync.WaitGroup
+	for i := 0; i < workers(); i++ {
+		hands.Add(1)
+		go func() {
+			defer hands.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				case one, ok := <-jobs:
+					if !ok {
+						return
+					}
+					decision, err := classifyNarrow(one.path, everyone, users, owner, sandbox, hand, mark, pinned)
+					answer := result{seq: one.seq, path: one.path, decision: decision, err: err}
+					select {
+					case results <- answer:
+					case <-stop:
+						return
+					}
+				}
+			}
+		}()
+	}
+
+	walkDone := make(chan error, 1)
+	go func() {
+		defer close(jobs)
+		var seq uint64
+		walkErr := walkTree(root, func(path string, _ fs.DirEntry) error {
+			one := object{seq: seq, path: path}
+			select {
+			case jobs <- one:
+				seq++
+				return nil
+			case <-stop:
+				return filepath.SkipAll
+			}
+		})
+		walkDone <- walkErr
+	}()
+	go func() {
+		hands.Wait()
+		close(results)
+	}()
+
+	// A pinned directory causes the old sequential walk to return SkipDir.
+	// Results for descendants may already be in flight, so retain those roots
+	// and discard their results in the ordered writer.
+	var skipped []string
+	pending := make(map[uint64]result)
+	var next uint64
+	var failure error
+	failed := false
+	for answer := range results {
+		if failed {
+			continue
+		}
+		pending[answer.seq] = answer
+		for {
+			one, ok := pending[next]
+			if !ok {
+				break
+			}
+			delete(pending, next)
+			next++
+			if underSkipped(one.path, skipped) {
+				continue
+			}
+			if one.err != nil {
+				failure = one.err
+				failed = true
+				cancel()
+				break
+			}
+			switch one.decision {
+			case narrowSkip:
+				skipped = append(skipped, one.path)
+			case narrowApply:
+				if err := narrowOwn(one.path, everyone, users, holder, owner, sandbox, hand, mark, pinned); err != nil {
+					failure = err
+					failed = true
+					cancel()
+				}
+			}
+			if failed {
+				break
+			}
+		}
+	}
+	walkErr := <-walkDone
+	if failure != nil {
+		return failure
+	}
+	return walkErr
+}
+
+func underSkipped(path string, skipped []string) bool {
+	for _, root := range skipped {
+		// Both spellings come from the same WalkDir traversal. Do not use
+		// filepath.Rel here: on Windows it applies Unicode EqualFold and
+		// treats the distinct K and Kelvin-sign directory names as one.
+		if len(path) > len(root) && strings.HasPrefix(path, root) && path[len(root)] == filepath.Separator {
+			return true
+		}
+	}
+	return false
+}
+
+type narrowDecision uint8
+
+const (
+	narrowNoop narrowDecision = iota
+	narrowApply
+	narrowSkip
+)
+
+// classifyNarrow identifies the common no-op case without touching the ACL.
+// A write decision is deliberately conservative: the ordered writer rereads
+// the object before applying it, because a parent may have changed inherited
+// permissions since this read completed.
+func classifyNarrow(path string, everyone, users, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) (narrowDecision, error) {
+	var dacl *aclHeader
+	var descriptor uintptr
+	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
+		seFileObject, daclInfo|ownerInfo, 0, 0, uintptr(unsafe.Pointer(&dacl)), 0,
+		uintptr(unsafe.Pointer(&descriptor))); r != 0 {
+		return narrowNoop, fmt.Errorf("reading the permissions of %s: error %d", path, r)
+	}
+	defer w32.Free(descriptor)
+	owned := ownedByTheSandbox(ownerOf(descriptor), sandbox)
+	if dacl == nil {
+		return narrowApply, nil
+	}
+	held, err := entriesOf(dacl)
+	if err != nil {
+		return narrowNoop, fmt.Errorf("reading the permissions of %s: %w", path, err)
+	}
+	if !owned {
+		for _, who := range []uintptr{everyone, users} {
+			for _, one := range held {
+				if one.inherited || !sameSID(one.access.trustee.name, who) {
+					continue
+				}
+				if one.access.mode == grantAccess && one.access.permissions&changing != 0 {
+					return narrowApply, nil
+				}
+			}
+		}
+		return narrowNoop, nil
+	}
+	spared, err := pinned.contains(path)
+	if err != nil {
+		return narrowNoop, err
+	}
+	if spared {
+		info, err := os.Lstat(path)
+		if err == nil && info.IsDir() {
+			return narrowSkip, nil
+		}
+		return narrowNoop, nil
+	}
+	if hearsFromAbove(held) || !alreadyCapped(held, hand, owner, mark) {
+		return narrowApply, nil
+	}
+	return narrowNoop, nil
 }
 
 // inspect is the reading pass: it asks of every object whether its permissions
