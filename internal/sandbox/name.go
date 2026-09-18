@@ -98,7 +98,7 @@ func samePathIdentity(first, second string) (bool, error) {
 	}
 	b, err := pathid.Key(second)
 	if err != nil {
-		return false, nil
+		return false, fmt.Errorf("cannot verify requested sandbox path %s: %w", second, err)
 	}
 	return asciiFold(a) == asciiFold(b), nil
 }
