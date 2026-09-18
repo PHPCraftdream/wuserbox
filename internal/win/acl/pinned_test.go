@@ -47,6 +47,11 @@ func TestASealedObjectTheRecordHoldsIsLeftAlone(t *testing.T) {
 	if err := os.Mkdir(handed, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Keep the operator's own Full Control out of the hand-down. The
+	// sandbox identity is the current account in this synthetic test, so an
+	// operator ACE would be mistaken for a permission the cap must preserve
+	// and would make the fixture environment-dependent.
+	setSDDL(t, handed, `D:P(A;OICI;0x1301BF;;;`+unusedAccount+`)`)
 	sealed := filepath.Join(handed, "sealed")
 	if err := os.Mkdir(sealed, 0o755); err != nil {
 		t.Fatal(err)
