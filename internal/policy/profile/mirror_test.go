@@ -2,9 +2,11 @@ package profile
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
@@ -41,6 +43,52 @@ func TestCopyNeverTouchesTheSource(t *testing.T) {
 	fill(t, dest)
 	if got := read(t, filepath.Join(home, ".gitconfig")); got != "[user]\n\tname = real\n" {
 		t.Errorf("the source changed to %q", got)
+	}
+}
+
+// TestCopyRefusesAnExternalHardLinkBeforeTruncatingIt is the regression for
+// the boundary os.Root cannot provide: it pins names, while an NTFS hard link
+// makes two names one writable file object.
+func TestCopyRefusesAnExternalHardLinkBeforeTruncatingIt(t *testing.T) {
+	home, dest := useProfile(t, []string{".gitconfig"})
+	write(t, filepath.Join(home, ".gitconfig"), "source contents\n")
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	write(t, outside, "outside contents\n")
+	link := filepath.Join(dest, ".gitconfig")
+	if out, err := exec.Command("cmd.exe", "/c", "mklink", "/H", link, outside).CombinedOutput(); err != nil {
+		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
+	}
+
+	_, _, err := Copy(dest, nil, nil)
+	if err == nil {
+		t.Fatal("copy overwrote a destination hard-linked outside the profile")
+	}
+	if !strings.Contains(err.Error(), "hard-linked outside") {
+		t.Fatalf("copy refused the link without an actionable diagnostic: %v", err)
+	}
+	if got := read(t, outside); got != "outside contents\n" {
+		t.Fatalf("copy modified the external hard-link target: %q", got)
+	}
+}
+
+// TestCopyAllowsHardLinksWhoseNamesStayInTheProfile keeps the useful case:
+// deduplicated files inside one profile are safe because every name remains
+// within the profile boundary.
+func TestCopyAllowsHardLinksWhoseNamesStayInTheProfile(t *testing.T) {
+	home, dest := useProfile(t, []string{".gitconfig"})
+	write(t, filepath.Join(home, ".gitconfig"), "source contents\n")
+	alias := filepath.Join(dest, "alias.txt")
+	write(t, alias, "old contents\n")
+	link := filepath.Join(dest, ".gitconfig")
+	if out, err := exec.Command("cmd.exe", "/c", "mklink", "/H", link, alias).CombinedOutput(); err != nil {
+		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
+	}
+
+	if _, _, err := Copy(dest, nil, nil); err != nil {
+		t.Fatalf("copy refused hard links wholly inside the profile: %v", err)
+	}
+	if got := read(t, alias); got != "source contents\n" {
+		t.Fatalf("internal hard-link alias did not receive the copy: %q", got)
 	}
 }
 

@@ -14,6 +14,12 @@ import (
 
 var procGetFinalPathName = w32.Kernel32.NewProc("GetFinalPathNameByHandleW")
 
+var (
+	procFindFirstFileName = w32.Kernel32.NewProc("FindFirstFileNameW")
+	procFindNextFileName  = w32.Kernel32.NewProc("FindNextFileNameW")
+	procFindClose         = w32.Kernel32.NewProc("FindClose")
+)
+
 // fileID is the identity Windows assigns to a directory entry. The volume is
 // part of it because a file index is only unique within one volume.
 type fileID struct {
@@ -120,6 +126,58 @@ func Same(first, second string) (bool, error) {
 		return false, err
 	}
 	return a == b, nil
+}
+
+// Names returns every directory entry Windows has for the file at path.
+// Hard links are names for one file object, so checking only the name being
+// copied to is not enough before opening it for write.
+func Names(path string) ([]string, error) {
+	absolute, err := Canonical(path)
+	if err != nil {
+		return nil, err
+	}
+	volume := filepath.VolumeName(absolute)
+	buffer := make([]uint16, syscall.MAX_LONG_PATH)
+	length := uint32(len(buffer))
+	handle, _, callErr := procFindFirstFileName.Call(
+		uintptr(unsafe.Pointer(w32.UTF16(absolute))), 0,
+		uintptr(unsafe.Pointer(&length)), uintptr(unsafe.Pointer(&buffer[0])))
+	if handle == uintptr(syscall.InvalidHandle) {
+		return nil, fmt.Errorf("listing the names of %s: %w", absolute, callErr)
+	}
+	defer func() { _, _, _ = procFindClose.Call(handle) }()
+
+	var names []string
+	for {
+		names = append(names, volume+syscall.UTF16ToString(buffer[:length]))
+		length = uint32(len(buffer))
+		if r, _, _ := procFindNextFileName.Call(
+			handle, uintptr(unsafe.Pointer(&length)), uintptr(unsafe.Pointer(&buffer[0]))); r == 0 {
+			return names, nil
+		}
+	}
+}
+
+// OutsideNames returns hard-link names for path that are not directory
+// entries below root. A file with only one name returns no names. The caller
+// can therefore allow links wholly inside its protected tree while refusing
+// a link that would make a write reach an external file.
+func OutsideNames(root, path string) ([]string, error) {
+	names, err := Names(path)
+	if err != nil {
+		return nil, err
+	}
+	var outside []string
+	for _, name := range names {
+		inside, err := Within(root, name)
+		if err != nil {
+			return nil, fmt.Errorf("checking whether hard-link name %s is inside %s: %w", name, root, err)
+		}
+		if !inside {
+			outside = append(outside, name)
+		}
+	}
+	return outside, nil
 }
 
 func of(path string) (fileID, error) {

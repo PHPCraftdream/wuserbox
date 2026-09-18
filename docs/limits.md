@@ -211,6 +211,11 @@ by what it holds is a boundary somebody will lean on where it does not.
   name is. The sandbox cannot make such a link itself against anything it may
   not already write, so this is a grant reaching further than it says rather
   than a way out that a sandbox takes.
+* **Profile refresh refuses an external hard-link destination.** The profile
+  is scanned when a sandbox starts, but a writable profile can change after
+  that scan. Before a refresh truncates an existing copied file, it enumerates
+  all names for the file object and refuses if any name is outside the
+  profile. Links whose names all remain inside the profile are allowed.
 * **A record that cannot be read is not a sandbox that never was.** What a
   sandbox holds is written in one file per sandbox, and the entries it names
   sit on directories all over the disk with nothing else pointing at them. A
@@ -228,4 +233,3 @@ by what it holds is a boundary somebody will lean on where it does not.
   with its depth. On an ordinary project it is not noticeable. What it costs on
   a tree of hundreds of thousands of files has not been measured, only reasoned
   about, so that is said here rather than turned into a number nobody took.
-

@@ -5,6 +5,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
 )
 
 // sink is what a walk does once it has decided, through walk.go's rules,
@@ -247,10 +250,27 @@ func mirrorFile(src, dst string, root *os.Root) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 	if parent := filepath.Dir(dst); parent != "." {
 		if err := root.MkdirAll(parent, 0o755); err != nil {
 			return err
+		}
+	}
+	// os.Root pins the pathname, not the file object. A sandbox can leave a
+	// hard-link name in its profile, and O_TRUNC would then modify every name
+	// for that object, including one outside the profile. Startup checks the
+	// tree, but the profile may have been writable since that check. Refuse the
+	// write when the destination already has an external name; links whose
+	// names all stay under this profile remain valid and are preserved.
+	if info, readable := lookAt(root, dst); readable && info.Mode().IsRegular() {
+		full := filepath.Join(root.Name(), filepath.FromSlash(dst))
+		outside, err := pathid.OutsideNames(root.Name(), full)
+		if err != nil {
+			return fmt.Errorf("checking destination %s for external hard links: %w", dst, err)
+		}
+		if len(outside) > 0 {
+			return fmt.Errorf("refusing to overwrite %s: it is also hard-linked outside the sandbox profile (%s)",
+				dst, strings.Join(outside, ", "))
 		}
 	}
 	out, err := root.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
