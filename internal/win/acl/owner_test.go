@@ -168,6 +168,7 @@ func TestTakingBackRepairsAnExtraOwnerRightsGrant(t *testing.T) {
 	if err := os.WriteFile(probe, []byte("probe"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	normalizeOwner(t, probe, owner)
 	setSDDL(t, probe, `D:P(A;;0x1200A9;;;S-1-3-4)(A;;0x40000;;;S-1-3-4)`)
 	if err := TakeBack(probe, owner, nil); err != nil {
 		t.Fatal(err)

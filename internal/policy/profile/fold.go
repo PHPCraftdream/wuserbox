@@ -178,8 +178,31 @@ func canonicalEntryPath(root *os.Root, path string) (string, bool) {
 				chosen = child.Name()
 				break
 			}
-			if chosen == "" && strings.EqualFold(child.Name(), component) {
-				chosen = child.Name()
+		}
+		if chosen == "" {
+			// Go's Unicode fold is only a candidate. NTFS has a
+			// per-volume table, so open the spelling itself before
+			// accepting a case-insensitive directory entry.
+			opened, err := root.Open(filepath.Join(current, component))
+			if err != nil {
+				return "", false
+			}
+			openedInfo, err := opened.Stat()
+			_ = opened.Close()
+			if err != nil {
+				return "", false
+			}
+			for _, child := range children {
+				childFile, err := root.Open(filepath.Join(current, child.Name()))
+				if err != nil {
+					continue
+				}
+				childInfo, childErr := childFile.Stat()
+				_ = childFile.Close()
+				if childErr == nil && os.SameFile(openedInfo, childInfo) {
+					chosen = child.Name()
+					break
+				}
 			}
 		}
 		if chosen == "" {
