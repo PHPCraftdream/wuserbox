@@ -48,7 +48,7 @@ func prepared(t *testing.T) (granted, denied string) {
 			t.Fatal(err)
 		}
 	}
-	if err := grant.Apply(testGroup, granted, grant.RW); err != nil {
+	if err := grant.Apply(testGroup, granted, grant.RW, nil); err != nil {
 		t.Fatal(err)
 	}
 	return granted, denied

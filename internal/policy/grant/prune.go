@@ -27,6 +27,15 @@ import (
 // each is left alone: an account may hold a directory and something inside it
 // on different terms, which is what narrowing a directory inside a handed-over
 // one is for.
+//
+// An object account itself owns is left alone too, and for a different
+// reason: StripOwn now passes it over on its own (internal/win/acl/sweep.go),
+// because owning it is what the cap answers rather than this walk, and
+// whichever of Apply's sweep or Revoke's TakeBack just ran over the same tree
+// already left it exactly where it should be. Calling Prune afterward asks a
+// second time about ground the first pass already covered, which is
+// harmless: everything left for it to find is what neither reached, another
+// sandbox's nested grant holding a stale copy of this account's entry.
 func Prune(account, path string, held []string) error {
 	keep := make(map[string]bool, len(held))
 	for _, one := range held {

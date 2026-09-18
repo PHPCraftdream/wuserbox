@@ -5,9 +5,11 @@ the most useful thing anybody can send.
 
 ## The promise
 
-A sandboxed process **reads everything you can read**, and **writes and deletes
-only inside what it was granted**, plus its own temporary directory. It must
-not reach another sandbox's directories.
+A sandboxed process runs under its own local account, not yours. **It reads
+what that account and the read group it belongs to can reach — not everything
+you can read** — and **writes and deletes only inside what it was granted**,
+plus its own temporary directory and whatever the machine already lets every
+local account write to. It must not reach another sandbox's directories.
 
 ## What counts as a vulnerability
 
@@ -28,8 +30,9 @@ was handed. That includes:
 These are the tool's design, stated in the README under "Limits worth
 knowing", and a report of one is not a vulnerability:
 
-- **Reading is not restricted.** The sandbox sees your keys, tokens and
-  browser data. wuserbox prevents damage, not a determined leak.
+- **Reading is not restricted within what the sandbox can reach.** The
+  sandbox sees your keys, tokens and browser data. wuserbox prevents damage,
+  not a determined leak.
 - **Directories the machine itself makes writable to everybody** — parts of
   `C:\Windows\Temp`, public folders, some of `C:\ProgramData` — stay writable.
   wuserbox never narrows what it did not hand over.

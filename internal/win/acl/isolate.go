@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
@@ -52,7 +53,12 @@ import (
 // sweeps it, the file holds its owner's implicit WRITE_DAC and the sandbox
 // can re-permission it. Its contents are the sandbox's own; what that costs
 // is a path inside the user's tree opened wider than the user expects.
-func Isolate(path, account string, entries []ACE, reach uint32) error {
+//
+// pinned names the paths the record holds for this sandbox. An object the
+// sandbox owns whose list is its own is spared only there: a list the sandbox
+// could have written is no evidence of an operator's decision, and owner.go
+// carries the reasoning.
+func Isolate(path, account string, entries []ACE, reach uint32, pinned []string) error {
 	value, err := sid.Parse(account)
 	if err != nil {
 		return err
@@ -87,8 +93,13 @@ func Isolate(path, account string, entries []ACE, reach uint32) error {
 	}
 	// Entries go out under the group's name and ownership accrues under the
 	// account's, so the owner check has to know every name the sandbox goes
-	// by.
-	sandbox := sandboxIdentities(account)
+	// by. A member of a production group that cannot be resolved refuses the
+	// grant here rather than shrinking the list: a shorter list matches
+	// fewer owners and quietly protects less.
+	sandbox, err := sandboxIdentities(account)
+	if err != nil {
+		return err
+	}
 
 	var dacl *aclHeader
 	var descriptor uintptr
@@ -133,7 +144,7 @@ func Isolate(path, account string, entries []ACE, reach uint32) error {
 		// again would leave that refusal standing in front of the new
 		// permission, which is the whole reason a grant replaces rather than
 		// adds.
-		if sameSID(one.trustee.name, value) {
+		if matchesSandboxIdentity(one.trustee.name, sandbox) {
 			continue
 		}
 		if sharedWrite(one, everyone, users, authenticated) {
@@ -197,7 +208,11 @@ func Isolate(path, account string, entries []ACE, reach uint32) error {
 			hand = append(hand, one)
 		}
 	}
-	if err := sweep(path, everyone, users, holder, limited, sandbox, hand, mark); err != nil {
+	spared := make(map[string]bool, len(pinned))
+	for _, one := range pinned {
+		spared[strings.ToLower(one)] = true
+	}
+	if err := sweep(path, everyone, users, holder, limited, sandbox, hand, mark, spared); err != nil {
 		return err
 	}
 	return publish(path, list, true)

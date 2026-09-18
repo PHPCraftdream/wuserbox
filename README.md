@@ -6,9 +6,10 @@
 [![platform](https://img.shields.io/badge/platform-windows-0078d4)](https://github.com/PHPCraftdream/wuserbox)
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE)
 
-Run a command on Windows so that it **reads everything you can read**, but
-**changes nothing the machine does not already let every local account
-change, anywhere you did not allow it to**. Your files, another sandbox's
+Run a command on Windows so that it **reads what its own account and your
+read group can reach — not everything you can read**, but **changes nothing
+the machine does not already let every local account change, anywhere you
+did not allow it to**. Your files, another sandbox's
 files and anything named to its owner alone are out of a sandbox's reach; a
 directory the machine already leaves open to everybody — `C:\ProgramData` on
 many installations — is not, and `wuserbox --audit` lists those. That

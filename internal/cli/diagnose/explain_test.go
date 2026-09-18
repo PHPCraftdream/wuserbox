@@ -78,7 +78,7 @@ func TestExplainNoticesAccessBeyondTheRecord(t *testing.T) {
 	if err := s.Add(target, grant.RO); err != nil {
 		t.Fatal(err)
 	}
-	if err := grant.Apply(s.SID, target, grant.RW); err != nil {
+	if err := grant.Apply(s.SID, target, grant.RW, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -120,7 +120,7 @@ func TestExplainNoticesAPermissionThatWasLost(t *testing.T) {
 	if err := s.Add(target, grant.RW); err != nil {
 		t.Fatal(err)
 	}
-	if err := grant.Revoke(s.SID, target); err != nil {
+	if err := grant.Revoke(s.SID, target, nil); err != nil {
 		t.Fatal(err)
 	}
 	report, err := build(s)
@@ -193,7 +193,7 @@ func TestExplainNoticesCreationUnderAReadOnlyRecord(t *testing.T) {
 	s := &state.State{Group: "wub-ro-record", SID: account, Dir: t.TempDir(), Temp: t.TempDir()}
 	// The record says read-only; the file system says otherwise. That is the
 	// drift the report exists to catch, so it is built rather than asked for.
-	if err := grant.Apply(account, dir, grant.HomeTop); err != nil {
+	if err := grant.Apply(account, dir, grant.HomeTop, nil); err != nil {
 		t.Fatal(err)
 	}
 	s.Grants = []grant.Spec{{Path: dir, Kind: grant.RO}}
@@ -268,7 +268,7 @@ func TestExplainJudgesAReadOnlyFileByTheFileItself(t *testing.T) {
 func TestExplainStillAsksADirectoryAboutCreating(t *testing.T) {
 	const account = "S-1-5-21-1111111111-2222222222-3333333333-232323"
 	dir := t.TempDir()
-	if err := grant.Apply(account, dir, grant.HomeTop); err != nil {
+	if err := grant.Apply(account, dir, grant.HomeTop, nil); err != nil {
 		t.Fatal(err)
 	}
 	if ok, note := inForce(asking(t, account), grant.Spec{Path: dir, Kind: grant.RO}); ok {

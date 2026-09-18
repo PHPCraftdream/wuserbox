@@ -53,7 +53,7 @@ func TestRemovingASandboxWithNoRecordStillClearsItsProjectDirectory(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := grant.Apply(account.String(), project, grant.RW); err != nil {
+	if err := grant.Apply(account.String(), project, grant.RW, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !acl.Reads(project, account.String()) {
@@ -148,7 +148,7 @@ func TestRemovingASandboxWithADamagedRecordClearsWhatTheCopyRemembers(t *testing
 		t.Fatal(err)
 	}
 	for _, path := range []string{project, elsewhere} {
-		if err := grant.Apply(account.String(), path, grant.RW); err != nil {
+		if err := grant.Apply(account.String(), path, grant.RW, nil); err != nil {
 			t.Fatal(err)
 		}
 		if !acl.Reads(path, account.String()) {

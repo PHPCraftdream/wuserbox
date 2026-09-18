@@ -82,7 +82,7 @@ func (s *State) record(path string, kind grant.Kind, always, explicit bool) erro
 	if unchanged {
 		// The record already says this; only the file system needs putting
 		// back, which is what repair is for.
-		return grant.Apply(s.SID, path, kind)
+		return grant.Apply(s.SID, path, kind, s.paths())
 	}
 	before := append([]grant.Spec(nil), s.Grants...)
 	if found {
@@ -105,7 +105,7 @@ func (s *State) record(path string, kind grant.Kind, always, explicit bool) erro
 		s.Grants = before
 		return err
 	}
-	if err := grant.Apply(s.SID, path, kind); err != nil {
+	if err := grant.Apply(s.SID, path, kind, s.paths()); err != nil {
 		s.Grants = before
 		if saveErr := s.Save(); saveErr != nil {
 			return fmt.Errorf("%w (and the record still claims it, because %w)", err, saveErr)
@@ -142,7 +142,7 @@ func (s *State) Remove(path string) error {
 	if !found {
 		return fmt.Errorf("%s is not granted to %s", path, s.Group)
 	}
-	if err := grant.Revoke(s.SID, path); err != nil {
+	if err := grant.Revoke(s.SID, path, s.paths()); err != nil {
 		return err
 	}
 	// Rewriting this directory is not the whole of taking it back. A

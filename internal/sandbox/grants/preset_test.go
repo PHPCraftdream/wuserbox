@@ -213,7 +213,7 @@ func TestEnsurePutsBackAPermissionThatWasRemoved(t *testing.T) {
 	}
 
 	// Someone removes the entry by hand; the record still claims it is there.
-	if err := grant.Revoke(s.SID, target); err != nil {
+	if err := grant.Revoke(s.SID, target, nil); err != nil {
 		t.Fatal(err)
 	}
 	if gone, err := access.Check(access.Sandbox{Group: s.SID}, target, access.Create); err != nil {
@@ -258,7 +258,7 @@ func TestReapplyReachesADirectoryGivenByHand(t *testing.T) {
 	if err := s.Add(byHand, grant.RW); err != nil {
 		t.Fatal(err)
 	}
-	if err := grant.Revoke(s.SID, byHand); err != nil {
+	if err := grant.Revoke(s.SID, byHand, nil); err != nil {
 		t.Fatal(err)
 	}
 	if gone, err := access.Check(access.Sandbox{Group: s.SID}, byHand, access.Create); err != nil {

@@ -92,7 +92,7 @@ func Reapply(s *state.State) error {
 		}
 		present = append(present, held)
 	}
-	return state.ApplyTogether(s.SID, present)
+	return state.ApplyTogether(s.SID, present, pathsOf(s))
 }
 
 // ApplyPreset hands over the profile root, when it was asked for, and takes

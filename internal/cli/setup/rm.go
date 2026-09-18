@@ -299,7 +299,7 @@ func clearOrphans(name, dir string, asJSON bool) error {
 				"anything handed over elsewhere keeps an entry naming a group that is about to go\n",
 			name, dir)
 	}
-	if err := grant.Revoke(account, dir); err != nil {
+	if err := grant.Revoke(account, dir, nil); err != nil {
 		return err
 	}
 	return grant.Prune(account, dir, nil)
@@ -346,7 +346,7 @@ func clearGrants(s *state.State, asJSON bool) []string {
 		if _, err := os.Stat(g.Path); os.IsNotExist(err) {
 			continue
 		}
-		if err := grant.Revoke(s.SID, g.Path); err != nil {
+		if err := grant.Revoke(s.SID, g.Path, nil); err != nil {
 			complain(err)
 			left = append(left, g.Path)
 			continue

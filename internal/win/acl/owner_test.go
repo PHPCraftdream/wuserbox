@@ -118,7 +118,7 @@ func TestIsolateCapsWhatTheOwnerOfAFileHoldsImplicitly(t *testing.T) {
 	setSDDL(t, guarded, `D:P(A;;0x1200A9;;;`+owner+`)`)
 
 	ro := []ACE{{Access: AccessReadExecute, Inheritance: InheritNone}}
-	if err := Isolate(guarded, owner, ro, InheritNone); err != nil {
+	if err := Isolate(guarded, owner, ro, InheritNone, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -200,7 +200,7 @@ func TestASweepCapsWhatTheSandboxOwnsInsideTheTree(t *testing.T) {
 		{Access: AccessReadExecute, Inheritance: InheritObjects | InheritContainers},
 		{Access: 0x40, Inheritance: InheritNone}, // delete what is inside
 	}
-	if err := Isolate(handed, owner, entries, InheritObjects|InheritContainers); err != nil {
+	if err := Isolate(handed, owner, entries, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -256,7 +256,7 @@ func TestAWritableGrantKeepsWorkingUnderTheCap(t *testing.T) {
 
 	if err := Isolate(made, owner, []ACE{
 		{Access: AccessModify, Inheritance: InheritNone},
-	}, InheritNone); err != nil {
+	}, InheritNone, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !holds(t, made, "OWNER RIGHTS", "(RX)") {
@@ -293,7 +293,7 @@ func TestIsolateLeavesAnObjectTheOperatorOwnsAlone(t *testing.T) {
 
 	if err := Isolate(handed, unusedAccount, []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
-	}, InheritObjects|InheritContainers); err != nil {
+	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if holds(t, handed, "OWNER RIGHTS", "") || holds(t, made, "OWNER RIGHTS", "") {
@@ -301,6 +301,20 @@ func TestIsolateLeavesAnObjectTheOperatorOwnsAlone(t *testing.T) {
 	}
 	rewriteWorks(t, handed, owner)
 	rewriteWorks(t, made, owner)
+}
+
+// The identities the owner check compares against are resolved before
+// anything is read or written, and the resolution fails closed: an account
+// that cannot be resolved would otherwise come out as a shorter list of
+// identities that quietly protects less. The cheapest case is an account
+// that is not identifier text at all -- measured, ConvertStringSidToSidW
+// answers 1337 ERROR_INVALID_SID for a plain account name.
+func TestIsolateRefusesAnAccountItCannotResolve(t *testing.T) {
+	if err := Isolate(t.TempDir(), "nobody in particular", []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers, nil); err == nil {
+		t.Fatal("a grant went out under an account that could not be resolved")
+	}
 }
 
 // TestASweepReachesWhatItWroteWhenTheGrantNarrows is the ordinary sequence,
@@ -360,14 +374,14 @@ func TestASweepReachesWhatItWroteWhenTheGrantNarrows(t *testing.T) {
 	}
 	t.Cleanup(func() { reclaim(t, made); reclaim(t, handed) })
 
-	if err := Isolate(handed, owner, writable, InheritObjects|InheritContainers); err != nil {
+	if err := Isolate(handed, owner, writable, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(made, []byte(written), 0o644); err != nil {
 		t.Fatalf("a writable grant stopped working: %v", err)
 	}
 
-	if err := Isolate(handed, owner, readable, InheritObjects|InheritContainers); err != nil {
+	if err := Isolate(handed, owner, readable, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if holds(t, made, name, "(M)") {
@@ -386,77 +400,10 @@ func TestASweepReachesWhatItWroteWhenTheGrantNarrows(t *testing.T) {
 	// And widened again, it is writable again: the rewrite runs whichever way
 	// the grant moves, so the narrowing is not a door that only opens one
 	// way.
-	if err := Isolate(handed, owner, writable, InheritObjects|InheritContainers); err != nil {
+	if err := Isolate(handed, owner, writable, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(made, []byte("writable again"), 0o644); err != nil {
 		t.Fatalf("a grant widened back did not make its own files writable again: %v", err)
-	}
-}
-
-// TestASweepLeavesAnObjectTheSandboxSealedAlone is the other half of what
-// nothing-inherited can mean: a list that is somebody's own. Neither the cap
-// nor the hand-down goes onto an object the sandbox sealed, and a sealed
-// directory's subtree is not walked into -- a grant in its own right pinned
-// where it sits holds on different terms, and a narrowing from above does
-// not reach past it.
-func TestASweepLeavesAnObjectTheSandboxSealedAlone(t *testing.T) {
-	root := t.TempDir()
-	owner, err := sid.CurrentUser()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// icacls prints resolved account names, not identifier text, so what the
-	// holds helper searches for is the name of this account.
-	pointer, err := sid.Parse(owner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	name, err := sid.Name(pointer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	handed := filepath.Join(root, "handed")
-	if err := os.Mkdir(handed, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	sealed := filepath.Join(handed, "sealed")
-	if err := os.Mkdir(sealed, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	kept := filepath.Join(sealed, "kept.txt")
-	if err := os.WriteFile(kept, []byte("kept"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	sealedFile := filepath.Join(handed, "sealed.txt")
-	if err := os.WriteFile(sealedFile, []byte("sealed"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Sealed against everybody but its owner, who holds every right: the
-	// shape of a list that is its own and nothing inherited under it.
-	setSDDL(t, sealed, `D:P(A;OICI;FA;;;`+owner+`)`)
-	setSDDL(t, sealedFile, `D:P(A;;FA;;;`+owner+`)`)
-	t.Cleanup(func() { reclaim(t, kept); reclaim(t, sealed); reclaim(t, sealedFile) })
-
-	if err := Isolate(handed, owner, []ACE{
-		{Access: AccessReadExecute, Inheritance: InheritObjects | InheritContainers},
-		{Access: 0x40, Inheritance: InheritNone},
-	}, InheritObjects|InheritContainers); err != nil {
-		t.Fatal(err)
-	}
-
-	// What the object held is what it still holds: no hand-down, and no cap
-	// -- an object sealed against its owner stays sealed, and giving the
-	// owner read would widen.
-	for _, path := range []string{sealed, sealedFile} {
-		if !holds(t, path, name, "(F)") {
-			t.Errorf("%s lost what it held when the tree above it was handed over", path)
-		}
-		if holds(t, path, "OWNER RIGHTS", "") {
-			t.Errorf("an owner-rights cap was written onto an object the sandbox sealed")
-		}
-	}
-	if err := os.WriteFile(sealedFile, []byte("still mine"), 0o644); err != nil {
-		t.Errorf("the owner of a sealed object lost access to it: %v", err)
 	}
 }

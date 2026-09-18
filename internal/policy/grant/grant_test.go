@@ -67,7 +67,7 @@ func TestHomeTopDoesNotReachSubdirectories(t *testing.T) {
 }
 
 func TestGrantRejectsUnknownKind(t *testing.T) {
-	if err := Apply(unusedAccount, t.TempDir(), "nonsense"); err == nil {
+	if err := Apply(unusedAccount, t.TempDir(), "nonsense", nil); err == nil {
 		t.Error("expected an error for an unknown kind")
 	}
 }
@@ -94,22 +94,22 @@ func TestIsolationReachesExactlyAsFarAsThePermission(t *testing.T) {
 func TestGrantIsRepeatable(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i < 3; i++ {
-		if err := Apply(unusedAccount, dir, RW); err != nil {
+		if err := Apply(unusedAccount, dir, RW, nil); err != nil {
 			t.Fatalf("grant %d: %v", i, err)
 		}
 	}
-	if err := Revoke(unusedAccount, dir); err != nil {
+	if err := Revoke(unusedAccount, dir, nil); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
 	// Revoking again is a no-op rather than an error.
-	if err := Revoke(unusedAccount, dir); err != nil {
+	if err := Revoke(unusedAccount, dir, nil); err != nil {
 		t.Errorf("second revoke: %v", err)
 	}
 }
 
 func TestGrantReportsMissingPath(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-such-directory")
-	if err := Apply(unusedAccount, missing, RW); err == nil {
+	if err := Apply(unusedAccount, missing, RW, nil); err == nil {
 		t.Error("expected an error for a path that does not exist")
 	}
 }
@@ -119,7 +119,7 @@ func TestGrantOnFileKeepsItAFile(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Apply(unusedAccount, file, File); err != nil {
+	if err := Apply(unusedAccount, file, File, nil); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 }
@@ -140,7 +140,7 @@ func TestApplyHoldsTheDirectoryItChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	finished := make(chan error, 1)
-	go func() { finished <- Apply(unusedAccount, shared, RW) }()
+	go func() { finished <- Apply(unusedAccount, shared, RW, nil) }()
 	select {
 	case err := <-finished:
 		release()
@@ -173,7 +173,7 @@ func TestTwoAccountsKeepTheirPermissionsOnOneDirectory(t *testing.T) {
 		go func(account string) {
 			defer wg.Done()
 			for i := 0; i < 20; i++ {
-				if err := Apply(account, shared, RW); err != nil {
+				if err := Apply(account, shared, RW, nil); err != nil {
 					failures <- err
 					return
 				}
@@ -221,7 +221,7 @@ func TestAGrantWaitsForOneOnTheDirectoryAboveIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	finished := make(chan error, 1)
-	go func() { finished <- Apply(unusedAccount, inner, RW) }()
+	go func() { finished <- Apply(unusedAccount, inner, RW, nil) }()
 	select {
 	case err := <-finished:
 		release()
@@ -253,7 +253,7 @@ func TestGrantsInUnrelatedTreesDoNotWaitForEachOther(t *testing.T) {
 	}
 	defer release()
 	finished := make(chan error, 1)
-	go func() { finished <- Apply(unusedAccount, other, RW) }()
+	go func() { finished <- Apply(unusedAccount, other, RW, nil) }()
 	select {
 	case err := <-finished:
 		if err != nil {
@@ -325,11 +325,11 @@ func TestPruneIsNotHeldUpByAnOpenFile(t *testing.T) {
 	if err := os.WriteFile(busy, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Apply(account, root, RW); err != nil {
+	if err := Apply(account, root, RW, nil); err != nil {
 		t.Fatal(err)
 	}
 	// Granting the inner one is what pins it, so only Prune can reach it.
-	if err := Apply(account, inner, RW); err != nil {
+	if err := Apply(account, inner, RW, nil); err != nil {
 		t.Fatal(err)
 	}
 

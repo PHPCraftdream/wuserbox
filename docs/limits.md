@@ -95,9 +95,10 @@ by what it holds is a boundary somebody will lean on where it does not.
   toolchain would still be readable. It is not on a Windows profile and not on
   an ordinary data directory — also measured — so reading would stop being
   free: every directory the sandbox reads would have to be granted first, and
-  "reads everything you can read" is the promise this tool opens with. Closing
-  the shared-writable hole that way makes a different, narrower tool, so it is
-  not a change to make quietly on top of this one.
+  "reads what its own account and your read group can reach" is the promise
+  this tool opens with. Closing the shared-writable hole that way makes a
+  different, narrower tool, so it is not a change to make quietly on top of
+  this one.
 * **A protected file inside a granted tree stays protected**, and that is
   deliberate rather than an oversight. Handing a directory over reaches
   everything under it that still listens to it, but an object whose

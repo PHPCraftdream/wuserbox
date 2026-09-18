@@ -33,7 +33,7 @@ func TestAGrantThatCannotFinishGrantsNothing(t *testing.T) {
 
 	isolateErr := Isolate(root, unusedAccount, []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
-	}, InheritObjects|InheritContainers)
+	}, InheritObjects|InheritContainers, nil)
 	if isolateErr == nil {
 		t.Fatal("a grant that could not finish reported success")
 	}
@@ -81,7 +81,7 @@ func TestAGrantThatCannotFinishChangesNothingAtAll(t *testing.T) {
 
 	if err := Isolate(root, unusedAccount, []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
-	}, InheritObjects|InheritContainers); err == nil {
+	}, InheritObjects|InheritContainers, nil); err == nil {
 		t.Fatal("a grant that could not finish reported success")
 	}
 
@@ -124,7 +124,7 @@ func TestASweepDoesNotCostTheOwnerTheirOwnWrite(t *testing.T) {
 
 	if err := Isolate(root, unusedAccount, []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
-	}, InheritObjects|InheritContainers); err != nil {
+	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -162,7 +162,7 @@ func TestAnObjectWithNoListAtAllIsNarrowedToo(t *testing.T) {
 
 	if err := Isolate(root, unusedAccount, []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
-	}, InheritObjects|InheritContainers); err != nil {
+	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -210,7 +210,7 @@ func TestGrantingADirectoryWithNoListKeepsItsOwner(t *testing.T) {
 
 	if err := Isolate(root, unusedAccount, []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
-	}, InheritObjects|InheritContainers); err != nil {
+	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 

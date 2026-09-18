@@ -29,7 +29,7 @@ func TestIsolateNarrowsSharedWriteSetOnTheDirectoryItself(t *testing.T) {
 	}
 
 	entries := []ACE{{Access: AccessModify, Inheritance: InheritObjects | InheritContainers}}
-	if err := Isolate(dir, unusedAccount, entries, InheritObjects|InheritContainers); err != nil {
+	if err := Isolate(dir, unusedAccount, entries, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if holds(t, dir, "Everyone", "(M)") {
@@ -75,7 +75,7 @@ func TestIsolateNarrowsSharedWriteHandedDownFromAbove(t *testing.T) {
 
 	if err := Isolate(child, unusedAccount, []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
-	}, InheritObjects|InheritContainers); err != nil {
+	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if holds(t, child, `BUILTIN\Users`, "(M)") {
@@ -100,7 +100,7 @@ func TestIsolateAddsNothingWhereThoseTwoHadNothing(t *testing.T) {
 	}
 	if err := Isolate(dir, unusedAccount, []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
-	}, InheritObjects|InheritContainers); err != nil {
+	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if holds(t, dir, "Everyone", "") {
@@ -127,7 +127,7 @@ func TestIsolateLeavesTheUserAbleToWrite(t *testing.T) {
 
 	if err := Isolate(dir, unusedAccount, []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
-	}, InheritObjects|InheritContainers); err != nil {
+	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "after.txt"), []byte("x"), 0o644); err != nil {
@@ -192,7 +192,7 @@ func TestAGrantTakesWriteFromAuthenticatedUsersToo(t *testing.T) {
 	}
 	if err := Isolate(root, unusedAccount, []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
-	}, InheritObjects|InheritContainers); err != nil {
+	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if writableBy(root, sid.Authenticated) {

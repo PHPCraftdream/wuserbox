@@ -15,12 +15,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
-	"syscall"
 	"unsafe"
 
-	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
@@ -46,7 +43,12 @@ import (
 // individually written; taking the grant away reaches them by name, through
 // the same Prune that reaches a grant pinned deeper still. Everything else
 // keeps its own entries narrowed and the rest arriving from the top.
-func sweep(root string, everyone, users, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr) error {
+//
+// pinned is the record's paths for this sandbox, lowercased by the caller,
+// and it decides which owned objects are spared: a path recorded there was
+// granted by the operator in their own right, and no list the sandbox could
+// have written may stand in for that decision (owner.go).
+func sweep(root string, everyone, users, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned map[string]bool) error {
 	// Read the whole tree before changing any of it. Doing both in one pass
 	// left a failure halfway down with part of the tree already rewritten and
 	// the grant not written at all: narrowings nobody asked for and no record
@@ -58,22 +60,9 @@ func sweep(root string, everyone, users, holder, owner uintptr, sandbox []uintpt
 		return err
 	}
 	return walkTree(root, func(path string, _ fs.DirEntry) error {
-		return narrowOwn(path, everyone, users, holder, owner, sandbox, hand, mark)
+		return narrowOwn(path, everyone, users, holder, owner, sandbox, hand, mark, pinned)
 	})
 }
-
-var (
-	procFindFirstFileName = w32.Kernel32.NewProc("FindFirstFileNameW")
-	procFindNextFileName  = w32.Kernel32.NewProc("FindNextFileNameW")
-	procFindClose         = w32.Kernel32.NewProc("FindClose")
-	procGetFinalPathName  = w32.Kernel32.NewProc("GetFinalPathNameByHandleW")
-)
-
-// EnvAllowLinks hands the tree over even where a file in it answers to another
-// name as well. It is read for the whole process, the way the switch for
-// prompts is, so that it survives wuserbox starting itself again with
-// administrator rights.
-const EnvAllowLinks = "WUSERBOX_ALLOW_LINKS"
 
 // inspect is the reading pass: it asks of every object whether its permissions
 // can be carried over, and whether it is the only name for what it points at.
@@ -169,167 +158,6 @@ func workers() int {
 	return most
 }
 
-// insideOnly refuses a file that answers to a name outside the tree being
-// handed over.
-//
-// A hard link is not a second file. It is a second name for the same one, and
-// a permission list belongs to the file rather than to the name, so handing a
-// directory over hands over every name the files in it have. Windows
-// propagates the inheritable entry into the file itself, and a name outside
-// the tree then leads to a list that says the sandbox may write and delete
-// there. Measured, with icacls on the outside name.
-//
-// Where the other names are all inside the same tree, nothing reaches further
-// than the grant already does, and this passes. That distinction is not a
-// refinement: refusing on any second name turned out to refuse the ordinary
-// case. Package managers deduplicate inside one directory -- two agents under
-// ~/.config sharing one copy of a library, one agent's file history sharing a
-// version between sessions -- which is thousands of files in the very
-// directories the preset hands over, and not one of them reaches outside.
-// Measured, on a real profile, after the strict form made `--init` fail.
-//
-// The sandbox cannot make such a link itself against anything it may not
-// already write, so this is not a way out that a sandbox takes: it is a grant
-// reaching further than it says.
-//
-// Directories are passed over because NTFS does not give one a second name.
-func insideOnly(root, path string, isDir bool) error {
-	if isDir {
-		return nil
-	}
-	names, err := namesOf(path)
-	if err != nil {
-		return err
-	}
-	if names == 1 {
-		return nil
-	}
-	others, err := otherNames(path)
-	if err != nil {
-		// The count says there is another name and asking which went wrong,
-		// so nothing here can say where it is. That is the one case where the
-		// count alone has to decide, and it decides against handing over.
-		return fmt.Errorf(
-			"%s is one of %d names for the same file and the others could not be read (%w); "+
-				"handing this directory over may hand over a file outside it, "+
-				"so it is refused; pass --allow-links to hand it over regardless",
-			path, names, err)
-	}
-	for _, other := range others {
-		if within(root, other) {
-			continue
-		}
-		return fmt.Errorf(
-			"%s is also named %s, which is outside %s, and handing this directory over "+
-				"would hand that one over too; move it aside, "+
-				"or pass --allow-links to hand the directory over regardless",
-			path, other, root)
-	}
-	return nil
-}
-
-// within reports whether path is root or lies under it.
-func within(root, path string) bool {
-	root = filepath.Clean(root)
-	path = filepath.Clean(path)
-	if strings.EqualFold(root, path) {
-		return true
-	}
-	prefix := root
-	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
-		prefix += string(filepath.Separator)
-	}
-	return strings.HasPrefix(strings.ToLower(path), strings.ToLower(prefix))
-}
-
-// finalName is the one spelling Windows itself uses for a path: long names
-// rather than their 8.3 abbreviations, the letter case the disk holds, and the
-// real volume behind a substituted drive or a symbolic link.
-//
-// Two spellings of one directory are not equal as strings, and comparing them
-// as strings is how a tree was refused for containing a link to itself: a
-// build machine's TEMP is handed out as C:\Users\RUNNER~1\..., while the names
-// a file answers to come back as C:\Users\runneradmin\.... Everything compared
-// here goes through this first.
-func finalName(path string) (string, error) {
-	const readAttributes = 0x80
-	handle, err := syscall.CreateFile(w32.UTF16(path), readAttributes,
-		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE, nil,
-		syscall.OPEN_EXISTING, syscall.FILE_FLAG_BACKUP_SEMANTICS, 0)
-	if err != nil {
-		return "", fmt.Errorf("opening %s to spell it out: %w", path, err)
-	}
-	defer func() { _ = syscall.CloseHandle(handle) }()
-
-	const volumeNameDOS = 0x0
-	buffer := make([]uint16, syscall.MAX_LONG_PATH)
-	written, _, callErr := procGetFinalPathName.Call(uintptr(handle),
-		uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)), volumeNameDOS)
-	if written == 0 || int(written) >= len(buffer) {
-		return "", fmt.Errorf("spelling out %s: %w", path, callErr)
-	}
-	// Windows answers in its own extended form: \\?\C:\... for a local path,
-	// \\?\UNC\server\share\... for one on the network.
-	name := syscall.UTF16ToString(buffer[:written])
-	if rest, found := strings.CutPrefix(name, `\\?\UNC\`); found {
-		return `\\` + rest, nil
-	}
-	return strings.TrimPrefix(name, `\\?\`), nil
-}
-
-// otherNames lists every name the file at path answers to, as full paths.
-//
-// Windows gives them relative to the volume root, and a hard link cannot cross
-// volumes, so the volume of the path that was asked about is the volume of
-// them all. That path is spelled out first, or a substituted drive would put
-// the wrong letter in front of all of them.
-func otherNames(path string) ([]string, error) {
-	absolute, err := finalName(path)
-	if err != nil {
-		return nil, err
-	}
-	volume := filepath.VolumeName(absolute)
-
-	buffer := make([]uint16, syscall.MAX_LONG_PATH)
-	length := uint32(len(buffer))
-	handle, _, callErr := procFindFirstFileName.Call(
-		uintptr(unsafe.Pointer(w32.UTF16(absolute))), 0,
-		uintptr(unsafe.Pointer(&length)), uintptr(unsafe.Pointer(&buffer[0])))
-	if handle == uintptr(syscall.InvalidHandle) {
-		return nil, fmt.Errorf("listing the names of %s: %w", absolute, callErr)
-	}
-	defer procFindClose.Call(handle)
-
-	var found []string
-	for {
-		found = append(found, volume+syscall.UTF16ToString(buffer))
-		length = uint32(len(buffer))
-		if r, _, _ := procFindNextFileName.Call(handle,
-			uintptr(unsafe.Pointer(&length)), uintptr(unsafe.Pointer(&buffer[0]))); r == 0 {
-			return found, nil
-		}
-	}
-}
-
-// namesOf is how many names the file at path answers to.
-func namesOf(path string) (uint32, error) {
-	const readAttributes = 0x80
-	const openReparsePoint = 0x00200000
-	handle, err := syscall.CreateFile(w32.UTF16(path), readAttributes,
-		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE, nil,
-		syscall.OPEN_EXISTING, syscall.FILE_FLAG_BACKUP_SEMANTICS|openReparsePoint, 0)
-	if err != nil {
-		return 0, fmt.Errorf("opening %s to count its names: %w", path, err)
-	}
-	defer func() { _ = syscall.CloseHandle(handle) }()
-
-	var info syscall.ByHandleFileInformation
-	if err := syscall.GetFileInformationByHandle(handle, &info); err != nil {
-		return 0, fmt.Errorf("asking how many names %s has: %w", path, err)
-	}
-	return info.NumberOfLinks, nil
-}
-
 // walkTree visits everything under root that a sweep is allowed to touch.
 func walkTree(root string, visit func(string, fs.DirEntry) error) error {
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -388,7 +216,12 @@ func readable(path string) ([]heldEntry, error) {
 // carrying an inherited Modify from its tree's writable days kept it through
 // a read-only narrowing, and the write was accepted. The whole write, the
 // measurement and the costs live in owner.go.
-func narrowOwn(path string, everyone, users, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr) error {
+//
+// pinned is the record's paths for this sandbox, and it is the only thing
+// that spares an owned object: a path the record names was granted in the
+// operator's own right, and a list the sandbox could have written is no
+// evidence of that (owner.go).
+func narrowOwn(path string, everyone, users, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned map[string]bool) error {
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
@@ -456,7 +289,7 @@ func narrowOwn(path string, everyone, users, holder, owner uintptr, sandbox []ui
 		}
 		return apply(path, append(update, handback...), false)
 	}
-	return capObject(path, held, update, handback, everyone, users, hand, owner, mark)
+	return capObject(path, held, update, handback, hand, owner, mark, pinned)
 }
 
 // StripOwn takes away the entries an object holds itself for one account,
@@ -467,32 +300,57 @@ func narrowOwn(path string, everyone, users, holder, owner uintptr, sandbox []ui
 // them, and that copy then answers to nobody: taking the other sandbox's
 // grant away rewrites the directory it was granted, which this one no longer
 // hears from. So the account's access here has to be taken away by name.
+//
+// An object account itself owns is left alone: owning it is what the cap in
+// owner.go answers, written by the sweep that just ran or by TakeBack on the
+// way out, and either already leaves this object exactly where it should be.
+// Stripping the account's entry here too would undo a narrowed grant the
+// sweep wrote moments ago in the same update -- an owned object's own entry
+// is no longer only ever an orphaned copy the way an inherited one would be.
 func StripOwn(path, account string) error {
-	value, err := sid.Parse(account)
-	if err != nil {
-		return err
-	}
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
-		seFileObject, daclInfo, 0, 0, uintptr(unsafe.Pointer(&dacl)), 0,
+		seFileObject, daclInfo|ownerInfo, 0, 0, uintptr(unsafe.Pointer(&dacl)), 0,
 		uintptr(unsafe.Pointer(&descriptor))); r != 0 {
 		return fmt.Errorf("reading the permissions of %s: error %d", path, r)
 	}
 	defer w32.Free(descriptor)
 
+	sandbox, err := sandboxIdentities(account)
+	if err != nil {
+		return err
+	}
+	if ownedByTheSandbox(ownerOf(descriptor), sandbox) {
+		return nil
+	}
+
 	held, err := entriesOf(dacl)
 	if err != nil {
 		return fmt.Errorf("reading the permissions of %s: %w", path, err)
 	}
+	var clear []explicitAccess
 	for _, one := range held {
-		if one.inherited || !sameSID(one.access.trustee.name, value) {
+		if one.inherited || !matchesSandboxIdentity(one.access.trustee.name, sandbox) {
 			continue
 		}
 		// Only what the object holds itself is cleared. What it is handed from
 		// above goes when the directory above is rewritten, which is the
-		// caller's next move anyway.
-		return apply(path, []explicitAccess{entry(value, 0, InheritNone, setAccess)}, false)
+		// caller's next move anyway. Preserve the trustee from the ACL rather
+		// than assuming the group SID was the only spelling present.
+		already := false
+		for _, prior := range clear {
+			if sameSID(prior.trustee.name, one.access.trustee.name) {
+				already = true
+				break
+			}
+		}
+		if !already {
+			clear = append(clear, entry(one.access.trustee.name, 0, InheritNone, setAccess))
+		}
+	}
+	if len(clear) != 0 {
+		return apply(path, clear, false)
 	}
 	return nil
 }

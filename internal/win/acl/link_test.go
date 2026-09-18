@@ -41,7 +41,7 @@ func TestAGrantDoesNotReachThroughAJunction(t *testing.T) {
 	// what is found there afterwards says which direction it came from. Asking
 	// only whether the outside entry survived would pass either way.
 	const newcomer = "S-1-5-21-1111111111-2222222222-3333333333-543211"
-	if err := Isolate(root, newcomer, writable, InheritObjects|InheritContainers); err != nil {
+	if err := Isolate(root, newcomer, writable, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !UsersWritable(outside) {
@@ -86,7 +86,7 @@ func TestAGrantRefusesAFileWithASecondNameOutside(t *testing.T) {
 
 	err := Isolate(granted, unusedAccount, []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
-	}, InheritObjects|InheritContainers)
+	}, InheritObjects|InheritContainers, nil)
 	if err == nil {
 		t.Fatal("handed over a tree holding a second name for a file outside it")
 	}
@@ -119,7 +119,7 @@ func TestAllowLinksHandsTheTreeOverAnyway(t *testing.T) {
 
 	if err := Isolate(granted, unusedAccount, []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
-	}, InheritObjects|InheritContainers); err != nil {
+	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatalf("--allow-links did not let the grant through: %v", err)
 	}
 	if !holds(t, granted, unusedAccount, "(M)") {
@@ -156,7 +156,7 @@ func TestAGrantAllowsALinkThatStaysInsideTheTree(t *testing.T) {
 
 	if err := Isolate(granted, unusedAccount, []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
-	}, InheritObjects|InheritContainers); err != nil {
+	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatalf("a tree whose links all stay inside it was refused: %v", err)
 	}
 	if !holds(t, granted, unusedAccount, "(M)") {
@@ -197,7 +197,7 @@ func TestALinkInsideATreeNamedInShortFormIsStillInside(t *testing.T) {
 
 	if err := Isolate(short, unusedAccount, []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
-	}, InheritObjects|InheritContainers); err != nil {
+	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatalf("a tree named in short form was refused for containing a link to itself: %v", err)
 	}
 }

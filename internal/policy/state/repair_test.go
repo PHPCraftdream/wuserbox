@@ -218,7 +218,7 @@ func TestAnInterruptedNarrowingKeepsItsMark(t *testing.T) {
 
 	// Stop the narrowing halfway: the parent is refused, the child is not yet
 	// taken back, and the change is still marked.
-	if err := grant.Apply(s.SID, parent, grant.RO); err != nil {
+	if err := grant.Apply(s.SID, parent, grant.RO, nil); err != nil {
 		t.Fatal(err)
 	}
 	s.Grants = append(s.Grants, grant.Spec{

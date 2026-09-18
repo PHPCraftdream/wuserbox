@@ -202,7 +202,7 @@ func (s *State) OfferMany(specs []grant.Spec) error {
 		s.Grants = before
 		return err
 	}
-	if err := ApplyTogether(s.SID, wanted); err != nil {
+	if err := ApplyTogether(s.SID, wanted, s.paths()); err != nil {
 		// The record keeps the marks: it claims more than is in force, which
 		// the next run finishes and explain reports meanwhile. That is the
 		// harmless way round, so the error is worth reporting as it is.
@@ -229,7 +229,12 @@ func (s *State) oneByOne(specs []grant.Spec) error {
 // ApplyTogether applies permissions on several paths at the same time, a few
 // at once rather than all of them: each one keeps a whole directory tree busy,
 // and the disk is the limit long before the processor is.
-func ApplyTogether(account string, specs []grant.Spec) error {
+//
+// pinned is the record's own paths for this account, passed straight through
+// to every Apply: the sweep each one runs needs it to tell an object the
+// operator pinned in its own right from one a sandbox only made to look that
+// way (owner.go).
+func ApplyTogether(account string, specs []grant.Spec, pinned []string) error {
 	workers := runtime.NumCPU()
 	if workers > 8 {
 		workers = 8
@@ -245,7 +250,7 @@ func ApplyTogether(account string, specs []grant.Spec) error {
 		go func() {
 			defer wg.Done()
 			for spec := range queue {
-				if err := grant.Apply(account, spec.Path, spec.Kind); err != nil {
+				if err := grant.Apply(account, spec.Path, spec.Kind, pinned); err != nil {
 					failures <- err
 				}
 			}

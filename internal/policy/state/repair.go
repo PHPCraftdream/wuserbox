@@ -47,7 +47,7 @@ func (s *State) finish(held grant.Spec) error {
 		// that is gone helps nobody.
 		return s.forget(held.Path)
 	}
-	if err := grant.Apply(s.SID, held.Path, held.Kind); err != nil {
+	if err := grant.Apply(s.SID, held.Path, held.Kind, s.paths()); err != nil {
 		return err
 	}
 	if !held.Kind.Writable() {

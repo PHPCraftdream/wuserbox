@@ -38,9 +38,11 @@
 package acl
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
@@ -110,30 +112,86 @@ func markFor(mark uintptr) explicitAccess {
 // sandboxIdentities lists every identifier the sandbox whose access is being
 // decided goes by: the account the entries are written to, and -- because
 // entries go out under a group's name while ownership accrues under the
-// account's name -- the accounts that belong to the local group that
+// account's name -- the identifier of every member of the local group that
 // identifier names. Files a sandbox creates are owned by its account, not by
-// its group, so a check on the group's identifier alone would match nothing a
-// sandbox owns.
+// its group, so a check on the group's identifier alone would match nothing
+// a sandbox owns.
 //
-// Where the identifier names no local group -- a synthetic identifier in
-// tests, a plain account -- the member lookup fails and the one identifier is
-// the whole answer.
-func sandboxIdentities(account string) []uintptr {
+// The group answers with names, and a name is not SID text. Measured on this
+// desk, non-elevated:
+//
+//	ConvertStringSidToSidW("Computer") -> 1337 ERROR_INVALID_SID
+//	LookupAccountNameW("Computer")     -> S-1-5-21-716976243-447150123-4053037466-1001
+//	LookupAccountNameW("PC\Computer")  -> the same SID
+//
+// So a member's name parsed as SID text fails for every real member, and
+// swallowing that error left this list holding the group alone: the owner
+// check matched nothing and the cap never landed. Members are resolved with
+// LookupAccountNameW instead, and one that cannot be resolved fails the
+// whole list -- a member of a group that exists must not come out as a
+// shorter list, which quietly protects less.
+//
+// Where the identifier names no account at all -- a synthetic identifier in
+// tests -- LookupAccountNameW refuses, there is no group to ask, and the one
+// identifier is the whole answer. Where it names a plain account, the group
+// lookup answers that there is no such group and the answer is the same.
+func sandboxIdentities(account string) ([]uintptr, error) {
 	value, err := sid.Parse(account)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	identities := []uintptr{value}
-	name, err := sid.Name(value)
+	// Whether value resolves to an account name at all is a fact, not an
+	// error: a synthetic identifier in tests resolves to none, there is no
+	// group to ask, and the one identifier already collected is the whole,
+	// correct answer.
+	name, named := accountNameOf(value)
+	if !named {
+		return identities, nil
+	}
+	members, err := localGroupMembers(name)
 	if err != nil {
-		return identities
+		return nil, err
 	}
-	for _, member := range localGroupMembers(name) {
-		if parsed, err := sid.Parse(member); err == nil {
-			identities = append(identities, parsed)
+	for _, member := range members {
+		resolved, err := sid.Lookup(member)
+		if err != nil {
+			return nil, fmt.Errorf("resolving %s, a member of %s: %w", member, name, err)
 		}
+		pin(resolved)
+		identities = append(identities, uintptr(unsafe.Pointer(&resolved[0])))
 	}
-	return identities
+	return identities, nil
+}
+
+// accountNameOf answers whether value resolves to an account name at all,
+// which is the one question sandboxIdentities needs from sid.Name: a SID
+// with no name (a synthetic identifier in tests) is not a lookup failure to
+// propagate, it is the answer.
+func accountNameOf(value uintptr) (string, bool) {
+	name, err := sid.Name(value)
+	return name, err == nil
+}
+
+var (
+	pinnedMu sync.Mutex
+	// pinned keeps every identifier Lookup resolved from a group member's
+	// name alive for as long as the process lives. The identities list
+	// holds uintptrs, and a KeepAlive -- what setHiveSecurity in
+	// internal/account pins a value with -- lasts one call, while these
+	// pointers have to answer for owner checks across a whole tree walk.
+	// Keeping them here gives them the lifetime sid.Parse's results
+	// already have: never freed, because something is holding them.
+	pinned []sid.Value
+)
+
+// pin gives a Lookup result the lifetime Parse's results already have. The
+// mutex is because grants can be applied from several goroutines at once
+// (state.ApplyTogether).
+func pin(value sid.Value) {
+	pinnedMu.Lock()
+	defer pinnedMu.Unlock()
+	pinned = append(pinned, value)
 }
 
 var (
@@ -141,11 +199,29 @@ var (
 	procFreeBuffer   = w32.Netapi32.NewProc("NetApiBufferFree")
 )
 
-// localGroupMembers lists the plain account names belonging to a local group,
-// the same question the account package asks the same call. It is asked again
+// localGroupMembers lists the account names belonging to a local group, the
+// same question the account package asks the same call. It is asked again
 // here rather than called there because the account package builds on this
 // one, and the owner check cannot work without the answer.
-func localGroupMembers(name string) []string {
+//
+// The names come back qualified -- "PC\Computer", not "Computer" -- and
+// stay that way: the qualified form is what Windows itself handed back and
+// the only form that cannot answer for another principal of the same name.
+// sid.Lookup resolves it.
+//
+// A name that is not a local group is not a failure. Measured on this desk,
+// non-elevated, one group under both spellings and a name that is none:
+//
+//	NetLocalGroupGetMembers("Computer")          -> 1376 ERROR_NO_SUCH_ALIAS
+//	NetLocalGroupGetMembers("PC\Computer")       -> 2220 NERR_GroupNotFound
+//	NetLocalGroupGetMembers("no-such-group-xyz") -> 2220
+//	NetLocalGroupGetMembers("Administrators")    -> 0, members
+//	                                                "PC\Administrator",
+//	                                                "PC\Computer", "PC\User"
+//
+// Any other answer is an enumeration that failed for a group that may well
+// exist, and must not come back as an empty list.
+func localGroupMembers(name string) ([]string, error) {
 	type memberInfo3 struct{ domainAndName *uint16 }
 	var members *memberInfo3
 	var read, total uint32
@@ -153,19 +229,18 @@ func localGroupMembers(name string) []string {
 	r, _, _ := procGroupMembers.Call(0, uintptr(unsafe.Pointer(w32.UTF16(name))), 3,
 		uintptr(unsafe.Pointer(&members)), most, uintptr(unsafe.Pointer(&read)),
 		uintptr(unsafe.Pointer(&total)), 0)
+	if r == 1376 || r == 2220 {
+		return nil, nil
+	}
 	if r != 0 {
-		return nil
+		return nil, fmt.Errorf("listing the members of %s: error %d", name, r)
 	}
 	defer procFreeBuffer.Call(uintptr(unsafe.Pointer(members)))
 	var out []string
 	for _, one := range unsafe.Slice(members, read) {
-		member := w32.GoString(one.domainAndName)
-		if i := strings.LastIndexByte(member, '\\'); i >= 0 {
-			member = member[i+1:]
-		}
-		out = append(out, member)
+		out = append(out, w32.GoString(one.domainAndName))
 	}
-	return out
+	return out, nil
 }
 
 // ownerOf answers with the identifier that owns the object whose security
@@ -183,11 +258,20 @@ func ownerOf(descriptor uintptr) uintptr {
 // ownedByTheSandbox reports whether the owner of an object is one of the
 // identifiers the sandbox goes by.
 func ownedByTheSandbox(owner uintptr, sandbox []uintptr) bool {
-	if owner == 0 {
+	return matchesSandboxIdentity(owner, sandbox)
+}
+
+// matchesSandboxIdentity reports whether trustee is any identity that can
+// represent this sandbox. Production ACLs name the local group, while files
+// created by the account are owned by the account and a program can add an
+// ACE for that account directly. Treating only the group as the sandbox leaves
+// that direct ACE behind during a revoke or a narrowing.
+func matchesSandboxIdentity(trustee uintptr, sandbox []uintptr) bool {
+	if trustee == 0 {
 		return false
 	}
 	for _, one := range sandbox {
-		if sameSID(owner, one) {
+		if one != 0 && sameSID(trustee, one) {
 			return true
 		}
 	}
@@ -195,15 +279,15 @@ func ownedByTheSandbox(owner uintptr, sandbox []uintptr) bool {
 }
 
 // capObject writes the finished list of an object the sandbox's account owns,
-// and which of three things it does follows from what the object's list says
+// and which of two things it does follows from what the object's list says
 // now:
 //
 //   - hearing from above, it is written whole: its own entries -- the crowd
-//     among them narrowed, the rest carried over --, the hand-down, the cap
-//     and the mark. The inherited entries it held are replaced by the
-//     hand-down written in explicitly, because a list written individually
-//     no longer hears from above. Measured through Isolate, against a file
-//     carrying an inherited Modify from its tree's writable days:
+//     among them narrowed --, the hand-down, the cap and the mark. The
+//     inherited entries it held are replaced by the hand-down written in
+//     explicitly, because a list written individually no longer hears from
+//     above. Measured through Isolate, against a file carrying an inherited
+//     Modify from its tree's writable days:
 //
 //     without the cap: the sweep writes nothing, the publish lands, (I)(M) becomes (I)(RX)
 //     with the cap:    the sweep writes the cap, the publish lands, (I)(M) stays, write accepted
@@ -211,58 +295,39 @@ func ownedByTheSandbox(owner uintptr, sandbox []uintptr) bool {
 //     The second is a narrowing that does not narrow, which is worse than the
 //     hole the cap closes.
 //
-//   - holding the mark and nothing inherited, it was written by a previous
-//     sweep, and the same rule applies one step on: the mark's whole write is
-//     what stopped it hearing from above, so the current hand-down replaces
-//     the one it carries. Measured the other way round, with the mark not
-//     checked: a file carrying the writable grant's Modify kept it through
-//     the read-only narrowing that followed, and the write was accepted --
-//     and narrowed back, the same skip would have kept a refusal standing
-//     through every widening after it. Where the hand-down and the cap are
-//     already current, nothing is written at all: a tree of a hundred
-//     thousand files the sandbox created is swept on every init, and
-//     rewriting them all every time is a cost with nothing to show for it.
+//   - holding nothing inherited, marked or forged alike, it is written whole
+//     with the current hand-down, the cap and the mark. Where the hand-down
+//     and the cap are already current, nothing is written at all: a tree of
+//     a hundred thousand files the sandbox created is swept on every init,
+//     and rewriting them all every time is a cost with nothing to show for
+//     it.
 //
-//   - holding neither, it is somebody's own -- a grant in its own right,
-//     pinned where it sits, or sealed against its owner -- and it is left
-//     alone, a directory with its whole subtree. A granted directory is
-//     capped at its own top and carries no mark, which is what keeps a
-//     narrowing from above from rewriting a grant that holds on different
-//     terms: the same decision Prune's keep-list makes for recorded grants,
-//     made here from the list alone. The cap is not added to a sealed object
-//     either: giving its owner read would widen.
-//
-// What the mark buys is the difference between the second rule and the
-// third. Nothing inherited says two opposite things -- the sweep wrote this,
-// or somebody sealed this -- and they want opposite treatment.
-func capObject(path string, held []heldEntry, narrowed, handback []explicitAccess, everyone, users uintptr, hand []explicitAccess, owner, mark uintptr) error {
-	marked := holdsEntry(held, markFor(mark))
-	switch {
-	case hearsFromAbove(held):
-		// The object's own entries that the crowd loop did not touch go in
-		// verbatim: dropping them wrote sealed lists down to the hand-down
-		// and the cap, and a protected object the sandbox owns lost what it
-		// held.
-		var carried []explicitAccess
-		for _, one := range held {
-			if one.inherited || sameSID(one.access.trustee.name, everyone) || sameSID(one.access.trustee.name, users) {
-				continue
-			}
-			carried = append(carried, one.access)
-		}
-		return writeWhole(path, append(narrowed, carried...), handback, hand, owner, mark)
-	case marked:
-		if alreadyCapped(held, hand, owner) {
-			return nil
-		}
-		return writeWhole(path, nil, nil, hand, owner, mark)
-	default:
+// A third rule used to spare whatever held nothing inherited and no mark,
+// reading that shape as somebody having sealed the object against its owner
+// on purpose, and it spared a directory with its whole subtree. The shape can
+// be written by the sandbox itself while it owns the object -- emptying its
+// own list is a right ownership implies -- and it is indistinguishable from
+// a seal the operator pinned, so a narrowing left the sandbox's own direct
+// permissions and its implicit WRITE_DAC standing on exactly the objects the
+// sandbox chose. What an object is spared on now is the record, not its
+// list: pinned holds the paths the operator granted in their own right, and
+// a directory named there is skipped with its subtree, the same keep-list
+// rule grant.Prune has always applied.
+func capObject(path string, held []heldEntry, narrowed, handback []explicitAccess, hand []explicitAccess, owner, mark uintptr, pinned map[string]bool) error {
+	if pinned[strings.ToLower(path)] {
 		info, err := os.Lstat(path)
 		if err == nil && info.IsDir() {
 			return filepath.SkipDir
 		}
 		return nil
 	}
+	if hearsFromAbove(held) {
+		return writeWhole(path, narrowed, handback, hand, owner, mark)
+	}
+	if alreadyCapped(held, hand, owner) {
+		return nil
+	}
+	return writeWhole(path, nil, nil, hand, owner, mark)
 }
 
 // hearsFromAbove reports whether the object's list still holds anything a

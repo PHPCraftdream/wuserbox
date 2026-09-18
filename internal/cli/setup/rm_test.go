@@ -158,12 +158,12 @@ func TestClearGrantsReachesWhatANestedGrantPinned(t *testing.T) {
 	if err := os.Mkdir(inner, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := grant.Apply(removed, outer, grant.RW); err != nil {
+	if err := grant.Apply(removed, outer, grant.RW, nil); err != nil {
 		t.Fatal(err)
 	}
 	// Granting the inner one to somebody else is what pins it, with the entry
 	// of the sandbox about to be deleted among the copies.
-	if err := grant.Apply(other, inner, grant.RW); err != nil {
+	if err := grant.Apply(other, inner, grant.RW, nil); err != nil {
 		t.Fatal(err)
 	}
 	writable, err := access.Check(access.Sandbox{Group: removed}, filepath.Join(inner, "f.txt"), access.Create)

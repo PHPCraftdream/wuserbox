@@ -25,12 +25,16 @@ import (
 // whole tree, because that is what is changed: the sweep reaches everything
 // under the path, so a grant on a directory inside this one is the same change
 // under another name.
-func Apply(account, path string, kind Kind) error {
+// pinned is the record's own paths for this account, passed straight through
+// to Isolate: the sweep it runs needs it to tell an object the operator
+// pinned in its own right from one a sandbox only made to look that way
+// (internal/win/acl/owner.go).
+func Apply(account, path string, kind Kind, pinned []string) error {
 	entries := kind.Entries()
 	if len(entries) == 0 {
 		return fmt.Errorf("unknown grant kind %q", kind)
 	}
 	return lock.HoldTree(path, func() error {
-		return acl.Isolate(path, account, entries, kind.IsolationReach())
+		return acl.Isolate(path, account, entries, kind.IsolationReach(), pinned)
 	})
 }
