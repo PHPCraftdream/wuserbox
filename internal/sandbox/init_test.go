@@ -3,6 +3,7 @@ package sandbox
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -33,6 +34,69 @@ func TestArgsCarriesTheDashThatMarksACommand(t *testing.T) {
 	if !strings.Contains(strings.Join(args, " "), `--allow-links`) {
 		t.Errorf("the link policy is missing from the elevated command line: %v", args)
 	}
+}
+
+// TestInitRefusesAnExternalHardLinkBeforeChangingItsACL is the preflight
+// guard for the privileged profile builder. ValidateLinks must run before
+// MakeProfile applies an inheritable ACL to the profile root: an external
+// hard-link name is the same file object, so changing the profile can change
+// the supposedly unrelated file outside it.
+func TestInitRefusesAnExternalHardLinkBeforeChangingItsACL(t *testing.T) {
+	if !token.IsAdmin() {
+		t.Skip("the init profile preflight needs administrator rights")
+	}
+
+	localAppData := t.TempDir()
+	t.Setenv("LOCALAPPDATA", localAppData)
+	groupName := fmt.Sprintf("%spreflight-%x", group.Prefix, time.Now().UnixNano())
+	accountName := acct.NameFor(groupName)
+	password, err := acct.GeneratePassword()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := ProfileDir(groupName)
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("must remain"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(profile, "NTUSER.DAT")
+	if err := os.Link(outside, linked); err != nil {
+		t.Skipf("hard links unavailable on this volume: %v", err)
+	}
+
+	if err := acct.Add(accountName, profile, password); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = acct.Delete(accountName) })
+	value, err := sid.Lookup(accountName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = acct.DeleteProfile(value.String())
+		_ = acct.RemoveProfileServiceReference(value)
+	})
+
+	before := icaclsText(t, outside)
+	err = ensureProfile(&state.State{Account: accountName}, groupName)
+	if err == nil {
+		t.Fatal("init accepted a profile with a hard link outside it")
+	}
+	if after := icaclsText(t, outside); after != before {
+		t.Fatalf("init changed the external hard-link target's ACL before refusing the profile\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func icaclsText(t *testing.T, path string) string {
+	t.Helper()
+	out, err := exec.Command("icacls", path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("icacls %s: %v\n%s", path, err, out)
+	}
+	return string(out)
 }
 
 func TestAccountCollisionRefusesReplacementOfAnotherSandbox(t *testing.T) {
