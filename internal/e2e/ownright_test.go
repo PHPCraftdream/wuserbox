@@ -70,10 +70,6 @@ func TestWhatTheSandboxOwnsStaysLockedAfterTheGrantIsGone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the file the sandbox wrote is not there, so everything below proves nothing: %v", err)
 	}
-	// The account SID is a second spelling of this sandbox in a production
-	// ACL. A group-only sweep leaves this explicit ACE writable after the
-	// narrowing, so place it before the boundary change and verify the same
-	// refusals below remove it too.
 	accountACE := `icacls "` + made + `" /grant *` + account.String() + `:(F)`
 	if !box.tries(t, accountACE, work) {
 		t.Fatal("the sandbox account could not grant itself an explicit account ACE while the grant was writable, so the regression would prove nothing")
