@@ -49,11 +49,6 @@ import (
 // granted by the operator in their own right, and no list the sandbox could
 // have written may stand in for that decision (owner.go).
 func sweep(root string, everyone, users, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) error {
-	if len(pinned.keys) != 0 {
-		if err := pinned.prepare(root); err != nil {
-			return err
-		}
-	}
 	// Read the whole tree before changing any of it. Doing both in one pass
 	// left a failure halfway down with part of the tree already rewritten and
 	// the grant not written at all: narrowings nobody asked for and no record
@@ -101,7 +96,7 @@ func inspect(root string, pinned pinnedPaths) error {
 	}
 	return together(root, func(path string, entry fs.DirEntry) error {
 		if len(pinned.keys) != 0 {
-			if _, err := pinned.contains(path); err != nil {
+			if err := pinned.snapshot(path); err != nil {
 				return err
 			}
 		}
