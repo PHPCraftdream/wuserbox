@@ -252,6 +252,40 @@ func TestTakingAGrantBackNarrowsAnUnexpectedExplicitGrant(t *testing.T) {
 	}
 }
 
+// TestTakingBackRepairsACappedObjectWithAnUnexpectedExplicitGrant covers the
+// already-capped fast path. OWNER RIGHTS:RX is not sufficient evidence when
+// an old or externally written broad ACE remains beside it.
+func TestTakingBackRepairsACappedObjectWithAnUnexpectedExplicitGrant(t *testing.T) {
+	root := t.TempDir()
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := filepath.Join(root, "probe.txt")
+	if err := os.WriteFile(probe, []byte("probe"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	normalizeOwner(t, probe, owner)
+	t.Cleanup(func() { reclaim(t, probe) })
+
+	// The owner cap is present, but an explicit broad grant was added beside
+	// it. TakeBack must not accept this shape as already complete.
+	setSDDL(t, probe, `D:P(A;;0x1200A9;;;`+sid.OwnerRights+`)(A;;FA;;;`+sid.Everyone+`)`)
+	if !EveryoneWritable(probe) {
+		t.Fatal("the broad Everyone grant was not present before TakeBack")
+	}
+
+	if err := TakeBack(probe, owner, nil); err != nil {
+		t.Fatal(err)
+	}
+	if EveryoneWritable(probe) {
+		t.Fatal("the already-capped fast path preserved an explicit Everyone changing grant")
+	}
+	if !holds(t, probe, "OWNER RIGHTS", "(RX)") {
+		t.Fatal("repairing the capped object removed the owner cap")
+	}
+}
+
 // TestTakingAGrantBackSparesWhatTheRecordPins is the same revoke against a
 // tree holding a file the record pins for this sandbox. What spares it is
 // the record, not the list's shape: the file beside it, made the same way at

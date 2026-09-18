@@ -182,18 +182,19 @@ func takeBack(path string, sandbox []uintptr, limited, mark, operator, system, a
 		// deliberately relies on; a sandbox can write an Everyone:Full
 		// Control entry before revoke, and that entry must not survive the
 		// cap merely because it is explicit.
-		var carried []explicitAccess
-		for _, one := range held {
-			if !one.inherited && !matchesSandboxIdentity(one.access.trustee.name, sandbox) {
-				if access, keep := revokeCarry(one.access, operator, system, administrators); keep {
-					carried = append(carried, access)
-				}
-			}
-		}
+		carried, _ := carryRevokeEntries(held, sandbox, operator, system, administrators)
 		return writeWhole(path, append(clear, carried...), nil, nil, limited, mark)
 	}
 	if capPresent(held, limited) {
-		return nil
+		// A cap by itself is not proof that the list is safe: an earlier
+		// revoke could have accepted an owner-rights entry while an
+		// unexpected explicit broad grant stood beside it. Normalize that
+		// list before treating the fast path as finished.
+		carried, changed := carryRevokeEntries(held, sandbox, operator, system, administrators)
+		if !changed {
+			return nil
+		}
+		return writeWhole(path, carried, nil, nil, limited, mark)
 	}
 	// Nothing of the account's was on it and there is no list to carry: a
 	// list with no entries refuses everybody everything, which is one step
@@ -226,6 +227,28 @@ func revokeCarry(access explicitAccess, operator, system, administrators uintptr
 	}
 	access.permissions &^= changing
 	return access, access.permissions != 0
+}
+
+// carryRevokeEntries keeps the explicit, non-inherited part of an object's
+// own list while applying the revoke policy to every changing grant. changed
+// reports whether any entry was removed or narrowed, which is what invalidates
+// the already-capped fast path.
+func carryRevokeEntries(held []heldEntry, sandbox []uintptr, operator, system, administrators uintptr) ([]explicitAccess, bool) {
+	var carried []explicitAccess
+	changed := false
+	for _, one := range held {
+		if one.inherited || matchesSandboxIdentity(one.access.trustee.name, sandbox) {
+			continue
+		}
+		access, keep := revokeCarry(one.access, operator, system, administrators)
+		if access.permissions != one.access.permissions || !keep {
+			changed = true
+		}
+		if keep {
+			carried = append(carried, access)
+		}
+	}
+	return carried, changed
 }
 
 // sandboxGroup recognizes only groups created by wuserbox. Resolving a SID
