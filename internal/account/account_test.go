@@ -63,6 +63,20 @@ func TestNameForNeverCollidesWithItsGroup(t *testing.T) {
 	}
 }
 
+func TestNameForSeparatesGroupsWithTheSameLegacySuffix(t *testing.T) {
+	first := group.Prefix + "first-project-deadbeef"
+	second := group.Prefix + "second-project-deadbeef"
+	if LegacyNameFor(first) != LegacyNameFor(second) {
+		t.Fatal("fixture does not share the legacy account identity")
+	}
+	if NameFor(first) == NameFor(second) {
+		t.Fatalf("current account identities still collide: %q", NameFor(first))
+	}
+	if len(NameFor(first)) != 20 || len(NameFor(second)) != 20 {
+		t.Fatalf("current account name exceeds or misses the Windows limit: %q, %q", NameFor(first), NameFor(second))
+	}
+}
+
 func TestGeneratePasswordMeetsWindowsComplexity(t *testing.T) {
 	password, err := GeneratePassword()
 	if err != nil {

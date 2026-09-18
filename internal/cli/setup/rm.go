@@ -150,7 +150,7 @@ func remove(name string, asJSON bool) error {
 			return err
 		}
 	}
-	if err := removeAccount(name, asJSON); err != nil {
+	if err := removeAccountState(name, s, asJSON); err != nil {
 		return err
 	}
 	return group.Delete(name)
@@ -178,6 +178,10 @@ func remove(name string, asJSON bool) error {
 // left immediately. A thin profile is about two and a half megabytes; one
 // somebody has added to can be gigabytes.
 func removeAccount(groupName string, asJSON bool) error {
+	return removeAccountState(groupName, nil, asJSON)
+}
+
+func removeAccountState(groupName string, s *state.State, asJSON bool) error {
 	var left []string
 	complain := func(part string, err error) {
 		if !asJSON {
@@ -186,8 +190,11 @@ func removeAccount(groupName string, asJSON bool) error {
 		left = append(left, part)
 	}
 
-	name := acct.NameFor(groupName)
-	if accountExists(name) {
+	name, err := accountNameForRemoval(groupName, s)
+	if err != nil {
+		return err
+	}
+	if name != "" && accountExists(name) {
 		value, err := sid.Lookup(name)
 		if err != nil {
 			return err
@@ -230,6 +237,54 @@ func removeAccount(groupName string, asJSON bool) error {
 			name, strings.Join(left, ", "))
 	}
 	return nil
+}
+
+// accountNameForRemoval refuses to infer ownership from a colliding name.
+// A record's Account field is authoritative for migrated sandboxes; where it
+// is absent, the old and current derivations are accepted only after the
+// account's group membership and project comment match the group's comment.
+func accountNameForRemoval(groupName string, s *state.State) (string, error) {
+	if s != nil && s.Account != "" {
+		if !accountExists(s.Account) {
+			return s.Account, nil
+		}
+		dir, exists, err := group.Comment(groupName)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return "", fmt.Errorf("sandbox group %s disappeared while removing its account", groupName)
+		}
+		ok, err := acct.BelongsTo(s.Account, groupName, dir)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("account %s is not owned by sandbox group %s; refusing to delete it", s.Account, groupName)
+		}
+		return s.Account, nil
+	}
+	dir, exists, err := group.Comment(groupName)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return "", nil
+	}
+	for _, candidate := range acct.Candidates(groupName) {
+		if !accountExists(candidate) {
+			continue
+		}
+		ok, err := acct.BelongsTo(candidate, groupName, dir)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return candidate, nil
+		}
+		return "", fmt.Errorf("account %s collides with sandbox group %s but belongs to another project; refusing to delete it", candidate, groupName)
+	}
+	return "", nil
 }
 
 // recordFor reads the record for removal, and says whether what came back is
@@ -403,7 +458,9 @@ func previewRemoval(name string, asJSON bool) error {
 	if _, exists, err := group.Comment(name); err == nil && exists {
 		actions = append(actions, plan.Action{Does: "delete", What: name, Detail: "local group"})
 	}
-	if accountName := acct.NameFor(name); accountExists(accountName) {
+	if accountName, err := accountNameForRemoval(name, s); err != nil {
+		return err
+	} else if accountName != "" && accountExists(accountName) {
 		actions = append(actions,
 			plan.Action{Does: "delete", What: sandbox.ProfileDir(name), Detail: "thin profile"},
 			plan.Action{Does: "delete", What: accountName, Detail: "local account"})

@@ -80,16 +80,45 @@ func Judge(name, dir string, s *state.State, readErr error) Trouble {
 		return RecordUnreadable
 	case s == nil:
 		return RecordMissing
-	case !resolves(account.NameFor(name)):
+	case accountFor(name, s) == "":
 		return NoAccount
 	case s.Secret == "":
 		return PasswordLost
-	case stillSharesTheOldReadGroup(account.NameFor(name)):
+	case stillSharesTheOldReadGroup(accountFor(name, s)):
 		return SharesTheOldReadGroup
 	case dir != "" && !isDirectory(dir):
 		return ProjectGone
 	}
 	return Whole
+}
+
+// accountFor uses the recorded account first. For old records that predate
+// the account field, a candidate is accepted only when its membership and
+// project comment both match this group; a colliding account is not evidence
+// that the sandbox owns it.
+func accountFor(name string, s *state.State) string {
+	if s == nil {
+		return ""
+	}
+	if s.Account != "" {
+		if resolves(s.Account) {
+			ok, err := account.BelongsTo(s.Account, name, s.Dir)
+			if err == nil && ok {
+				return s.Account
+			}
+		}
+		return ""
+	}
+	for _, candidate := range account.Candidates(name) {
+		if !resolves(candidate) {
+			continue
+		}
+		ok, err := account.BelongsTo(candidate, name, s.Dir)
+		if err == nil && ok {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // stillSharesTheOldReadGroup asks whether this sandbox's account is left in

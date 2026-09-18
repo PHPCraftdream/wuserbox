@@ -100,8 +100,13 @@ func build(name, dir string, o Options) (*state.State, error) {
 			return nil, err
 		}
 	} else if comment != dir {
-		// A stale comment is cosmetic: the group still works.
-		_ = group.SetComment(name, dir)
+		if !projectPathsMatch(comment, dir) {
+			return nil, fmt.Errorf("sandbox group %s belongs to %s, not %s", name, comment, dir)
+		}
+		// A stale spelling is cosmetic: the group still works.
+		if err := group.SetComment(name, dir); err != nil {
+			return nil, err
+		}
 	}
 
 	account, err := sid.Lookup(name)
@@ -189,9 +194,21 @@ func build(name, dir string, o Options) (*state.State, error) {
 // remembers, but it is one this same run just made and is still in the
 // middle of finishing, not one a save already promised was ready to use.
 func ensureAccount(s *state.State, groupName, dir string) error {
-	name := acct.NameFor(groupName)
-	if err := replaceUnopenableAccount(s, name, groupName); err != nil {
+	name, err := accountName(s, groupName, dir)
+	if err != nil {
 		return err
+	}
+	if err := replaceUnopenableAccount(s, name, groupName, dir); err != nil {
+		return err
+	}
+	if s.Account == "" && s.Secret != "" && resolves(name) {
+		// A record from the short-lived account format may have kept the
+		// sealed password without the account field. Once the candidate has
+		// passed the ownership checks, preserve that mapping explicitly.
+		s.Account = name
+		if err := s.Save(); err != nil {
+			return err
+		}
 	}
 	if _, err := sid.Lookup(name); err != nil {
 		password, err := acct.GeneratePassword()
@@ -245,6 +262,43 @@ func ensureAccount(s *state.State, groupName, dir string) error {
 	return acct.DenyRemoteLogon(name)
 }
 
+// accountName selects only an account that can be proved to belong to this
+// sandbox. The account name used by older builds is still considered so a
+// migration can keep the existing password, but a colliding account is an
+// error, never something to delete and recreate.
+func accountName(s *state.State, groupName, dir string) (string, error) {
+	if s.Account != "" {
+		if resolves(s.Account) {
+			ok, err := accountBelongs(s.Account, groupName, dir)
+			if err != nil {
+				return "", err
+			}
+			if !ok {
+				return "", fmt.Errorf("account %s is not owned by sandbox group %s; refusing to replace it", s.Account, groupName)
+			}
+		}
+		return s.Account, nil
+	}
+	for _, candidate := range acct.Candidates(groupName) {
+		if !resolves(candidate) {
+			continue
+		}
+		ok, err := accountBelongs(candidate, groupName, dir)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("account %s collides with sandbox group %s but belongs to another project; refusing to replace it", candidate, groupName)
+		}
+		return candidate, nil
+	}
+	return acct.NameFor(groupName), nil
+}
+
+func accountBelongs(name, groupName, dir string) (bool, error) {
+	return acct.BelongsTo(name, groupName, dir)
+}
+
 // replaceUnopenableAccount takes away an account nothing can log on as any
 // more and lets the rest of ensureAccount make a fresh one.
 //
@@ -260,9 +314,16 @@ func ensureAccount(s *state.State, groupName, dir string) error {
 // new account cannot open is a sandbox that starts and then cannot write
 // its own settings. It is rebuilt from nothing a moment later by
 // ensureProfile, and holds only copies in the first place.
-func replaceUnopenableAccount(s *state.State, name, groupName string) error {
+func replaceUnopenableAccount(s *state.State, name, groupName, dir string) error {
 	if s.Secret != "" || !resolves(name) {
 		return nil // the password to open it is kept, or there is no account
+	}
+	ok, err := accountBelongs(name, groupName, dir)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("account %s is not owned by sandbox group %s; refusing to delete it", name, groupName)
 	}
 	if err := acct.Delete(name); err != nil {
 		return err
@@ -305,7 +366,7 @@ func resolves(name string) bool {
 // and SE_RESTORE_NAME, and telling Windows where the profile is lives
 // under HKEY_LOCAL_MACHINE.
 func ensureProfile(s *state.State, groupName string) error {
-	account, err := sid.Lookup(acct.NameFor(groupName))
+	account, err := sid.Lookup(s.Account)
 	if err != nil {
 		return err
 	}

@@ -38,9 +38,10 @@ func Name(dir string) (string, string, error) {
 	// so check it before deriving a new identity key.
 	legacyCandidates := legacyCandidates(norm, dir)
 	for _, legacy := range legacyCandidates {
-		if _, exists, err := group.Comment(legacy); err != nil {
+		comment, exists, err := group.Comment(legacy)
+		if err != nil {
 			return "", "", err
-		} else if exists {
+		} else if exists && projectPathsMatch(comment, norm) {
 			return legacy, norm, nil
 		}
 	}
@@ -55,6 +56,21 @@ func Name(dir string) (string, string, error) {
 		name = existing
 	}
 	return name, norm, nil
+}
+
+// projectPathsMatch is deliberately stricter than a Unicode string fold.
+// Existing entries are compared by the filesystem; missing entries retain
+// only an ASCII case fold so two distinct NTFS spellings cannot select one
+// another's legacy group. A legacy group with a different comment is never a
+// valid fallback, even when its name happens to collide.
+func projectPathsMatch(first, second string) bool {
+	if first == "" || second == "" {
+		return false
+	}
+	if same, err := pathid.Same(first, second); err == nil {
+		return same
+	}
+	return asciiFold(filepath.Clean(first)) == asciiFold(filepath.Clean(second))
 }
 
 func legacyCandidates(norm, original string) []string {

@@ -53,12 +53,9 @@ type realBox struct {
 	sid      string
 }
 
-// Two sandboxes need two accounts, and an account's name is derived from the
-// last eight characters of its group's -- the readable part in front is
-// dropped, because NetUserAdd caps a name at twenty characters. So two groups
-// have to differ there and not merely somewhere: named wub-e2e-one-0000dead
-// and wub-e2e-two-0000dead, both accounts came out wub-0000dead and the
-// second came back as one that already exists. Measured, elevated.
+// Two sandboxes need two accounts. Account names fit the twenty-character
+// NetUserAdd limit while carrying a second hash over the complete group name,
+// so groups with the same legacy eight-digit suffix no longer share one.
 const (
 	firstSandbox  = "0000dea1"
 	secondSandbox = "0000dea2"

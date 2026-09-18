@@ -5,6 +5,8 @@
 package account
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"unsafe"
@@ -23,41 +25,68 @@ import (
 // which prefix either starts from.
 const Prefix = group.Prefix
 
-// hashLen is the width of the hex suffix sandbox.Name derives from a
+// hashLen is the width of the legacy hex suffix sandbox.Name derived from a
 // project's path: 4 bytes of a hash, hex-encoded.
 const hashLen = 8
+
+// accountHashLen is the width of the current account identity. The local
+// account limit is twenty characters, so the prefix plus sixteen hex digits
+// fits exactly and leaves enough identity bits to make equal legacy suffixes
+// harmless.
+const accountHashLen = 16
 
 // NameFor derives a project's account name from its group name, the same
 // way the group's own name derives from the project's directory: a plain
 // computation, not a lookup, so nothing has to remember the pairing.
 //
-// It keeps only the group's trailing hash and drops the readable project
-// slug in front of it. NetUserAdd caps a local account name at 20
-// characters where NetLocalGroupAdd allows 256, so the group's full
-// name -- prefix, slug and hash -- does not fit into an account name; the
-// hash alone, already what keeps two projects from colliding as groups,
-// fits with room to spare, and dropping the slug is what keeps the two
-// names apart on every project whose slug is not empty, which is every one
-// that reached slug() with a directory name to work from.
+// NetUserAdd caps a local account name at 20 characters where
+// NetLocalGroupAdd allows 256. The account therefore carries eight fresh
+// hex digits derived from the complete group name plus the group's existing
+// eight-digit suffix. The latter keeps the name explainable and preserves the
+// old suffix convention; the former prevents two different group names with
+// the same suffix from sharing an account.
 func NameFor(groupName string) string {
+	if len(groupName) <= hashLen {
+		return Prefix + groupName
+	}
+	digest := sha256.Sum256([]byte(strings.ToLower(groupName)))
+	return Prefix + hex.EncodeToString(digest[:4]) + groupName[len(groupName)-hashLen:]
+}
+
+// LegacyNameFor is the account spelling used before account identities grew
+// to 64 bits. It is kept solely to find and remove an existing sandbox during
+// migration; callers must verify that the account actually belongs to the
+// requested group before acting on it.
+func LegacyNameFor(groupName string) string {
 	if len(groupName) <= hashLen {
 		return Prefix + groupName
 	}
 	return Prefix + groupName[len(groupName)-hashLen:]
 }
 
-// Own says whether name is an account wuserbox made: the prefix and exactly
-// the hex suffix NameFor builds, nothing looser. An account somebody else
-// happened to call wub-something is not one of ours, and this is asked in
-// order to decide whether a process may raise its own privileges, which is
-// not a question to answer on a prefix alone.
+// Candidates returns current and legacy names, without duplicates.
+func Candidates(groupName string) []string {
+	current := NameFor(groupName)
+	legacy := LegacyNameFor(groupName)
+	if current == legacy {
+		return []string{current}
+	}
+	return []string{current, legacy}
+}
+
+// Own says whether name has one of the account shapes wuserbox made: the
+// prefix and either the current or legacy hex suffix. An account somebody
+// else happened to call wub-something is not one of ours, and this is asked
+// to decide whether a process may raise its own privileges, which is not a
+// question to answer on a prefix alone.
 func Own(name string) bool {
 	// Either case throughout, though NameFor only ever writes the lower one.
 	// Windows compares account names without regard to case, so a name can
 	// come back spelled otherwise; of the two ways to be wrong here, failing
 	// to recognize a sandbox is the one that opens something, and refusing
 	// an outsider who named themselves this way costs them nothing they had.
-	if len(name) != len(Prefix)+hashLen || !strings.EqualFold(name[:len(Prefix)], Prefix) {
+	if len(name) < len(Prefix) || !strings.EqualFold(name[:len(Prefix)], Prefix) ||
+		(len(name) != len(Prefix)+hashLen && len(name) != len(Prefix)+accountHashLen) {
 		return false
 	}
 	for _, r := range name[len(Prefix):] {
@@ -101,9 +130,10 @@ func InsideSandbox() bool {
 }
 
 var (
-	procUserAdd = w32.Netapi32.NewProc("NetUserAdd")
-	procUserDel = w32.Netapi32.NewProc("NetUserDel")
-	procFreeBuf = w32.Netapi32.NewProc("NetApiBufferFree")
+	procUserAdd     = w32.Netapi32.NewProc("NetUserAdd")
+	procUserDel     = w32.Netapi32.NewProc("NetUserDel")
+	procUserGetInfo = w32.Netapi32.NewProc("NetUserGetInfo")
+	procFreeBuf     = w32.Netapi32.NewProc("NetApiBufferFree")
 )
 
 // USER_INFO_1 flags and privilege level. UF_SCRIPT is required by
@@ -150,6 +180,23 @@ func Add(name, comment, password string) error {
 func Delete(name string) error {
 	r, _, _ := procUserDel.Call(0, uintptr(unsafe.Pointer(w32.UTF16(name))))
 	return status("NetUserDel", r)
+}
+
+// Comment returns the project directory recorded on an account, and whether
+// the account exists. The comment is part of the identity check: a colliding
+// account name must never be treated as belonging to a different sandbox.
+func Comment(name string) (string, bool, error) {
+	var buf *userInfo1
+	r, _, _ := procUserGetInfo.Call(0, uintptr(unsafe.Pointer(w32.UTF16(name))), 1,
+		uintptr(unsafe.Pointer(&buf)))
+	if r == 2221 { // NERR_UserNotFound
+		return "", false, nil
+	}
+	if err := status("NetUserGetInfo", r); err != nil {
+		return "", false, err
+	}
+	defer procFreeBuf.Call(uintptr(unsafe.Pointer(buf)))
+	return w32.GoString(buf.comment), true, nil
 }
 
 // status turns a NET_API_STATUS code shared by the NetUser and

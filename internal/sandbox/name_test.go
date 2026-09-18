@@ -131,6 +131,35 @@ func TestNameKeepsAnExistingGroupAfterTheIdentityKeyChanges(t *testing.T) {
 	}
 }
 
+func TestNameDoesNotTakeACollidingLegacyGroupForAnotherDirectory(t *testing.T) {
+	parent := t.TempDir()
+	latin := filepath.Join(parent, "K")
+	kelvin := filepath.Join(parent, "\u212A")
+	if err := os.Mkdir(latin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(kelvin, 0o755); err != nil {
+		t.Skipf("this volume does not distinguish K and Kelvin sign: %v", err)
+	}
+	latinNorm, err := paths.Resolve(latin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := legacyName(latinNorm)
+	if err := group.Add(legacy, latinNorm); err != nil {
+		t.Skipf("local group fixture requires administrator rights: %v", err)
+	}
+	t.Cleanup(func() { _ = group.Delete(legacy) })
+
+	got, _, err := Name(kelvin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == legacy {
+		t.Fatalf("directory with a colliding legacy hash selected group for %s", latin)
+	}
+}
+
 func TestSlugKeepsGroupNamesLegal(t *testing.T) {
 	cases := map[string]string{
 		"wuserbox":              "wuserbox",

@@ -5,9 +5,12 @@
 package account
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
 	"unsafe"
 
+	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
@@ -89,6 +92,47 @@ func Members(groupName string) ([]string, error) {
 		out = append(out, bareName(w32.GoString(item.domainAndName)))
 	}
 	return out, nil
+}
+
+// BelongsTo proves that account is the account for groupName and project.
+// Membership alone is not enough: a short legacy account name can collide
+// with another sandbox, and deleting that account would destroy the other
+// sandbox. The project comment is the second, durable identity check.
+func BelongsTo(account, groupName, project string) (bool, error) {
+	members, err := Members(groupName)
+	if err != nil {
+		return false, fmt.Errorf("cannot inspect membership of %s: %w", groupName, err)
+	}
+	found := false
+	for _, member := range members {
+		if strings.EqualFold(member, account) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return false, nil
+	}
+	comment, exists, err := Comment(account)
+	if err != nil {
+		return false, err
+	}
+	if !exists || comment == "" || project == "" {
+		return false, nil
+	}
+	if same, err := pathid.Same(comment, project); err == nil {
+		return same, nil
+	}
+	return asciiFold(filepath.Clean(comment)) == asciiFold(filepath.Clean(project)), nil
+}
+
+func asciiFold(path string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, path)
 }
 
 // bareName drops the "COMPUTERNAME\" Windows always puts in front of a
