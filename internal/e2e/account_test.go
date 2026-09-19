@@ -272,6 +272,16 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 3 && os.Args[1] == slotVictimFlag {
 		os.Exit(slotVictim(os.Args[2], os.Args[3]))
 	}
+	if len(os.Args) > 9 && os.Args[1] == teardownRunnerFlag {
+		os.Exit(teardownRunner(os.Args[2], os.Args[3], os.Args[4],
+			os.Args[5], os.Args[6], os.Args[7], os.Args[8], os.Args[9]))
+	}
+	if len(os.Args) > 2 && os.Args[1] == teardownBackgrounderFlag {
+		os.Exit(teardownBackgrounder(os.Args[2]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == teardownSlouchFlag {
+		os.Exit(teardownSlouch())
+	}
 	os.Exit(m.Run())
 }
 

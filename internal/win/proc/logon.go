@@ -427,7 +427,30 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 	if err != nil {
 		return -1, err
 	}
-	defer j.Close()
+	jobClosed := false
+	// endJob tears the job -- and with kill-on-close set, every process
+	// still assigned to it -- down exactly once. The deferred call stands
+	// behind every return the run makes before its program has been waited
+	// for; the explicit one after waitOrStop below is the earlier of the
+	// two, and that ordering is the whole fix. Defers run in reverse, so
+	// before the reorder the bridge's finish -- registered after this Close
+	// -- ran first, and finish waits for EOF on the bridge pipes, which
+	// arrives only once every holder of an inherited write end is gone. A
+	// program that backgrounds a child before exiting -- the ordinary shell
+	// idiom -- leaves that child holding one; the Close that would end it
+	// stood behind the wait that needed it dead, so the run stood in
+	// done.Wait() forever: exit code lost, slot leased, sandbox looking
+	// hung. Closing the job first ends the leftover child, the pipes reach
+	// EOF, and the drain that follows has nothing left to wait for. See
+	// P1-2 in docs/reviews/release-review-P-2026-09-19-round10.md.
+	endJob := func() {
+		if jobClosed {
+			return
+		}
+		jobClosed = true
+		j.Close()
+	}
+	defer endJob()
 
 	var startup syscall.StartupInfo
 	var created syscall.ProcessInformation
@@ -561,7 +584,13 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 	}
 	procResumeThread.Call(uintptr(created.Thread))
 
-	return j.waitOrStop(created.Process)
+	// The exit code is already in hand -- waitOrStop reads it before
+	// returning -- so tearing the job down now, with everything the program
+	// left running still inside it, costs nothing and is what unblocks the
+	// bridge drain waiting further down in the defers. See endJob above.
+	code, err := j.waitOrStop(created.Process)
+	endJob()
+	return code, err
 }
 
 // environmentBlock turns a list of "NAME=VALUE" strings into the

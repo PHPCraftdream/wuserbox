@@ -32,6 +32,15 @@ func Run(token syscall.Token, commandLine, directory string) (int, error) {
 	if err != nil {
 		return -1, err
 	}
+	// Behind every other teardown in this function, and safe there: nothing
+	// here waits on a pipe the child could keep open -- closing a handle
+	// does not wait for its other holders -- so this Close always runs, and
+	// promptly, with kill-on-close ending whatever the program left
+	// running. RunAsAccount cannot leave its own Close in this position,
+	// because its bridge finish waits for EOF on exactly the handles a
+	// backgrounded child inherits; it closes its job before draining
+	// instead. See P1-2 in
+	// docs/reviews/release-review-P-2026-09-19-round10.md.
 	defer j.Close()
 
 	var startup syscall.StartupInfo
