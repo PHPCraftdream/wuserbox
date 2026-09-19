@@ -7,3 +7,5 @@ dist/
 /worktrees/
 # Sub-agent run transcripts and their session database.
 /.rush/
+# Throwaway experiment scratch space, never merged.
+/scratch/
