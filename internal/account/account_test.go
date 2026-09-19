@@ -337,3 +337,19 @@ func TestOnlyAnAccountShapedLikeOneWeMadeCountsAsOne(t *testing.T) {
 		}
 	}
 }
+
+// The ordinary desktop is the case this gate must answer no to: no
+// restricted token, an account whose name the lookup reads plainly. The
+// fail-closed direction -- a lookup that fails counts as inside -- is what
+// keeps a broken answer from opening elevation and permission changes; this
+// pins the other one, which a fix in that direction could easily sweep up,
+// because an always-yes gate strands every privileged command outside a
+// sandbox.
+func TestAnOrdinaryDesktopIsNotInsideASandbox(t *testing.T) {
+	if token.IsRestricted() {
+		t.Skip("running under a restricted token; the sandboxed case is covered end to end")
+	}
+	if InsideSandbox() {
+		t.Error("an ordinary desktop process is reported as inside a sandbox")
+	}
+}

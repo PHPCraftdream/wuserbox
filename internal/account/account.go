@@ -109,22 +109,27 @@ func Own(name string) bool {
 // rights and to run the commands that change other sandboxes.
 //
 // Neither question can be answered by the process being asked about. Who a
-// process runs as is the kernel's to say, the same as the flag was.
+// process runs as is the kernel's to say, the same as the flag was. When
+// the kernel's answer cannot be read at all -- the lookup fails, the string
+// does not parse -- the question is decided the way that refuses: both
+// callers take yes to mean "do not elevate, do not touch permissions", and
+// a failure read as "not a sandbox" would open exactly those to a process
+// whose identity nothing established.
 func InsideSandbox() bool {
 	if token.IsRestricted() {
 		return true
 	}
 	current, err := sid.CurrentUser()
 	if err != nil {
-		return false
+		return true
 	}
 	value, err := sid.Parse(current)
 	if err != nil {
-		return false
+		return true
 	}
 	name, err := sid.Name(value)
 	if err != nil {
-		return false
+		return true
 	}
 	return Own(name)
 }

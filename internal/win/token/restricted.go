@@ -2,6 +2,7 @@
 package token
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"syscall"
@@ -193,14 +194,29 @@ func restrict(self syscall.Token, sandboxGroup, readGroup string, ownIdentityToo
 	owner := formatSID(user)
 	runtime.KeepAlive(userBuf)
 	if err := shareWithGroup(restricted, owner, sandboxGroup); err != nil {
+		// The token exists by now; only its default permissions are
+		// missing. Leaving it open on the way out would leak it, and
+		// nothing downstream can use a token nobody shared with the group.
+		restricted.Close()
 		return 0, err
 	}
 	return restricted, nil
 }
 
+// information reads a token class the only way GetTokenInformation allows,
+// in two calls. The first names the size and is refused by design, so its
+// error is a failure only when it is some other refusal; a size of zero
+// cannot be real -- every class is at least its header wide -- and indexing
+// into the buffer it would ask for is a panic on an empty slice.
 func information(token syscall.Token, class uint32) ([]byte, error) {
 	var size uint32
-	syscall.GetTokenInformation(token, class, nil, 0, &size)
+	err := syscall.GetTokenInformation(token, class, nil, 0, &size)
+	if err != nil && !errors.Is(err, syscall.ERROR_INSUFFICIENT_BUFFER) {
+		return nil, fmt.Errorf("sizing token information %d: %w", class, err)
+	}
+	if size == 0 {
+		return nil, fmt.Errorf("token information %d reports no size", class)
+	}
 	buf := make([]byte, size)
 	if err := syscall.GetTokenInformation(token, class, &buf[0], size, &size); err != nil {
 		return nil, fmt.Errorf("reading token information %d: %w", class, err)
