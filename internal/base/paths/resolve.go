@@ -30,17 +30,57 @@ func Resolve(input string) (string, error) {
 	if raw == "" {
 		return "", fmt.Errorf("empty path")
 	}
-	raw = strings.TrimPrefix(raw, `\\?\`)
+	raw = extendedForm(raw)
+	if err := refuseDriveRelative(raw); err != nil {
+		return "", err
+	}
 	if found, ok := onDisk(raw); ok {
 		return Normalize(found)
 	}
-	expanded := strings.TrimPrefix(expandVariables(raw), `\\?\`)
-	if found, ok := onDisk(expanded); ok {
-		return Normalize(found)
+	expanded := extendedForm(expandVariables(raw))
+	if err := refuseDriveRelative(expanded); err != nil {
+		return "", err
 	}
 	// Nothing exists yet: keep the most likely reading so the caller can
 	// report a sensible error or create the directory.
 	return Normalize(candidates(expanded)[0])
+}
+
+// extendedForm takes the extended-length prefix off, and reads the network
+// spelling it can carry. "\\?\C:\tools" and "C:\tools" are one path, and so
+// are "\\?\UNC\srv\share" and "\\srv\share" -- but taking the prefix off the
+// second one alone left "UNC\srv\share", with the marker still in the string
+// and no root in front of it: a relative path that resolved against wherever
+// the command ran, never against the machine it names.
+func extendedForm(p string) string {
+	if len(p) < 5 || !strings.EqualFold(p[:4], `\\?\`) {
+		return p
+	}
+	rest := p[4:]
+	if len(rest) >= 4 && strings.EqualFold(rest[:3], "UNC") && (rest[3] == '\\' || rest[3] == '/') {
+		rest = `\` + rest[3:]
+	}
+	return rest
+}
+
+// refuseDriveRelative turns away the "C:foo" spelling: a drive and a colon
+// with no root after them. Windows reads one against that drive's own current
+// directory, a piece of state neither this process nor the elevated copy it
+// can become holds for a drive it is not sitting on, and everything here
+// would go on to build a path that starts wherever the command runs instead.
+// An identity derived from such a path is an identity derived from where the
+// command happened to be standing.
+func refuseDriveRelative(p string) error {
+	if len(p) < 2 || p[1] != ':' || !isLetter(p[0]) {
+		return nil
+	}
+	if len(p) > 2 && (p[2] == '\\' || p[2] == '/') {
+		return nil
+	}
+	return fmt.Errorf("%s leaves the root off a drive path, and where such a path lands "+
+		"depends on the current directory of drive %s:, which nothing here can know; "+
+		"write it in full, starting with %s:\\",
+		p, strings.ToUpper(p[:1]), strings.ToUpper(p[:1]))
 }
 
 // onDisk returns the first reading of p that names something.

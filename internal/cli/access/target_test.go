@@ -6,15 +6,18 @@
 package access
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
 // TestMain loads the rules parser before any test moves LOCALAPPDATA. The
@@ -196,5 +199,48 @@ func TestTakingADirectoryBackHasNoReadOnlyHalf(t *testing.T) {
 		if got.kind != grant.RO {
 			t.Errorf("%s read --ro as %q", command, got.kind)
 		}
+	}
+}
+
+// TestOnlyAnAccessDeniedFromTheACLLayerIsWorthAnElevatedSecondAttempt holds
+// the escalation to what elevation fixes. Every failure used to ask for
+// administrator rights: a typo'd path, a damaged record or a tree refused
+// for a hard link all ended in the same consent dialog, which is how an
+// operator learns to approve it without reading it.
+func TestOnlyAnAccessDeniedFromTheACLLayerIsWorthAnElevatedSecondAttempt(t *testing.T) {
+	if !elevationCanFix(fmt.Errorf("changing the permissions of %s: %w", `C:\tools`, acl.ErrAccessDenied)) {
+		t.Error("the one failure more rights can fix did not ask for them")
+	}
+	for _, cause := range []error{
+		fmt.Errorf("open C:\\nope: no such file or directory"),
+		exit.Errorf(exit.NotFound, "no sandbox for C:\\project yet; run `wuserbox --init` there"),
+		fmt.Errorf("C:\\linked is also named C:\\elsewhere, which is outside C:\\linked"),
+	} {
+		if elevationCanFix(cause) {
+			t.Errorf("%v asked for a consent dialog, and elevation cannot fix it", cause)
+		}
+	}
+}
+
+// TestNothingPastASeparatorIsDroppedSilently is the regression guard for a
+// command line whose tail vanished: the flag package stops at a bare "--",
+// nothing here read what it kept there, and "--grant <dir> -- --ro" handed
+// the directory over writable.
+func TestNothingPastASeparatorIsDroppedSilently(t *testing.T) {
+	for _, args := range [][]string{
+		{tempDir(t), "--", "--ro"},
+		{tempDir(t), "--", "--dry-run"},
+	} {
+		if _, err := parseTarget("grant", args); err == nil {
+			t.Errorf("%v was accepted; whatever came after \"--\" would have been dropped", args)
+		}
+	}
+	// A bare "--" with nothing after it drops nothing, and stays welcome.
+	got, err := parseTarget("grant", []string{tempDir(t), "--"})
+	if err != nil {
+		t.Fatalf("a bare \"--\" with nothing after it: %v", err)
+	}
+	if got.kind != grant.RW {
+		t.Errorf("kind is %q", got.kind)
 	}
 }

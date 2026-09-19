@@ -56,6 +56,19 @@ func TestAuditAcceptsADepth(t *testing.T) {
 	if err := Audit([]string{"1", "2"}); err == nil {
 		t.Error("two arguments should have been rejected")
 	}
+	// A negative depth used to parse, and the walk's only boundary -- left
+	// == 0 -- is one a negative start never reaches: every fixed drive to its
+	// last leaf, two permission reads per directory on the way.
+	if err := Audit([]string{"-1"}); err == nil {
+		t.Error("a negative depth should have been rejected")
+	}
+	if got := exit.Of(Audit([]string{"-1"})); got != exit.Usage {
+		t.Errorf("a negative depth gave %v, want %v", got, exit.Usage)
+	}
+	// And whatever followed the number used to be dropped on the floor.
+	if err := Audit([]string{"2x"}); err == nil {
+		t.Error("trailing garbage after the depth should have been rejected")
+	}
 }
 
 func TestVersionPrintsTheRelease(t *testing.T) {

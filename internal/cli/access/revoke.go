@@ -27,9 +27,14 @@ func Revoke(args []string) error {
 		return t.preview(plan.Action{Does: "revoke", What: t.path, Detail: "from " + s.Group})
 	}
 	// As in grant: the record is re-read inside the lock, and elevation
-	// happens outside it, because the second wuserbox waits for the same lock.
+	// happens outside it, because the second wuserbox waits for the same
+	// lock. As in grant, too, only what the ACL layer refused escalates;
+	// everything else is a failure no consent dialog could fix, and goes
+	// back to the caller instead of into one more prompt.
 	if err := withdraw(s.Group, t); err == nil {
 		return nil
+	} else if !elevationCanFix(err) {
+		return err
 	} else if token.IsAdmin() {
 		return err
 	} else if !t.asJSON {

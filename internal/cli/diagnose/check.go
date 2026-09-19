@@ -32,6 +32,14 @@ func Check(args []string) error {
 	if err := flags.Parse(options); err != nil {
 		return exit.Errorf(exit.Usage, "%v", err)
 	}
+	// As in the directory commands: the flag package stops at a bare "--" and
+	// drops what follows into Args(), and check's grammar has no "--" in it.
+	// "--check p -- --operation read" went on to check write instead, with an
+	// exit code answering a question nobody asked. A leftover is refused.
+	if extra := flags.Args(); len(extra) != 0 {
+		return exit.Errorf(exit.Usage,
+			"unexpected %q after \"--\": check takes no arguments past its flags", extra[0])
+	}
 	if len(operands) != 1 {
 		return exit.Errorf(exit.Usage,
 			"usage: wuserbox --check <path> [--operation read|write|create|delete] [--dir project] [--json]")

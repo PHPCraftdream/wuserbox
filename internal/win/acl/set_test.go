@@ -6,6 +6,7 @@
 package acl
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -380,5 +381,23 @@ func TestAProtectedObjectInsideAGrantedTreeStaysProtected(t *testing.T) {
 	}
 	if EveryoneWritable(listless) {
 		t.Error("a protected descendant with no list is still writable by Everyone")
+	}
+}
+
+// TestTheAccessDeniedClassTravelsWithTheError keeps the escalation decision
+// honest: a caller that can ask for more rights may only act on the failures
+// more rights can fix, so error 5 has to arrive as ErrAccessDenied and
+// nothing else may.
+func TestTheAccessDeniedClassTravelsWithTheError(t *testing.T) {
+	err := callFailed("changing the permissions of", `C:\x`, 5)
+	if !errors.Is(err, ErrAccessDenied) {
+		t.Errorf("error 5 arrived as %v, with no access-denied class in it", err)
+	}
+	if !strings.Contains(err.Error(), "access denied") {
+		t.Errorf("the message does not say what went wrong: %v", err)
+	}
+	err = callFailed("reading the permissions of", `C:\x`, 2)
+	if errors.Is(err, ErrAccessDenied) {
+		t.Errorf("error 2 arrived as %v, claiming access was denied", err)
 	}
 }

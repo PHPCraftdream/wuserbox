@@ -31,9 +31,15 @@ func Grant(args []string) error {
 	// read before would drop whatever that command recorded.
 	//
 	// Elevation happens after the lock is let go, because the second wuserbox
-	// waits for this very lock.
+	// waits for this very lock. It happens only for the refusals the ACL
+	// layer reports: administrator rights change what the permission lists
+	// will accept, and nothing else, so every other failure goes back to the
+	// caller as what it is. Escalating a typo'd path or a damaged record
+	// trained the operator to approve a dialog that could not help them.
 	if err := apply(s.Group, t); err == nil {
 		return nil
+	} else if !elevationCanFix(err) {
+		return err
 	} else if token.IsAdmin() {
 		return err
 	} else if !t.asJSON {

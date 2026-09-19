@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -35,11 +36,23 @@ var writableIdentities = []struct {
 // write there too: it carries both, and has to, or no program starts in it
 // and nothing under System32 can be read.
 func Audit(args []string) error {
+	// Sscanf read the depth and said nothing about what came after it, so
+	// "-5" parsed and so did "2x". The walk's only boundary is left == 0,
+	// which a negative start never reaches: one negative argument turned
+	// --audit from a two-level glance into a walk of every fixed drive to
+	// its last leaf, two permission reads per directory the whole way down.
+	// Atoi answers both questions: the whole argument, and nothing else.
 	depth := 2
 	if len(args) == 1 {
-		if _, err := fmt.Sscanf(args[0], "%d", &depth); err != nil {
+		parsed, err := strconv.Atoi(args[0])
+		if err != nil {
 			return exit.Errorf(exit.Usage, "usage: wuserbox --audit [depth]")
 		}
+		if parsed < 0 {
+			return exit.Errorf(exit.Usage,
+				"a negative depth would walk without a bottom; give 0 to stop at the drive roots")
+		}
+		depth = parsed
 	} else if len(args) > 1 {
 		return exit.Errorf(exit.Usage, "usage: wuserbox --audit [depth]")
 	}

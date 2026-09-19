@@ -119,7 +119,7 @@ func takeBack(path string, sandbox []uintptr, limited, mark, operator, system, a
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
 		seFileObject, daclInfo|ownerInfo, 0, 0, uintptr(unsafe.Pointer(&dacl)), 0,
 		uintptr(unsafe.Pointer(&descriptor))); r != 0 {
-		return fmt.Errorf("reading the permissions of %s: error %d", path, r)
+		return callFailed("reading the permissions of", path, r)
 	}
 	defer w32.Free(descriptor)
 

@@ -5,6 +5,7 @@
 package acl
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"unsafe"
@@ -111,6 +112,25 @@ func entry(account uintptr, access, inheritance uint32, mode int32) explicitAcce
 	}
 }
 
+// ErrAccessDenied is the class of failures a second, elevated attempt can get
+// past: the security-descriptor calls refuse the change because this process
+// does not hold the rights to make it. Callers that can ask for those rights
+// pick their failures out with errors.Is; every other way a call here can
+// fail -- a path that is not there, a list that cannot be read back -- is not
+// made different by elevation and stays what it is.
+var ErrAccessDenied = errors.New("access denied")
+
+// callFailed reports one security-descriptor call against the path it was
+// asked about. Windows error 5 is the access-denied class, and it travels as
+// ErrAccessDenied, so a caller can tell "the right to change this is missing"
+// -- the one thing more rights will fix -- from every other answer.
+func callFailed(what, path string, r uintptr) error {
+	if r == 5 {
+		return fmt.Errorf("%s %s: %w", what, path, ErrAccessDenied)
+	}
+	return fmt.Errorf("%s %s: error %d", what, path, r)
+}
+
 // apply writes a finished list to the file system.
 //
 // whole says the list is the entire permission list of the object rather than
@@ -129,7 +149,7 @@ func apply(path string, list []explicitAccess, whole bool) error {
 		if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
 			seFileObject, daclInfo, 0, 0, uintptr(unsafe.Pointer(&current)), 0,
 			uintptr(unsafe.Pointer(&descriptor))); r != 0 {
-			return fmt.Errorf("reading the permissions of %s: error %d", path, r)
+			return callFailed("reading the permissions of", path, r)
 		}
 		defer w32.Free(descriptor)
 	}
@@ -144,9 +164,9 @@ func apply(path string, list []explicitAccess, whole bool) error {
 	if r, _, _ := procSetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
 		seFileObject, information, 0, 0, updated, 0); r != 0 {
 		if r == 5 {
-			return fmt.Errorf("changing the permissions of %s: access denied, you do not own it", path)
+			return fmt.Errorf("changing the permissions of %s: %w, you do not own it", path, ErrAccessDenied)
 		}
-		return fmt.Errorf("changing the permissions of %s: error %d", path, r)
+		return callFailed("changing the permissions of", path, r)
 	}
 	return nil
 }
@@ -227,7 +247,7 @@ func IsProtected(path string) (bool, error) {
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
 		seFileObject, daclInfo, 0, 0, uintptr(unsafe.Pointer(&actual)), 0,
 		uintptr(unsafe.Pointer(&descriptor))); r != 0 {
-		return false, fmt.Errorf("reading the permissions of %s: error %d", path, r)
+		return false, callFailed("reading the permissions of", path, r)
 	}
 	defer w32.Free(descriptor)
 	if descriptor == 0 || actual == nil {
@@ -390,7 +410,7 @@ func setProtectedSDDL(path, text string) error {
 	const protectedDacl = 0x80000000
 	if r, _, _ := procSetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
 		seFileObject, daclInfo|protectedDacl, 0, 0, dacl, 0); r != 0 {
-		return fmt.Errorf("protecting %s: error %d", path, r)
+		return callFailed("protecting", path, r)
 	}
 	return nil
 }

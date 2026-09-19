@@ -202,3 +202,35 @@ func TestResolveStillExpandsAVariableThatIsSet(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveReadsTheExtendedLengthUNCForm is the regression guard for the
+// network spelling the extended-length prefix can carry. Taking the prefix
+// off used to leave "UNC\srv\share" -- marker still in the string, root gone:
+// a relative path that could only ever resolve against the current directory,
+// never against the machine it names.
+func TestResolveReadsTheExtendedLengthUNCForm(t *testing.T) {
+	got, err := Resolve(`\\?\UNC\localhost\nosuchshare\dir`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `\\localhost\nosuchshare\dir`; !strings.EqualFold(got, want) {
+		t.Errorf("Resolve = %q, want %q", got, want)
+	}
+}
+
+// TestResolveRefusesDriveRelativePaths turns away the "C:foo" spelling. It
+// names something only against the current directory of drive C:, which this
+// process does not know for a drive it is not sitting on -- and everything
+// downstream would build "<cwd>\C:foo" out of it, a path that is about
+// neither the drive nor the directory written.
+func TestResolveRefusesDriveRelativePaths(t *testing.T) {
+	for _, spelling := range []string{"C:relative", `C:`, "c:relative"} {
+		if _, err := Resolve(spelling); err == nil {
+			t.Errorf("%s was accepted, and resolves against an unknowable current directory", spelling)
+		}
+	}
+	// A rooted path stays welcome; only the rootless spelling went away.
+	if _, err := Resolve(`C:\`); err != nil {
+		t.Errorf(`C:\ was refused: %v`, err)
+	}
+}

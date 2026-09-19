@@ -3,6 +3,7 @@
 package access
 
 import (
+	"errors"
 	"flag"
 	"io"
 	"os"
@@ -46,6 +47,17 @@ func readOnlyApplies(command string) bool { return command == "grant" || command
 // apart from it on purpose: the two answer different questions, and a command
 // added later could belong to one and not the other.
 func handsOver(command string) bool { return command == "grant" || command == "add-dir" }
+
+// elevationCanFix reports whether a failure is the kind a second, elevated
+// attempt can get past: the ACL layer saying access denied. Administrator
+// rights change what the permission lists will accept, and nothing else -- a
+// directory that is not there, a record that cannot be read or a tree refused
+// for holding a file with another name fail the elevated copy in exactly the
+// same words. Every failure used to escalate, and a consent dialog that fixes
+// nothing is one the operator learns to click through.
+func elevationCanFix(err error) bool {
+	return errors.Is(err, acl.ErrAccessDenied)
+}
 
 // targetOptions are the flags the directory commands read.
 type targetOptions struct {
@@ -91,6 +103,15 @@ func parseTarget(name string, args []string) (target, error) {
 	options, operands := split(args)
 	if err := flags.Parse(options); err != nil {
 		return target{}, exit.Errorf(exit.Usage, "%v", err)
+	}
+	// The flag package stops reading at a bare "--" and files the rest in
+	// Args(), where nothing here ever looked: the grammar of these commands
+	// has no "--" in it. "--grant C:\dir -- --ro" parsed cleanly, kept the
+	// directory and dropped the --ro -- handing it over writable, the one
+	// outcome that line was written to rule out. A leftover is refused.
+	if extra := flags.Args(); len(extra) != 0 {
+		return target{}, exit.Errorf(exit.Usage,
+			"unexpected %q after \"--\": %s takes no arguments past its flags", extra[0], name)
 	}
 	if len(operands) != 1 {
 		readOnly := ""
