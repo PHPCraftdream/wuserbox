@@ -50,6 +50,14 @@ shell. What it does not keep is your profile: it gets one of its own,
 filled before each run with what the rules file names, and nothing
 written there ever travels back to yours.
 
+Some programs refuse to start unless their standard input is a real
+console -- a full-screen interface checks, and a pipe is never one.
+"--own-console" gives the program a console of its own: a new console
+window opens, and the program reads its keyboard and draws its screen
+there while the run waits for its exit code. What the program does not
+get is a share of the window wuserbox was started from: the sandbox's
+own account cannot attach to it, for input any more than for output.
+
 A run changes nothing about the sandbox. What may be written is decided
 by "--init", "--grant" and "--add-dir", and is the same whichever
 command line starts the program.`,
@@ -60,6 +68,7 @@ command line starts the program.`,
 			{"--json", "print the plan as JSON instead of lines"},
 			{"--quiet", "no progress messages, errors only"},
 			{"--non-interactive", "fail instead of asking for administrator rights"},
+			{"--own-console", "give the program a console of its own instead of sharing this one"},
 		},
 		Exits: "Whatever the program inside returned, so the code you read is its own.",
 		Examples: []string{
@@ -67,6 +76,7 @@ command line starts the program.`,
 			`wuserbox npm test`,
 			`wuserbox notepad.exe`,
 			`wuserbox --dir /c/projects/app git status`,
+			`wuserbox --own-console ssh user@host`,
 			`wuserbox --run -- list`,
 		},
 	},

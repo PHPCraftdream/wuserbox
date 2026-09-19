@@ -221,6 +221,40 @@ is already redirected or piped -- every non-interactive invocation, and every
 test that existed before this fix -- `duplicateInput` changes nothing: the
 raw duplicated handle goes through exactly as it always did.
 
+The bridge carries bytes, and bytes are not tty-ness: `GetConsoleMode`,
+which is the call underneath isatty, fails on the bridge's pipe no matter
+what flows through it, because tty-ness is a fact about the handle rather
+than the bytes. The bridge was enough for Claude Code, which only wanted
+the bytes, and is not enough for Codex's raw-mode resume, which checks and
+refuses. The account still cannot attach to the caller's console:
+`AttachConsole(ATTACH_PARENT_PROCESS)` answers "access is denied", measured
+against a real sandbox account with the call whose job that attach is. What
+the account can do was measured too: `AllocConsole` succeeds and makes a
+working console of its own, one that answers `GetConsoleMode` on
+`CONIN$`/`CONOUT$` opened by name -- `GetStdHandle` is never repointed, the
+gap `internal/win/proc/stdin_bridge_test.go`'s `fixupStdinFromConin`
+already documents -- so a run that asks for one gets a real console, and
+what it gets is a new, separate window, not a share of the caller's. That
+is the runas shape -- a new window, said plainly, and an accepted tradeoff,
+not a limitation waiting to be engineered away. It is opt-in per run: the
+`--own-console` flag sets `WUSERBOX_OWN_CONSOLE` --
+`internal/win/proc/logon.go`'s `EnvOwnConsole` -- into the stub's
+environment, the same channel `--non-interactive` uses. The ordering is
+measured, and it is the interesting part: `AllocConsole` under the stub's
+restricted token is refused with access denied -- the console's access
+checks see only the restricting identities, which name the group and the
+account, not the interactive logon the window station serves -- so
+`internal/sandbox/exec/console.go`'s `takeOwnConsole` runs just before
+`proc.Shield`, where the account's unrestricted token answers, and the
+handles it opens keep the access they were opened with, the same fact
+recorded above about a handle and the moment it was opened. The bridges
+part ways in this mode: `duplicateInput` stands down, in
+`internal/win/proc/logon.go` -- nothing would read its pipe, and a bridge
+left running would swallow the caller's keystrokes into it -- while the
+output bridge stays, because the stub's early errors still reach the
+caller's terminal that way, and a console window that dies with the process
+is where error messages go unread.
+
 Both bridge pipes also close a smaller, separate gap: every `os.Pipe()` end is
 inheritable by default on Windows, so the end each bridge keeps for itself --
 the output bridge's read end, the input bridge's write end -- is stripped of

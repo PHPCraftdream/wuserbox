@@ -55,6 +55,13 @@ const StubFlag = "-sandbox-stub"
 // reached it, which meant --init could report a sandbox built and working
 // on a machine where Shield itself would fail at the first real run --
 // nothing here exercised the call until a program was already waiting on it.
+//
+// When the run asked --own-console, the stub takes a console of its own
+// before starting the program, because a raw-mode terminal program refuses
+// to start unless its input is a real console, and the account cannot share
+// the caller's: a different account cannot attach to it, for input any more
+// than for output. AllocConsole gives the account a real one instead, and
+// the program starts against that.
 func Stub(args []string) error {
 	if len(args) != 2 && len(args) != 3 {
 		return exit.Errorf(exit.Usage,
@@ -86,11 +93,37 @@ func Stub(args []string) error {
 		// protected state location to code inside the sandbox.
 		_ = os.Unsetenv(lock.TransferEnv)
 	}
+	// Read and dropped at once, the way the slot handoff above is: the flag
+	// that asked for a console of its own is the caller's business, and the
+	// program would inherit it as plain environment if it stayed. Whether a
+	// console is wanted is decided here, and the console itself is taken just
+	// before Shield.
+	ownConsole := os.Getenv(proc.EnvOwnConsole) != ""
+	_ = os.Unsetenv(proc.EnvOwnConsole)
 	restricted, err := token.AsSandbox(args[0], args[1])
 	if err != nil {
 		return err
 	}
 	defer restricted.Close()
+	// Here rather than after Shield, and that order is measured, not guessed:
+	// AllocConsole under the restricted token is refused with access denied --
+	// the console's access checks see only the restricting identities, and
+	// those name the group and the account, not the interactive logon the
+	// window station is willing to serve -- while the unrestricted account
+	// token is granted. So the console's handles are opened before the token
+	// narrows, and keep the access they were opened with: a handle holds the
+	// access it was granted at open, the same fact the design doc records for
+	// the stub's own birth window. Everything the stub still has to say after
+	// this point -- Shield refusing, the program failing to start -- goes
+	// back to the caller's bridge pipes by the deferred restore below, so the
+	// move costs the error path nothing.
+	if ownConsole {
+		restore, err := takeOwnConsole()
+		if err != nil {
+			return err
+		}
+		defer restore()
+	}
 	// Before the program exists, and not after -- and before the two-argument
 	// return below, not conditioned on it. What is about to start, when there
 	// is something to start, is the same account as this process, holding a

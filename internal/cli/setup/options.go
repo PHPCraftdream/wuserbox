@@ -11,6 +11,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
+	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
 )
 
 // repeated collects a flag that may appear more than once.
@@ -48,6 +49,9 @@ func ParseOptions(name string, args []string) (sandbox.Options, []string, error)
 	if o.allowLinks {
 		_ = os.Setenv(acl.EnvAllowLinks, "1")
 	}
+	if o.ownConsole {
+		_ = os.Setenv(proc.EnvOwnConsole, "1")
+	}
 	options := sandbox.Options{
 		Dir: o.dir, RW: o.rw, RO: o.ro,
 		NoAI: o.noAI, HomeWrites: o.homeWrites, Quiet: o.quiet,
@@ -63,6 +67,7 @@ type shared struct {
 	noAI, homeWrites, quiet        bool
 	nonInteractive, dryRun, asJSON bool
 	allowLinks                     bool
+	ownConsole                     bool
 }
 
 // sharedFlags builds that set. It stands apart from the parsing so a test can
@@ -82,5 +87,9 @@ func sharedFlags(name string) (*flag.FlagSet, *shared) {
 		"hand a directory over even where a file in it has another name elsewhere")
 	flags.Var(&o.rw, "rw", "extra writable directory")
 	flags.Var(&o.ro, "ro", "extra readable directory")
+	if name == "run" {
+		flags.BoolVar(&o.ownConsole, "own-console", false,
+			"give the program a console of its own instead of sharing this one")
+	}
 	return flags, o
 }

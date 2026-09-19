@@ -151,6 +151,9 @@ ENVIRONMENT
     WUSERBOX_NON_INTERACTIVE   set by --non-interactive, and passed on, so a
                                command that re-runs itself with more rights
                                does not stop at a dialog nobody can click
+    WUSERBOX_OWN_CONSOLE       set by --own-console and passed to the run's
+                               stub, which gives the program a console of
+                               its own instead of the caller's
 
   A program can tell it is inside a sandbox by WUSERBOX_DIR being set. What it
   may write is not in the environment and cannot be changed from there:

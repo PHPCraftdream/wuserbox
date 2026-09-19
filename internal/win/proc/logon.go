@@ -289,8 +289,13 @@ func (b *inputBridge) close() {
 // -- this returns nil, nil and handles.input is left exactly as
 // duplicateStandardHandles built it: a direct duplicate of the raw handle,
 // no pipe, no extra goroutine.
+//
+// When EnvOwnConsole is set, the stub is about to hand the program a real
+// console of its own, and the bridge stands down even where stdin is a
+// console: the program will not be reading this pipe, and a bridge left
+// running would carry the caller's keystrokes nowhere.
 func duplicateInput(handles *inheritedStandardHandles) (*inputBridge, error) {
-	if !console(os.Stdin) {
+	if !console(os.Stdin) || os.Getenv(EnvOwnConsole) != "" {
 		return nil, nil
 	}
 	write, handle, err := inputBridgePipe()
@@ -325,6 +330,16 @@ func inputBridgePipe() (*os.File, syscall.Handle, error) {
 	}
 	return write, handle, nil
 }
+
+// EnvOwnConsole is how a run tells the stub that the program should get a
+// console of its own rather than the caller's piped-around one. It is set by
+// the --own-console run flag the same way EnvNonInteractive is set by
+// --non-interactive, read by the stub in internal/sandbox/exec, and unset
+// there before the program starts, so nothing inside the sandbox ever sees
+// it. duplicateInput reads it on this side: with a console of its own coming,
+// a bridge that copies the caller's keystrokes into a pipe nobody reads
+// anymore would only swallow them.
+const EnvOwnConsole = "WUSERBOX_OWN_CONSOLE"
 
 // RunAsAccount starts commandLine logged on as a local account, in the same
 // job object and with the same interrupt handling as Run, but through

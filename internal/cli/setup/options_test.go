@@ -14,6 +14,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
 )
 
 func TestParseOptionsDefaultsToTheCurrentDirectory(t *testing.T) {
@@ -117,6 +118,32 @@ func TestParseOptionsReadsQuietAndNonInteractive(t *testing.T) {
 		t.Error("--non-interactive did not reach the environment")
 	}
 	os.Unsetenv(EnvNonInteractive)
+}
+
+// TestParseOptionsHandsTheProgramItsOwnConsole keeps --own-console on the
+// path --non-interactive takes: set in this process's environment, so the
+// child it starts carries it to the stub.
+func TestParseOptionsHandsTheProgramItsOwnConsole(t *testing.T) {
+	os.Unsetenv(proc.EnvOwnConsole)
+	if _, _, err := ParseOptions("run", []string{"--own-console", "--", "cmd"}); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv(proc.EnvOwnConsole) == "" {
+		t.Error("--own-console did not reach the environment")
+	}
+	os.Unsetenv(proc.EnvOwnConsole)
+}
+
+// TestInitRejectsOwnConsole keeps a run-only flag a run-only flag: init does
+// not register it, so asking init for it is answered as a mistyped flag.
+func TestInitRejectsOwnConsole(t *testing.T) {
+	_, _, err := ParseOptions("init", []string{"--own-console"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "own-console") {
+		t.Errorf("the error does not name the flag: %v", err)
+	}
 }
 
 func TestRunNeedsACommand(t *testing.T) {

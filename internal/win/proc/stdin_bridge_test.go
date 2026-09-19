@@ -236,7 +236,20 @@ func fixupStdinFromConin() {
 // -- and then reads the handle handles.input ends up holding exactly as the
 // account process would: through ReadFile on the inherited value, not
 // through anything internal to this package.
-func stdinBridgeProbe(resultFile string) int {
+//
+// The optional mode selects what the child measures. It arrives either
+// through TestMain's dispatch or, when the parent appended it to the child's
+// command line, read here from this process's own arguments -- TestMain
+// passes only the result file through, and the extra word costs that
+// dispatcher nothing. Mode "stand-down" asks the question --own-console
+// raises: with EnvOwnConsole set, duplicateInput must build no bridge even
+// though stdin is a console, because the stub is about to hand the program a
+// console of its own and nothing will read the bridge pipe anymore.
+func stdinBridgeProbe(resultFile string, mode ...string) int {
+	if len(mode) == 0 && len(os.Args) > 3 {
+		mode = os.Args[3:4]
+	}
+	standDown := len(mode) > 0 && mode[0] == "stand-down"
 	report := func(ok bool, msg string) int {
 		prefix := "error: "
 		if ok {
@@ -253,6 +266,33 @@ func stdinBridgeProbe(resultFile string) int {
 		var mode uint32
 		modeErr := syscall.GetConsoleMode(syscall.Handle(os.Stdin.Fd()), &mode)
 		return report(false, fmt.Sprintf("os.Stdin is not a console inside the pseudo-console child (fd=%v, GetConsoleMode err=%v)", os.Stdin.Fd(), modeErr))
+	}
+
+	if standDown {
+		if os.Getenv(EnvOwnConsole) == "" {
+			return report(false, EnvOwnConsole+" is not set inside the pseudo-console child, so duplicateInput had nothing to stand down for and the check would prove nothing")
+		}
+		handles, err := duplicateStandardHandles()
+		if err != nil {
+			return report(false, "duplicateStandardHandles: "+err.Error())
+		}
+		before := handles.input
+		bridge, err := duplicateInput(&handles)
+		if err != nil {
+			handles.close()
+			return report(false, "duplicateInput: "+err.Error())
+		}
+		if bridge != nil {
+			bridge.close()
+			handles.close()
+			return report(false, "duplicateInput built a bridge although "+EnvOwnConsole+" is set and the stub is about to hand the program a console of its own")
+		}
+		if handles.input != before {
+			handles.close()
+			return report(false, "duplicateInput replaced handles.input although it stood down")
+		}
+		handles.close()
+		return report(true, "duplicateInput stood down for the stub's own console")
 	}
 
 	handles, err := duplicateStandardHandles()
@@ -300,28 +340,26 @@ func stdinBridgeProbe(resultFile string) int {
 	return report(true, strings.TrimSpace(string(line)))
 }
 
-// TestStdinBridgeCarriesRealConsoleInput is the surrogate for a human typing
-// into an interactive cmd.exe prompt: a Windows pseudo console stands in for
-// the console, a re-exec of this same test binary stands in for the account
-// process, and duplicateInput/inputBridge.start run exactly as they would
-// inside runAsAccount. What this measures: console(os.Stdin) recognizes the
-// pseudo console's device side as a real console, duplicateInput builds a
-// bridge for it instead of leaving the raw handle alone, and a byte string
-// written into the pseudo console's input side arrives, through the bridge,
-// at the handle value the account process would have inherited.
+// probeInsideAPseudoConsole starts a fresh child of this test binary
+// attached to a Windows pseudo console, waits for it to end, and returns the
+// report the child wrote to its result file and the exit code it ended on.
+// mode, when not empty, is appended to the child's command line for
+// stdinBridgeProbe to read. The child inherits this process's environment --
+// CreateProcessW runs here with lpEnvironment = NULL -- so a caller that
+// wants the child to see a variable sets it before calling; t.Setenv, which
+// puts it back when the test ends, is the shape for that.
 //
-// What this does not measure: the account crossing itself, i.e. that
-// CreateProcessWithLogonW's own inheritance still hands the account exactly
-// that handle. That needs a real second account and administrator rights;
-// TestTheStreamsComeBackFromInsideTheSandbox in streams_test.go covers the
-// crossing, but always with os.Stdin already redirected to a pipe, never a
-// real console (see internal/e2e/account_test.go's realBox.streams) -- so
-// between the two, one test covers "is it a bridge at all" against a real
-// console and the other covers "does the crossing preserve it" against a
-// pipe, and nothing in this repository covers both properties on the same
-// run, because nothing can build a real console and a second real account in
-// the same test without asking a human to type into a terminal.
-func TestStdinBridgeCarriesRealConsoleInput(t *testing.T) {
+// The pty's two directions: what a person would type goes into
+// ptyInWrite, ConPTY hands it to the child's console input buffer
+// through ptyInRead; what the child's console prints comes out of
+// ptyOutWrite into ptyOutRead. ptyOutRead is never read here -- draining
+// it is not what these tests measure -- but it has to exist and stay
+// open, or a child that writes anything to its own console output would
+// block on a full pipe for a reason unrelated to what is being tested.
+// The line is typed in every mode: the stand-down probe never reads it,
+// and bytes nobody reads are simply drained when both ends close.
+func probeInsideAPseudoConsole(t *testing.T, mode string) (string, uint32) {
+	t.Helper()
 	if err := procCreatePseudoConsole.Find(); err != nil {
 		t.Skip("CreatePseudoConsole is not available on this Windows build (ConPTY needs Windows 10 1809+)")
 	}
@@ -329,16 +367,8 @@ func TestStdinBridgeCarriesRealConsoleInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := t.TempDir()
-	resultFile := filepath.Join(dir, "result.txt")
+	resultFile := filepath.Join(t.TempDir(), "result.txt")
 
-	// The pty's two directions: what a person would type goes into
-	// ptyInWrite, ConPTY hands it to the child's console input buffer
-	// through ptyInRead; what the child's console prints comes out of
-	// ptyOutWrite into ptyOutRead. ptyOutRead is never read here -- draining
-	// it is not what this test measures -- but it has to exist and stay
-	// open, or a child that writes anything to its own console output would
-	// block on a full pipe for a reason unrelated to what is being tested.
 	ptyInRead, ptyInWrite, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -397,6 +427,9 @@ func TestStdinBridgeCarriesRealConsoleInput(t *testing.T) {
 
 	var created syscall.ProcessInformation
 	commandLine := syscall.EscapeArg(exe) + " " + stdinBridgeProbeFlag + " " + syscall.EscapeArg(resultFile)
+	if mode != "" {
+		commandLine += " " + syscall.EscapeArg(mode)
+	}
 	line, err := syscall.UTF16PtrFromString(commandLine)
 	if err != nil {
 		t.Fatal(err)
@@ -445,11 +478,67 @@ func TestStdinBridgeCarriesRealConsoleInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the probe wrote no result (exit code %d): %v", code, err)
 	}
-	report := string(raw)
+	return string(raw), code
+}
+
+// TestStdinBridgeCarriesRealConsoleInput is the surrogate for a human typing
+// into an interactive cmd.exe prompt: a Windows pseudo console stands in for
+// the console, a re-exec of this same test binary stands in for the account
+// process, and duplicateInput/inputBridge.start run exactly as they would
+// inside runAsAccount. What this measures: console(os.Stdin) recognizes the
+// pseudo console's device side as a real console, duplicateInput builds a
+// bridge for it instead of leaving the raw handle alone, and a byte string
+// written into the pseudo console's input side arrives, through the bridge,
+// at the handle value the account process would have inherited.
+//
+// What this does not measure: the account crossing itself, i.e. that
+// CreateProcessWithLogonW's own inheritance still hands the account exactly
+// that handle. That needs a real second account and administrator rights;
+// TestTheStreamsComeBackFromInsideTheSandbox in streams_test.go covers the
+// crossing, but always with os.Stdin already redirected to a pipe, never a
+// real console (see internal/e2e/account_test.go's realBox.streams) -- so
+// between the two, one test covers "is it a bridge at all" against a real
+// console and the other covers "does the crossing preserve it" against a
+// pipe, and nothing in this repository covers both properties on the same
+// run, because nothing can build a real console and a second real account in
+// the same test without asking a human to type into a terminal.
+func TestStdinBridgeCarriesRealConsoleInput(t *testing.T) {
+	report, code := probeInsideAPseudoConsole(t, "")
 	if !strings.HasPrefix(report, "ok:") {
 		t.Fatalf("probe reported %q (exit code %d)", report, code)
 	}
 	if !strings.Contains(report, "from-a-real-console") {
 		t.Errorf("probe read %q, want it to contain what was typed into the pseudo console", report)
+	}
+}
+
+// TestDuplicateInputStandsDownForTheStubsOwnConsole holds that the
+// stand-down duplicateInput does under EnvOwnConsole is not keyed on stdin
+// being redirected: it fires for a real console stdin too, which is the
+// shape a run has when wuserbox was started from an interactive prompt --
+// the one shape every other test in this file reaches only as a pipe, and
+// the one where a bridge left running would carry the caller's keystrokes
+// into a pipe nobody reads anymore. The same pseudo-console surrogate stands
+// in for the console, and this time the child inherits EnvOwnConsole, set by
+// the parent before the spawn and put back when the test ends, the way a run
+// sets it.
+//
+// What this does not measure: the account crossing, exactly as in
+// TestStdinBridgeCarriesRealConsoleInput above, and the window itself -- that
+// AllocConsole makes a console a terminal program will actually accept.
+// Allocating one inside this package's tests would put a window on the
+// screen of every test run, which the createNoWindow comment in
+// internal/win/proc/job.go records the cost of; the open-and-repoint half
+// without the allocation is measured by internal/sandbox/exec's console
+// test, and the whole chain, allocation and account crossing both, by
+// internal/e2e's own-console test.
+func TestDuplicateInputStandsDownForTheStubsOwnConsole(t *testing.T) {
+	t.Setenv(EnvOwnConsole, "1")
+	report, code := probeInsideAPseudoConsole(t, "stand-down")
+	// The exact message, not just an ok prefix: the child that ignored its
+	// mode and ran the bridge probe would also report ok, carrying the
+	// typed line back instead of the stand-down answer.
+	if report != "ok: duplicateInput stood down for the stub's own console" {
+		t.Fatalf("probe reported %q (exit code %d), want the stand-down answer", report, code)
 	}
 }
