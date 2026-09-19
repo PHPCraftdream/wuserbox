@@ -144,3 +144,25 @@ func TestAccountCollisionRefusesReplacementOfAnotherSandbox(t *testing.T) {
 		t.Fatalf("collision guard lost the first sandbox account: %v", err)
 	}
 }
+
+// TestArgsCarriesTheOutputFlags is the regression guard for the elevated copy
+// losing the output mode. A --quiet or --json run that had to ask for
+// administrator rights handed the elevated init neither flag, and the copy --
+// which inherits nothing from this process -- went back to progress prose and
+// plain lines in a console of its own.
+func TestArgsCarriesTheOutputFlags(t *testing.T) {
+	args := Options{Dir: `C:\project`, Quiet: true, JSON: true}.Args()
+	joined := strings.Join(args, " ")
+	for _, flag := range []string{"--quiet", "--json"} {
+		if !strings.Contains(joined, flag) {
+			t.Errorf("the output flag %s is missing from the elevated command line: %v", flag, args)
+		}
+	}
+	// And a run that asked for neither must not find them on the line.
+	plain := strings.Join(Options{Dir: `C:\project`}.Args(), " ")
+	for _, flag := range []string{"--quiet", "--json"} {
+		if strings.Contains(plain, flag) {
+			t.Errorf("%s travels on an init that never asked for it: %v", flag, plain)
+		}
+	}
+}

@@ -266,7 +266,7 @@ Read by wuserbox itself:
 | Variable | Effect |
 | --- | --- |
 | `WUSERBOX_CONFIG` | the rules file to read, instead of the one in the profile root |
-| `WUSERBOX_NON_INTERACTIVE` | set by `--non-interactive`, and passed on, so a command that re-runs itself with more rights never stops at a dialog |
+| `WUSERBOX_NON_INTERACTIVE` | set by `--non-interactive`, or by a script: a command that would ask for administrator rights is failed instead of shown a dialog |
 
 A program can tell it is inside a sandbox by `WUSERBOX_DIR` being set. What it
 may write is not in the environment and cannot be changed from there;

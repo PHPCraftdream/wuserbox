@@ -349,3 +349,46 @@ func TestARefusedFlagIsRefusedBySomethingTheHelpAgreesWith(t *testing.T) {
 		}
 	}
 }
+
+// TestParseOptionsResolvesTheDirectoriesBeforeTheyTravel is the regression
+// guard for a command line that crossed the elevation boundary as typed. The
+// elevated copy starts in a console and a current directory of its own, so a
+// relative spelling that only meant something against this process's current
+// directory would name another sandbox there -- and where this process has no
+// current directory at all, land wherever the copy defaults to.
+func TestParseOptionsResolvesTheDirectoriesBeforeTheyTravel(t *testing.T) {
+	dir := t.TempDir()
+	restore, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(restore) })
+
+	options, _, err := ParseOptions("init",
+		[]string{"--dir", "project", "--rw", "writable", "--ro", filepath.Join("..", "readable")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, travel := range []struct{ what, got, want string }{
+		{"the project directory", options.Dir, filepath.Join(dir, "project")},
+		{"a writable directory", options.RW[0], filepath.Join(dir, "writable")},
+		{"a readable directory", options.RO[0], filepath.Join(filepath.Dir(dir), "readable")},
+	} {
+		if !strings.EqualFold(filepath.Clean(travel.got), filepath.Clean(travel.want)) {
+			t.Errorf("%s traveled as %q, want the resolved %q", travel.what, travel.got, travel.want)
+		}
+	}
+	// The line the elevation re-exec takes is built from these options, so
+	// the resolved spelling is what crosses the boundary.
+	if !strings.Contains(strings.Join(options.Args(), " "), filepath.Join(dir, "project")) {
+		t.Errorf("the rebuilt command line does not carry the resolved directory: %v", options.Args())
+	}
+	// A spelling that means nothing on its own is refused here, loudly,
+	// rather than left for another context to make what it can of.
+	if _, _, err := ParseOptions("init", []string{"--dir", "C:relative"}); err == nil {
+		t.Error("a drive-relative directory was accepted, and only means something against another process's current directory")
+	}
+}

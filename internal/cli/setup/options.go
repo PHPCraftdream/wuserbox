@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
+	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
@@ -19,6 +20,21 @@ type repeated []string
 
 func (r *repeated) String() string     { return strings.Join(*r, string(os.PathListSeparator)) }
 func (r *repeated) Set(v string) error { *r = append(*r, v); return nil }
+
+// resolveAll resolves each value of a repeated directory flag in this
+// process, for the same reason --dir is resolved here rather than left to
+// whatever context reads it next.
+func resolveAll(dirs repeated) (repeated, error) {
+	resolved := make(repeated, len(dirs))
+	for i, dir := range dirs {
+		r, err := paths.Resolve(dir)
+		if err != nil {
+			return nil, err
+		}
+		resolved[i] = r
+	}
+	return resolved, nil
+}
 
 // ParseOptions reads the options shared by init and run. Everything from the
 // program onwards — including any "--" of its own — is returned separately as
@@ -42,6 +58,24 @@ func ParseOptions(name string, args []string) (sandbox.Options, []string, error)
 			return sandbox.Options{}, nil, err
 		}
 		o.dir = cwd
+	}
+	// Every directory is resolved in this process rather than carried as
+	// typed. A run without administrator rights hands its work to an
+	// elevated copy that starts in a console and a current directory of its
+	// own, and a path that only meant something against this current
+	// directory would name another sandbox there -- or, where this process
+	// has no current directory to mean anything against, land wherever the
+	// copy defaults to. Resolved once, the spelling travels whole.
+	dir, err := paths.Resolve(o.dir)
+	if err != nil {
+		return sandbox.Options{}, nil, err
+	}
+	o.dir = dir
+	if o.rw, err = resolveAll(o.rw); err != nil {
+		return sandbox.Options{}, nil, err
+	}
+	if o.ro, err = resolveAll(o.ro); err != nil {
+		return sandbox.Options{}, nil, err
 	}
 	if o.nonInteractive {
 		_ = os.Setenv(EnvNonInteractive, "1")

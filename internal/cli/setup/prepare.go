@@ -322,7 +322,22 @@ func Init(args []string) error {
 		done := trace.Current().Phase("elevation_request")
 		err := Elevate(options.Args())
 		done(err)
-		return err
+		if err != nil {
+			return err
+		}
+		// The elevated copy answers in a console of its own: ShellExecuteEx
+		// starts it in a new one, and nothing it writes reaches this
+		// process's streams. The line an init prints on success is printed
+		// here instead, worked out from the same --dir, so a script reading
+		// this process's stdout gets the same answer whichever way the
+		// rights were come by. Where this account cannot resolve the
+		// directory -- which is what asking for another account's rights can
+		// be for -- the line is not available to it, and the exit code
+		// carries the success alone.
+		if name, dir, nameErr := sandbox.Name(options.Dir); nameErr == nil {
+			fmt.Printf("%s\t%s\n", name, dir)
+		}
+		return nil
 	}
 	name, _, err := sandbox.Name(options.Dir)
 	if err != nil {
@@ -374,9 +389,13 @@ func Init(args []string) error {
 	return nil
 }
 
-// EnvNonInteractive switches off consent prompts for the whole process. The
-// command line sets it, and it is passed to the elevated copy, so a script can
-// set it once instead of repeating the flag.
+// EnvNonInteractive switches off consent prompts for this process. The
+// command line sets it, and a script may set it itself, so a whole run of
+// commands shares one setting instead of repeating the flag. It is read
+// before administrator rights are asked for, and the ask is refused: an
+// elevated copy does not inherit this process's environment, so nothing
+// could carry the setting across, and refusing here rather than stopping at
+// a dialog nobody can click is the whole point.
 const EnvNonInteractive = "WUSERBOX_NON_INTERACTIVE"
 
 // Elevate re-runs wuserbox with administrator rights and reports a non-zero

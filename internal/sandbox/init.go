@@ -490,7 +490,11 @@ type Options struct {
 }
 
 // Args rebuilds these options as an `init` command line, for re-running with
-// administrator rights.
+// administrator rights. The output flags travel with the rest: the elevated
+// copy is the one doing the work, and an elevated process inherits nothing
+// from this one's environment, so a run asked to be quiet, or to answer in
+// one JSON document, would have its elevated half go back to prose unless
+// the flags are carried here.
 func (o Options) Args() []string {
 	args := []string{"--init", "--dir", o.Dir}
 	for _, d := range o.RW {
@@ -507,6 +511,12 @@ func (o Options) Args() []string {
 	}
 	if o.AllowLinks {
 		args = append(args, "--allow-links")
+	}
+	if o.Quiet {
+		args = append(args, "--quiet")
+	}
+	if o.JSON {
+		args = append(args, "--json")
 	}
 	return args
 }

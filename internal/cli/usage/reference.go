@@ -148,9 +148,10 @@ ENVIRONMENT
 
     WUSERBOX_CONFIG            the rules file to read, instead of the one in
                                the profile root
-    WUSERBOX_NON_INTERACTIVE   set by --non-interactive, and passed on, so a
-                               command that re-runs itself with more rights
-                               does not stop at a dialog nobody can click
+    WUSERBOX_NON_INTERACTIVE   set by --non-interactive, or directly by a
+                               script: a command that would ask for
+                               administrator rights is failed instead, so
+                               nothing stops at a dialog nobody can click
     WUSERBOX_OWN_CONSOLE       set by --own-console and passed to the run's
                                stub, which gives the program a console of
                                its own instead of the caller's
