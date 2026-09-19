@@ -30,6 +30,18 @@ type executeInfo struct {
 	process    syscall.Handle
 }
 
+// showNormal makes the elevated child's console appear like any other
+// window, instead of ShellExecuteEx's zero value for show, SW_HIDE.
+//
+// The elevated child is where stderr with the real cause of a failed --init
+// or --rm lands: the parent that asked for elevation only ever learns the
+// exit code (see prepare.go), not what was written to the console. A hidden
+// window means that detail is gone the moment the child exits -- measured
+// live, as a bare "failed with exit code 1" with no way to recover why. The
+// elevation itself is already announced to the user before this runs, so a
+// few seconds of visible console during it is not a new surprise.
+const showNormal = 1
+
 // Elevate re-runs this executable with administrator rights, waits for it and
 // returns its exit code. The user sees a consent prompt.
 func Elevate(args []string) (int, error) {
@@ -50,6 +62,7 @@ func Elevate(args []string) (int, error) {
 		file:       w32.UTF16(executable),
 		parameters: w32.UTF16(strings.Join(quoted, " ")),
 		directory:  w32.UTF16(directory),
+		show:       showNormal,
 	}
 	info.size = uint32(unsafe.Sizeof(info))
 	if r, _, callErr := procShellExecuteEx.Call(uintptr(unsafe.Pointer(&info))); r == 0 {
