@@ -60,12 +60,43 @@ func TestRemoveSandboxKeepsTheRecordWhenSomethingIsLeftBehind(t *testing.T) {
 	}
 }
 
-// TestRemoveSandboxSaysNothingAboutASandboxThatWasNeverThere keeps removal
-// harmless where there is nothing to remove.
-func TestRemoveSandboxSaysNothingAboutASandboxThatWasNeverThere(t *testing.T) {
+// TestRemoveSandboxRefusesWhenNothingIsFound is the regression guard for a
+// removal that reported success over a sandbox that was still alive. An
+// elevated --rm derived the sandbox's name from --dir in its own context;
+// where that context resolved the directory differently, the child found no
+// record and no group, returned nil, and the operator was told the removal
+// had worked. A removal that finds nothing at all has to say so.
+func TestRemoveSandboxRefusesWhenNothingIsFound(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", t.TempDir())
-	if err := removeSandbox("wub-never-created", false); err != nil {
-		t.Errorf("removing a sandbox that does not exist failed: %v", err)
+	err := removeSandbox("wub-never-created", false)
+	if got := exit.Of(err); got != exit.Failed {
+		t.Fatalf("exit code is %v, want %v (error: %v)", got, exit.Failed, err)
+	}
+	if !strings.Contains(err.Error(), "wub-never-created") {
+		t.Errorf("the message does not name what was not found: %v", err)
+	}
+}
+
+// TestTheResolvedDirectoryDerivesTheSameSandboxName holds the property the
+// elevation hand-off depends on. Without administrator rights, --rm re-runs
+// itself elevated with the directory sandbox.Name resolved -- never the
+// spelling the caller typed -- and the elevated child derives the name from
+// --dir on its own. A relative path or a dot component must not be able to
+// steer that derivation to a name nothing answers to.
+func TestTheResolvedDirectoryDerivesTheSameSandboxName(t *testing.T) {
+	dir := t.TempDir()
+	spelled := filepath.Join(dir, "..", filepath.Base(dir))
+	name, resolved, err := sandbox.Name(spelled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, fromResolved, err := sandbox.Name(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != name || fromResolved != resolved {
+		t.Fatalf("deriving from the resolved directory moved the sandbox: %s at %s became %s at %s",
+			name, resolved, again, fromResolved)
 	}
 }
 

@@ -48,7 +48,7 @@ func Rm(args []string) error {
 		}
 		project = cwd
 	}
-	name, _, err := sandbox.Name(project)
+	name, resolved, err := sandbox.Name(project)
 	if err != nil {
 		return err
 	}
@@ -56,7 +56,12 @@ func Rm(args []string) error {
 		return previewRemoval(name, o.asJSON)
 	}
 	if !token.IsAdmin() {
-		return Elevate([]string{"--rm", "--dir", project})
+		// The elevated copy derives the sandbox's name from --dir in its own
+		// context. It gets the directory this process already resolved, not
+		// the spelling it was typed with: a relative path or a drive alias
+		// that does not survive the account boundary would otherwise set the
+		// child looking beside the sandbox it was meant to remove.
+		return Elevate([]string{"--rm", "--dir", resolved})
 	}
 	// A removal that went ahead under a standing run would take the ground
 	// that run stands on -- the profile, the account, the grants -- so it
@@ -103,6 +108,12 @@ func remove(name string, asJSON bool) error {
 	if err != nil {
 		return err
 	}
+	// Whether anything of this sandbox existed, decided before the deleting
+	// starts, because deleting takes the evidence with it. A removal that
+	// found a record, a copy of one, or any bookkeeping at all has something
+	// real to finish; only a name nothing on the machine answers to found
+	// nothing.
+	found := s != nil || damaged || anyFileExists(bookkeeping(name))
 	if s != nil {
 		if left := clearGrants(s, asJSON); len(left) > 0 {
 			// The record is the only list of what is still in force, and the
@@ -130,6 +141,20 @@ func remove(name string, asJSON bool) error {
 		return err
 	}
 	if !exists {
+		// With a record, a copy, or bookkeeping behind it, the removal is
+		// finished, however an earlier attempt left it half-done. Nothing at
+		// all is a different answer: either nothing was ever created under
+		// this name, or the name was derived again and landed beside the
+		// sandbox it meant -- the second is how an elevated --rm once
+		// removed nothing and still reported success over an account, its
+		// grants and its profile, all still alive. Reporting success is what
+		// let the operator stop there, so nothing found is a failure now.
+		if !found {
+			return exit.Errorf(exit.Failed,
+				"nothing was found to remove for %s: no record, no bookkeeping and no group exist under that name; "+
+					"if a sandbox was expected here, it is known under a different name and nothing was touched",
+				name)
+		}
 		return nil
 	}
 	if s == nil || damaged {
@@ -330,6 +355,16 @@ func bookkeeping(name string) []string {
 		facts.UsedMarker(name), facts.SizeCache(name), facts.CopiedList(name),
 		facts.PrintsList(name),
 	}
+}
+
+// anyFileExists reports whether any of the paths still exists.
+func anyFileExists(paths []string) bool {
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // clearOrphans takes a sandbox's entries off the directory its group belongs
