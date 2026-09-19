@@ -117,6 +117,31 @@ by what it holds is a boundary somebody will lean on where it does not.
   both, and those are claimed in a way that does not exclude. The order is
   fixed, from the volume root downwards, so neither can end up holding what the
   other waits for.
+* **Every lock wuserbox takes is yours alone, and excludes nobody else's.**
+  The slot a run leases, the locks the commands wait on and the tree locks
+  above all live in the state directory under your own profile, beside the
+  records they guard. That is what keeps them out of a sandbox's reach, and
+  it is also why two people using wuserbox on one machine hold two sets that
+  never meet. A second operator's sandboxes, grants and records are theirs
+  regardless, and none of it touches yours; what the two of you can still
+  share is a directory on the disk, because a directory belongs to nobody.
+  There the locks keep nothing apart: handing the same directory over from
+  two accounts at the same moment reads the same permission list twice,
+  alters two copies and writes both back, and one of the two grants lands on
+  its record but not on the disk, or the other way round. That is the exact
+  race the tree locks exist to stop within one person's commands; across two
+  accounts nothing stops it. What it costs is a directory drifted out of
+  step with the records, and nothing notices by itself: granting or
+  revoking the same tree again writes the list and the record back in step.
+
+  This one is reasoned rather than measured, and the machine it takes is
+  narrow: two people, both running wuserbox commands against the same
+  directory in the same instant. The fix that would close it is a lock set
+  the whole machine shares, kept where both accounts can reach it -- which
+  means a lock either account can pre-create, deny or hold, a harder problem
+  than the one it would answer. Until there is a reason to build that, the
+  answer is not to run two operators' commands into the same directory at
+  once.
 * **Revoking does not reach a file that is already open.** Windows checks
   permissions when a file is opened and not again afterwards, so a sandbox that
   already had something open keeps writing through that handle until it closes
