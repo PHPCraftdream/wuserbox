@@ -336,7 +336,7 @@ func TestRefuseHomeFilesLeavesGrantedFilesAlone(t *testing.T) {
 }
 
 func TestIsAllowedMatchesCompanionFiles(t *testing.T) {
-	allowed := []string{`C:\Users\me\.agent.json`}
+	allowed := []grant.Spec{{Path: `C:\Users\me\.agent.json`, Kind: grant.File}}
 	cases := map[string]bool{
 		`C:\Users\me\.agent.json`:          true,
 		`C:\USERS\ME\.AGENT.JSON`:          true,
@@ -348,6 +348,26 @@ func TestIsAllowedMatchesCompanionFiles(t *testing.T) {
 		if got := isAllowed(path, allowed); got != want {
 			t.Errorf("isAllowed(%q) = %v, want %v", path, got, want)
 		}
+	}
+}
+
+// TestIsAllowedDoesNotFreeANeighborOfADirectoryGrant is the regression guard
+// for the dot exception once being applied to directories: a granted
+// directory "notes" made an unrelated home file "notes.txt" look like its
+// companion, and the file lost the refusal every other file in the root got.
+func TestIsAllowedDoesNotFreeANeighborOfADirectoryGrant(t *testing.T) {
+	allowed := []grant.Spec{
+		{Path: `C:\Users\me\notes`, Kind: grant.RW},
+		{Path: `C:\Users\me\scratch`, Kind: grant.HomeTop},
+	}
+	if isAllowed(`C:\Users\me\notes.txt`, allowed) {
+		t.Error("a directory grant freed an unrelated file that merely sorts next to it")
+	}
+	if isAllowed(`C:\Users\me\scratch.txt`, allowed) {
+		t.Error("a home-top grant freed an unrelated file that merely sorts next to it")
+	}
+	if !isAllowed(`C:\Users\me\notes`, allowed) {
+		t.Error("the exact granted directory itself is no longer spared")
 	}
 }
 

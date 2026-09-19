@@ -184,3 +184,16 @@ func (s *State) WritablePaths() []string {
 	}
 	return out
 }
+
+// WritableSpecs lists the grants this sandbox may change anything under,
+// with their kinds, so a caller can tell a granted file from a granted
+// directory.
+func (s *State) WritableSpecs() []grant.Spec {
+	var out []grant.Spec
+	for _, g := range s.Grants {
+		if g.Kind.Writable() {
+			out = append(out, g)
+		}
+	}
+	return out
+}

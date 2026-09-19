@@ -253,7 +253,7 @@ func reserve(entry preset.Entry) error {
 // Files the sandbox was granted on purpose are left alone, together with the
 // temporary files an agent writes beside them.
 func RefuseHomeFiles(s *state.State) error {
-	allowed := s.WritablePaths()
+	allowed := s.WritableSpecs()
 	for _, path := range preset.HomeFiles() {
 		if isAllowed(path, allowed) {
 			continue
@@ -266,10 +266,18 @@ func RefuseHomeFiles(s *state.State) error {
 }
 
 // isAllowed matches a granted file and the temporary names written beside it,
-// such as the ".tmp.1234" companion of a config file being replaced.
-func isAllowed(path string, allowed []string) bool {
+// such as the ".tmp.1234" companion of a config file being replaced. The dot
+// comparison is only made against grants of the file kind: a directory whose
+// name merely prefixes a home file with a dot -- a granted "notes" beside a
+// "notes.txt" -- has nothing to do with that file's companions, and the file
+// keeps its refusal.
+func isAllowed(path string, allowed []grant.Spec) bool {
+	folded := asciiFold(path)
 	for _, a := range allowed {
-		if asciiFold(path) == asciiFold(a) || strings.HasPrefix(asciiFold(path), asciiFold(a)+".") {
+		if folded == asciiFold(a.Path) {
+			return true
+		}
+		if a.Kind == grant.File && strings.HasPrefix(folded, asciiFold(a.Path)+".") {
 			return true
 		}
 	}
