@@ -131,6 +131,35 @@ func TestNameKeepsAnExistingGroupAfterTheIdentityKeyChanges(t *testing.T) {
 	}
 }
 
+// TestNameRefusesTwoSandboxesOnOneDirectory is the regression guard for a
+// swallowed existingName error: two groups claiming one directory used to
+// fall through to a fresh name, and init built a second sandbox beside the
+// one the code had just refused to choose between, splitting the project's
+// grants across two identities.
+func TestNameRefusesTwoSandboxesOnOneDirectory(t *testing.T) {
+	dir := t.TempDir()
+	norm, err := paths.Resolve(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := group.Prefix + "two-on-one-a-" + slug(filepath.Base(norm))
+	second := group.Prefix + "two-on-one-b-" + slug(filepath.Base(norm))
+	if err := group.Add(first, norm); err != nil {
+		t.Skipf("local group fixture requires administrator rights: %v", err)
+	}
+	t.Cleanup(func() { _ = group.Delete(first) })
+	if err := group.Add(second, norm); err != nil {
+		t.Skipf("local group fixture requires administrator rights: %v", err)
+	}
+	t.Cleanup(func() { _ = group.Delete(second) })
+
+	if _, _, err := Name(dir); err == nil {
+		t.Fatal("two groups claim one directory and Name picked neither refusal nor an error")
+	} else if !strings.Contains(err.Error(), first) || !strings.Contains(err.Error(), second) {
+		t.Errorf("the error does not name both sandboxes: %v", err)
+	}
+}
+
 func TestNameDoesNotTakeACollidingLegacyGroupForAnotherDirectory(t *testing.T) {
 	parent := t.TempDir()
 	latin := filepath.Join(parent, "K")

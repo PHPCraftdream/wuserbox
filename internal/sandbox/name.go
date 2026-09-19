@@ -4,6 +4,7 @@ package sandbox
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -49,8 +50,16 @@ func Name(dir string) (string, string, error) {
 	// The key changed when filesystem identity replaced Unicode folding. Keep
 	// an existing sandbox's group, account and record instead of silently
 	// creating a second sandbox. Group comments are the durable mapping even
-	// when the project itself has since disappeared.
-	if existing, err := existingName(norm); err == nil && existing != "" {
+	// when the project itself has since disappeared. A refusal to choose
+	// between two sandboxes, or an unverifiable one, has to travel out of this
+	// call: falling through would build the second sandbox the code just
+	// refused to pick. Only a failed group listing may fall through, because
+	// the same broken listing would also stop a new group from being created.
+	existing, err := existingName(norm)
+	if err != nil && !errors.Is(err, errListGroups) {
+		return "", "", err
+	}
+	if existing != "" {
 		name = existing
 	}
 	return name, norm, nil
@@ -124,10 +133,16 @@ func legacyName(norm string) string {
 	return fmt.Sprintf("%s%s-%s", group.Prefix, slug(filepath.Base(norm)), hex.EncodeToString(digest[:4]))
 }
 
+// errListGroups marks a failure to enumerate the machine's sandbox groups at
+// all. It is the one failure here that may fall through to a fresh name: the
+// same broken listing will also stop a new group from being created, so no
+// second sandbox can come of it.
+var errListGroups = errors.New("cannot list sandbox groups")
+
 func existingName(norm string) (string, error) {
 	groups, err := group.List()
 	if err != nil {
-		return "", fmt.Errorf("cannot inspect existing sandboxes: %w", err)
+		return "", fmt.Errorf("%w: %w", errListGroups, err)
 	}
 	var found string
 	for _, entry := range groups {
