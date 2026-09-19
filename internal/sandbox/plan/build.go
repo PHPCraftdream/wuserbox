@@ -37,10 +37,13 @@ func For(in Input) (Plan, error) {
 	p.add(in.Temp, grant.RW, FromTemp)
 	p.add(in.Dir, grant.RW, FromProject)
 
+	// Nothing here answers for the agent directories an older build of
+	// wuserbox handed out with ~/.config, ~/.claude and the rest: no run
+	// grants them any more, ApplyPreset retires whatever one still holds,
+	// and a sandbox gets its agent state as a copy into a profile of its
+	// own -- which --dry-run previews where it belongs, in AddProfilePreview.
+	// Listing the real directories here would show access nobody receives.
 	if !in.NoAI {
-		for _, spec := range preset.AI() {
-			p.add(spec.Path, spec.Kind, FromPreset)
-		}
 		if in.HomeWrites {
 			home := preset.Home()
 			p.add(home.Path, home.Kind, FromPreset)

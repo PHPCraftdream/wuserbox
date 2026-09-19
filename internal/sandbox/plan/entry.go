@@ -21,7 +21,9 @@ const (
 	FromProject Source = "project"
 	// FromTemp is the sandbox's own temporary directory.
 	FromTemp Source = "temp"
-	// FromPreset is the built-in list of AI agent directories.
+	// FromPreset marks what the preset itself still hands out: the profile
+	// root under --home-writes. The AI agent directories an older build
+	// granted are retired by ApplyPreset, never given again.
 	FromPreset Source = "preset"
 	// FromRules is the rules file in the profile root.
 	FromRules Source = "rules"

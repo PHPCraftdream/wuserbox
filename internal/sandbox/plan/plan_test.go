@@ -83,13 +83,18 @@ func TestForRecordsWhereEachDirectoryCameFrom(t *testing.T) {
 		got[strings.ToLower(entry.Path)] = entry.Source
 	}
 	for path, want := range map[string]Source{
-		strings.ToLower(agent):     FromPreset,
 		strings.ToLower(fromRules): FromRules,
 		strings.ToLower(fromFlag):  FromFlags,
 	} {
 		if got[path] != want {
 			t.Errorf("%s came from %q, want %q", path, got[path], want)
 		}
+	}
+	// The plan once listed ~/.claude and the other agent directories as its
+	// own grants, so a preview promised access to real operator directories
+	// no run hands out any more. It must not come back.
+	if got[strings.ToLower(agent)] != "" {
+		t.Errorf("the agent directory %s is planned from %q, but no run grants it any more", agent, got[strings.ToLower(agent)])
 	}
 }
 
