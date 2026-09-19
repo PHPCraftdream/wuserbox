@@ -336,6 +336,30 @@ func ProtectFull(path string, accounts ...string) error {
 	return setProtectedSDDL(path, text)
 }
 
+// ProtectOwnerOnly replaces the permissions of path with a fixed list that
+// leaves the read group out: full control for the current user, the system
+// and administrators, inheritance switched off, and nobody else. Protect
+// keeps an object readable to the one identity a sandbox reaches its owner's
+// profile through, which is what .ssh and .aws need; this is for the objects
+// that must not be openable from inside a sandbox at all. The slot files are
+// the reason it exists: a lease is an open with no sharing, so a sandbox that
+// could open another sandbox's slot file could hold that sandbox's lease, and
+// starve every run, init, grant and removal behind a message about another
+// run that is not going. Nothing a slot file carries is worth reading; what
+// it carries is a lock, and the lock is only exclusive while the file cannot
+// be opened twice. For anything a sandbox should still read, Protect remains
+// the right call.
+func ProtectOwnerOnly(path string) error {
+	user, err := sid.CurrentUser()
+	if err != nil {
+		return err
+	}
+	inheritance := inheritanceFor(path)
+	text := fmt.Sprintf("D:PAI(A;%s;GA;;;%s)(A;%s;GA;;;SY)(A;%s;GA;;;BA)",
+		inheritance, user, inheritance, inheritance)
+	return setProtectedSDDL(path, text)
+}
+
 // inheritanceFor says whether entries built for path should propagate to
 // what is inside it -- only true for a directory, since a file has nothing
 // to propagate to.

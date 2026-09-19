@@ -12,6 +12,9 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
+	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
@@ -371,4 +374,45 @@ func killSlotProcess(pid uint32) {
 	if process, err := os.FindProcess(int(pid)); err == nil {
 		_ = process.Kill()
 	}
+}
+
+// TestASlotFileIsBeyondTheReadGrantThatReachesItsDirectory pins the answer to
+// the review-round-ten finding. The state directory sits inside the profile,
+// and the home-wide read grant reaches everything in it, so what keeps a
+// sandbox from opening a slot file has to be the file's own permission list
+// and not the directory's. Everyone stands in for the read group here --
+// creating the real one needs the elevation only --init carries -- playing
+// the same part: an inheritable read grant on the directory the slot files
+// live in, held by an identity a sandbox runs as.
+func TestASlotFileIsBeyondTheReadGrantThatReachesItsDirectory(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	dir := paths.StateDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := acl.Set(dir, sid.Everyone, []acl.ACE{
+		{Access: acl.AccessReadExecute, Inheritance: acl.InheritObjects | acl.InheritContainers},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("wub-slot-grant-%d", os.Getpid())
+
+	release, err := Lease(name, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acl.Reads(SlotPath(name), sid.Everyone) {
+		release()
+		t.Fatalf("the read grant on %s reaches the slot file behind it, so a sandbox could open -- and with the open hold -- the lease", dir)
+	}
+	release()
+
+	// The list must shut the sandbox out and nobody else: every take
+	// reopens the file by name, and a list that shut its own owner out
+	// would brick the next run the way a stray read-only bit once did.
+	again, err := Lease(name, 5*time.Second)
+	if err != nil {
+		t.Fatalf("a slot file the lease's own owner cannot reopen: %v", err)
+	}
+	again()
 }

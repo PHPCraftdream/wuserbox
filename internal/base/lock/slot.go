@@ -70,10 +70,16 @@ var held = struct {
 //
 // The file lives in the user's own state directory, which a sandboxed program
 // can read through its read group but cannot write, so unlike a pipe or a
-// Local\ object the name cannot be squatted from inside the sandbox. The file
-// itself is left behind when the last holder lets go: an empty file that no
-// handle holds is not a lease, and deleting it would race the next opener for
-// nothing.
+// Local\ object the name cannot be squatted from inside the sandbox. The
+// directory being readable is also why the file carries a permission list of
+// its own, written at takeSlot and naming nobody but the owner, the system
+// and the administrators: a home-wide read grant reaches into the state
+// directory, and a sandbox that could open the file could hold the lease -- a
+// lease is an open with no sharing -- of any sandbox of its owner's, and
+// starve its run, init, grant and removal behind a message about another run
+// that is not going. The file itself is left behind when the last holder lets
+// go: an empty file that no handle holds is not a lease, and deleting it
+// would race the next opener for nothing.
 //
 // wait is how long a caller whose slot is taken waits for it to come free
 // before being refused with ErrSlotHeld. Waiting at all is policy rather than
@@ -234,6 +240,19 @@ func takeSlot(name string) (func(), error) {
 		}
 		return nil, fmt.Errorf("opening the slot %s: %w", path, err)
 	}
+	// The permission list goes on while this handle is the only one in the
+	// world: share mode zero holds every other open off the file until it
+	// closes, so the list is in place before anything else can open the
+	// file at all -- whether the file has sat unprotected since an older
+	// build or came into existence just now. Without it the read grant on
+	// the state directory reaches the file, and opening is all a lease is.
+	// The failure is fatal to the take: a slot that locks but does not
+	// shut would leave the finding this closes standing.
+	if err := acl.ProtectOwnerOnly(path); err != nil {
+		_ = syscall.CloseHandle(handle)
+		return nil, fmt.Errorf("protecting the slot %s: %w", path, err)
+	}
+
 	// Letting go twice must do nothing the second time, and that is not
 	// tidiness: a handle is a number Windows hands out again as soon as it is
 	// free, and closing a number twice closes whatever holds it now -- the
