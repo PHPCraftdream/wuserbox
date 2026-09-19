@@ -15,7 +15,10 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
-var procCreateProcessWithLogon = w32.Advapi32.NewProc("CreateProcessWithLogonW")
+var (
+	procCreateProcessWithLogon = w32.Advapi32.NewProc("CreateProcessWithLogonW")
+	procSetHandleInformation   = w32.Kernel32.NewProc("SetHandleInformation")
+)
 
 const (
 	// logonWithProfile loads the account's profile before the process
@@ -32,6 +35,10 @@ const (
 	// machine, the domain the caller happens to be logged into -- where a
 	// same-named account may not exist, or may be a different one.
 	local = "."
+
+	// handleFlagInherit is HANDLE_FLAG_INHERIT, the one flag
+	// SetHandleInformation is called for below.
+	handleFlagInherit = 0x00000001
 )
 
 // inheritedStandardHandles makes inheritable duplicates of this process's
@@ -174,6 +181,15 @@ func bridgePipe(label string) (*os.File, syscall.Handle, error) {
 	if err != nil {
 		return nil, 0, fmt.Errorf("creating %s bridge: %w", label, err)
 	}
+	// Both ends of os.Pipe() are inheritable by default on Windows. read
+	// stays in this process; nothing downstream of it should be able to
+	// reach the write end's other half through it -- see noInherit and
+	// docs/reviews/sandbox-security-review-2026-09-19.md, P2-1.
+	if err := noInherit(read); err != nil {
+		_ = read.Close()
+		_ = write.Close()
+		return nil, 0, fmt.Errorf("excluding %s bridge read end from inheritance: %w", label, err)
+	}
 	handle, err := duplicateInheritable(write)
 	_ = write.Close()
 	if err != nil {
@@ -208,6 +224,106 @@ func duplicateInheritable(file *os.File) (syscall.Handle, error) {
 		return 0, err
 	}
 	return copy, nil
+}
+
+// noInherit strips HANDLE_FLAG_INHERIT from file's underlying handle. Every
+// os.Pipe() end is inheritable by default on Windows, but each bridge pipe
+// here has exactly one end meant to cross into the account; the other stays
+// in this process and must not be reachable through ambient inheritance by
+// anything else CreateProcessWithLogonW starts -- see
+// docs/reviews/sandbox-security-review-2026-09-19.md, P2-1, and the same
+// hygiene lock.PassTo documents for its own duplicate at
+// internal/base/lock/slot.go:177-187.
+func noInherit(file *os.File) error {
+	handle := syscall.Handle(file.Fd())
+	if r, _, callErr := procSetHandleInformation.Call(uintptr(handle), handleFlagInherit, 0); r == 0 {
+		return callErr
+	}
+	return nil
+}
+
+// inputBridge carries the caller's real standard input into the account
+// process, the input-side counterpart of outputBridge. A console handle
+// cannot be read by a process logged on as a different account any more than
+// it can be written to, so the account receives a pipe's read end instead,
+// and the parent copies its own stdin into the write end for as long as this
+// process runs.
+//
+// Unlike outputBridge there is nothing here to wait for: the source is a live
+// interactive console, which may never give an EOF while the account process
+// is still running, and stdin may reach the end of what the program inside
+// wants to read from it well before that -- Run does not read anything about
+// EOF from either side of a command's own execution. finish() would either
+// block forever or need a spurious deadline; start() is fired and left to be
+// abandoned when the whole wuserbox process ends, the accepted shape for a
+// CLI wrapper's stdin-forwarding goroutine.
+type inputBridge struct {
+	write *os.File
+	stdin *os.File
+}
+
+func (b *inputBridge) start() {
+	go func() {
+		_, _ = io.Copy(b.write, b.stdin)
+		_ = b.write.Close()
+	}()
+}
+
+// close abandons an input bridge that was built but never started -- an
+// error between duplicateInput and the CreateProcessWithLogonW call below it.
+// Nothing else holds b.write yet, so closing it here is safe.
+func (b *inputBridge) close() {
+	_ = b.write.Close()
+}
+
+// duplicateInput replaces the console input handle in handles with an
+// inheritable pipe reader when standard input is a real console -- the same
+// limit duplicateOutput works around for output, applied to input, which had
+// none of this before: a duplicated raw console handle handed to an account
+// that cannot attach to the console it names, which is what left Claude
+// Code's own --print fallback the only thing the account ever saw when
+// wuserbox was started from an interactive prompt with nothing piped into it.
+//
+// When standard input is not a console -- already redirected or piped, which
+// is every non-interactive call and every existing test in this repository
+// -- this returns nil, nil and handles.input is left exactly as
+// duplicateStandardHandles built it: a direct duplicate of the raw handle,
+// no pipe, no extra goroutine.
+func duplicateInput(handles *inheritedStandardHandles) (*inputBridge, error) {
+	if !console(os.Stdin) {
+		return nil, nil
+	}
+	write, handle, err := inputBridgePipe()
+	if err != nil {
+		return nil, err
+	}
+	syscall.CloseHandle(handles.input)
+	handles.input = handle
+	return &inputBridge{write: write, stdin: os.Stdin}, nil
+}
+
+// inputBridgePipe creates the pipe an input bridge threads the caller's
+// console input through: the read end crosses into the account, duplicated
+// inheritable the same way bridgePipe duplicates an output pipe's write end;
+// the write end stays here, stripped of inheritance for the same reason
+// bridgePipe strips its own read end -- see noInherit.
+func inputBridgePipe() (*os.File, syscall.Handle, error) {
+	read, write, err := os.Pipe()
+	if err != nil {
+		return nil, 0, fmt.Errorf("creating stdin bridge: %w", err)
+	}
+	if err := noInherit(write); err != nil {
+		_ = read.Close()
+		_ = write.Close()
+		return nil, 0, fmt.Errorf("excluding stdin bridge write end from inheritance: %w", err)
+	}
+	handle, err := duplicateInheritable(read)
+	_ = read.Close()
+	if err != nil {
+		_ = write.Close()
+		return nil, 0, fmt.Errorf("duplicating stdin bridge: %w", err)
+	}
+	return write, handle, nil
 }
 
 // RunAsAccount starts commandLine logged on as a local account, in the same
@@ -310,6 +426,14 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 		streams.close()
 		return -1, err
 	}
+	input, err := duplicateInput(&streams)
+	if err != nil {
+		streams.close()
+		if bridge != nil {
+			bridge.close()
+		}
+		return -1, err
+	}
 	streamsClosed := false
 	closeStreams := func() {
 		if !streamsClosed {
@@ -328,6 +452,15 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 			return
 		}
 		bridge.close()
+	}()
+	inputStarted := false
+	defer func() {
+		if input == nil {
+			return
+		}
+		if !inputStarted {
+			input.close()
+		}
 	}()
 	startup.Flags = syscall.STARTF_USESTDHANDLES
 	startup.StdInput = streams.input
@@ -357,7 +490,9 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 	//
 	// And without a window: see createNoWindow. The stub cannot share the
 	// console wuserbox was started from -- a different account cannot attach
-	// to it -- so console output is carried back through outputBridge instead.
+	// to it, for input any more than for output -- so console output is
+	// carried back through outputBridge and console input is carried across
+	// through inputBridge instead.
 	const flags = createSuspended | createUnicodeEnvironment | createNoWindow
 	r, _, callErr := procCreateProcessWithLogon.Call(
 		uintptr(unsafe.Pointer(user)), uintptr(unsafe.Pointer(domain)),
@@ -384,6 +519,10 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 	if bridge != nil {
 		bridge.start()
 		bridgeStarted = true
+	}
+	if input != nil {
+		input.start()
+		inputStarted = true
 	}
 	defer syscall.CloseHandle(created.Process)
 	defer syscall.CloseHandle(created.Thread)

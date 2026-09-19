@@ -190,12 +190,45 @@ meant to. What they can no longer do is reach a token wider than their own.
 
 ## What it also fixes
 
-The account cannot attach to the console wuserbox was started from. The stub
-therefore runs with `CREATE_NO_WINDOW`; stdout and stderr cross the account
-boundary through inheritable pipe handles, and the parent drains those pipes
-back to the original terminal. Redirected streams remain direct, so they do
-not pass through an unnecessary bounded buffer. A run that cannot show its
-program's output is not finished.
+The account cannot attach to the console wuserbox was started from, for input
+any more than for output. The stub therefore runs with `CREATE_NO_WINDOW`;
+stdout and stderr cross the account boundary through inheritable pipe
+handles, and the parent drains those pipes back to the original terminal.
+Redirected streams remain direct, so they do not pass through an unnecessary
+bounded buffer. A run that cannot show its program's output is not finished.
+
+Stdin crosses the same boundary the same way, and for a long time did not:
+when wuserbox is started from a real interactive prompt, with nothing piped
+into it, `duplicateStandardHandles` used to duplicate the raw console input
+handle and hand it to the account process as-is. That handle named the
+caller's own console, which the account cannot attach to any more than it can
+attach to the caller's console for output -- the same limit, just never
+closed on this side. The account process saw an input handle it could not
+really read from, and a program that checks whether its stdin is a real
+terminal before waiting on it -- Claude Code's own CLI among them -- read
+that as "not a TTY" and demanded a prompt argument or piped input that was
+never coming, failing immediately instead of reading a keystroke.
+
+`duplicateInput` in `internal/win/proc/logon.go` closes this the way
+`duplicateOutput` closes the output side: when `console(os.Stdin)` is true, an
+inheritable pipe read end replaces the raw handle in the child's `STARTUPINFO`,
+and the parent copies its own stdin into the pipe's write end for as long as
+wuserbox runs. Unlike the output bridge, nothing here waits for that copy to
+finish -- the source is a live console, which may never give an `EOF` while
+the account process is still running, so the copying goroutine is started and
+then left to be abandoned when wuserbox itself exits, not joined. When stdin
+is already redirected or piped -- every non-interactive invocation, and every
+test that existed before this fix -- `duplicateInput` changes nothing: the
+raw duplicated handle goes through exactly as it always did.
+
+Both bridge pipes also close a smaller, separate gap: every `os.Pipe()` end is
+inheritable by default on Windows, so the end each bridge keeps for itself --
+the output bridge's read end, the input bridge's write end -- is stripped of
+`HANDLE_FLAG_INHERIT` right after creation, the same hygiene
+`internal/base/lock/slot.go`'s `PassTo` already documents and enforces for its
+own duplicate. Without it, nothing enforced that only the three intended
+handles cross the account boundary; see
+`docs/reviews/sandbox-security-review-2026-09-19.md`, P2-1.
 
 ## What else was measured, and why nothing else is left
 
