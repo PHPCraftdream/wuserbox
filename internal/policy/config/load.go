@@ -22,5 +22,8 @@ func Load() (*Config, error) {
 	if err := ktav.LoadsInto(string(data), &c); err != nil {
 		return nil, fmt.Errorf("%s: %w", Path(), err)
 	}
+	if err := checkSource(string(data)); err != nil {
+		return nil, fmt.Errorf("%s: %w", Path(), err)
+	}
 	return &c, nil
 }
