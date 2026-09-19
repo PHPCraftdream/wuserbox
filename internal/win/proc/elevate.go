@@ -73,6 +73,8 @@ func Elevate(args []string) (int, error) {
 		return -1, err
 	}
 	var code uint32
-	procGetExitCode.Call(uintptr(info.process), uintptr(unsafe.Pointer(&code)))
+	if r, _, callErr := procGetExitCode.Call(uintptr(info.process), uintptr(unsafe.Pointer(&code))); r == 0 {
+		return -1, fmt.Errorf("reading the elevated process's exit code: %w", callErr)
+	}
 	return int(code), nil
 }

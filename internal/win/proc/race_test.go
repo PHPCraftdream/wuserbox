@@ -153,7 +153,11 @@ func TestASecondStubIsNotOpenToAnAlreadyRunningSandbox(t *testing.T) {
 	if _, err := syscall.WaitForSingleObject(victimProcess, uint32(30*time.Second/time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
-	if victimCode := finished(victimProcess); victimCode&middleBroke != 0 {
+	victimCode, err := finished(victimProcess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if victimCode&middleBroke != 0 {
 		t.Fatalf("the race stub failed on its own terms: %d", victimCode&^middleBroke)
 	}
 

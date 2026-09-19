@@ -187,21 +187,25 @@ func (j *job) waitOrStop(process syscall.Handle) (int, error) {
 				if err := <-done; err != nil {
 					return -1, err
 				}
-				return finished(process), nil
+				return finished(process)
 			}
 			first = now
 		case err := <-done:
 			if err != nil {
 				return -1, err
 			}
-			return finished(process), nil
+			return finished(process)
 		}
 	}
 }
 
-// finished reads the code a process ended with.
-func finished(process syscall.Handle) int {
+// finished reads the code a process ended with. GetExitCodeProcess failing is
+// not a zero exit code, though zero is what the untouched variable reads as:
+// an unreadable code is reported as an error, never as a clean success.
+func finished(process syscall.Handle) (int, error) {
 	var code uint32
-	procGetExitCode.Call(uintptr(process), uintptr(unsafe.Pointer(&code)))
-	return int(code)
+	if r, _, callErr := procGetExitCode.Call(uintptr(process), uintptr(unsafe.Pointer(&code))); r == 0 {
+		return -1, fmt.Errorf("reading the exit code: %w", callErr)
+	}
+	return int(code), nil
 }
