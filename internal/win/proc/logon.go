@@ -2,9 +2,11 @@ package proc
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"unsafe"
 
@@ -92,6 +94,120 @@ func (handles inheritedStandardHandles) close() {
 	syscall.CloseHandle(handles.input)
 	syscall.CloseHandle(handles.output)
 	syscall.CloseHandle(handles.errout)
+}
+
+// outputBridge carries the account process's output back to the terminal of
+// the caller. A console handle cannot be used by a process logged on as a
+// different account, so the account receives pipe handles instead.
+type outputBridge struct {
+	stdoutRead *os.File
+	stderrRead *os.File
+	stdout     *os.File
+	stderr     *os.File
+	done       sync.WaitGroup
+}
+
+func (b *outputBridge) start() {
+	if b.stdoutRead != nil {
+		b.done.Add(1)
+		go func() {
+			defer b.done.Done()
+			_, _ = io.Copy(b.stdout, b.stdoutRead)
+		}()
+	}
+	if b.stderrRead != nil {
+		b.done.Add(1)
+		go func() {
+			defer b.done.Done()
+			_, _ = io.Copy(b.stderr, b.stderrRead)
+		}()
+	}
+}
+
+func (b *outputBridge) finish() {
+	b.done.Wait()
+	b.close()
+}
+
+func (b *outputBridge) close() {
+	if b.stdoutRead != nil {
+		_ = b.stdoutRead.Close()
+	}
+	if b.stderrRead != nil {
+		_ = b.stderrRead.Close()
+	}
+}
+
+// duplicateOutput replaces the console output handles with inheritable pipe
+// writers and returns the reads and the original destinations for relaying.
+func duplicateOutput(handles *inheritedStandardHandles) (*outputBridge, error) {
+	bridge := &outputBridge{}
+	if console(os.Stdout) {
+		read, handle, err := bridgePipe("stdout")
+		if err != nil {
+			return nil, err
+		}
+		syscall.CloseHandle(handles.output)
+		handles.output = handle
+		bridge.stdoutRead = read
+		bridge.stdout = os.Stdout
+	}
+	if console(os.Stderr) {
+		read, handle, err := bridgePipe("stderr")
+		if err != nil {
+			bridge.close()
+			return nil, err
+		}
+		syscall.CloseHandle(handles.errout)
+		handles.errout = handle
+		bridge.stderrRead = read
+		bridge.stderr = os.Stderr
+	}
+	if bridge.stdoutRead == nil && bridge.stderrRead == nil {
+		return nil, nil
+	}
+	return bridge, nil
+}
+
+func bridgePipe(label string) (*os.File, syscall.Handle, error) {
+	read, write, err := os.Pipe()
+	if err != nil {
+		return nil, 0, fmt.Errorf("creating %s bridge: %w", label, err)
+	}
+	handle, err := duplicateInheritable(write)
+	_ = write.Close()
+	if err != nil {
+		_ = read.Close()
+		return nil, 0, fmt.Errorf("duplicating %s bridge: %w", label, err)
+	}
+	return read, handle, nil
+}
+
+func console(file *os.File) bool {
+	if file == nil {
+		return false
+	}
+	var mode uint32
+	return syscall.GetConsoleMode(syscall.Handle(file.Fd()), &mode) == nil
+}
+
+func duplicateInheritable(file *os.File) (syscall.Handle, error) {
+	if file == nil {
+		return 0, fmt.Errorf("pipe is nil")
+	}
+	source := syscall.Handle(file.Fd())
+	if source == 0 || source == syscall.InvalidHandle {
+		return 0, fmt.Errorf("pipe handle is invalid")
+	}
+	current, err := syscall.GetCurrentProcess()
+	if err != nil {
+		return 0, err
+	}
+	var copy syscall.Handle
+	if err := syscall.DuplicateHandle(current, source, current, &copy, 0, true, syscall.DUPLICATE_SAME_ACCESS); err != nil {
+		return 0, err
+	}
+	return copy, nil
 }
 
 // RunAsAccount starts commandLine logged on as a local account, in the same
@@ -189,7 +305,30 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 	if err != nil {
 		return -1, err
 	}
-	defer streams.close()
+	bridge, err := duplicateOutput(&streams)
+	if err != nil {
+		streams.close()
+		return -1, err
+	}
+	streamsClosed := false
+	closeStreams := func() {
+		if !streamsClosed {
+			streams.close()
+			streamsClosed = true
+		}
+	}
+	defer closeStreams()
+	bridgeStarted := false
+	defer func() {
+		if bridge == nil {
+			return
+		}
+		if bridgeStarted {
+			bridge.finish()
+			return
+		}
+		bridge.close()
+	}()
 	startup.Flags = syscall.STARTF_USESTDHANDLES
 	startup.StdInput = streams.input
 	startup.StdOutput = streams.output
@@ -218,8 +357,7 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 	//
 	// And without a window: see createNoWindow. The stub cannot share the
 	// console wuserbox was started from -- a different account cannot attach
-	// to it -- so the only choice is between a new console with a window and
-	// a new console without one.
+	// to it -- so console output is carried back through outputBridge instead.
 	const flags = createSuspended | createUnicodeEnvironment | createNoWindow
 	r, _, callErr := procCreateProcessWithLogon.Call(
 		uintptr(unsafe.Pointer(user)), uintptr(unsafe.Pointer(domain)),
@@ -236,8 +374,16 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 	runtime.KeepAlive(secret)
 	runtime.KeepAlive(line)
 	runtime.KeepAlive(block)
+	// The parent copies output from the pipe readers while the account process
+	// runs. Its copies of the inheritable writer handles must be closed now, or
+	// the readers could never observe EOF when the child exits.
+	closeStreams()
 	if r == 0 {
 		return -1, fmt.Errorf("starting %s as %s: %w", commandLine, username, callErr)
+	}
+	if bridge != nil {
+		bridge.start()
+		bridgeStarted = true
 	}
 	defer syscall.CloseHandle(created.Process)
 	defer syscall.CloseHandle(created.Thread)

@@ -37,6 +37,15 @@ func Run(token syscall.Token, commandLine, directory string) (int, error) {
 	var startup syscall.StartupInfo
 	var created syscall.ProcessInformation
 	startup.Cb = uint32(unsafe.Sizeof(startup))
+	streams, err := duplicateStandardHandles()
+	if err != nil {
+		return -1, err
+	}
+	defer streams.close()
+	startup.Flags = syscall.STARTF_USESTDHANDLES
+	startup.StdInput = streams.input
+	startup.StdOutput = streams.output
+	startup.StdErr = streams.errout
 	line, err := syscall.UTF16FromString(commandLine)
 	if err != nil {
 		return -1, err

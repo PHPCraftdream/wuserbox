@@ -190,16 +190,12 @@ meant to. What they can no longer do is reach a token wider than their own.
 
 ## What it also fixes
 
-The program's output has never reached the terminal wuserbox was started from.
-`CreateProcessWithLogonW` cannot inherit handles, so the stub gets a console of
-its own, and until this was noticed that console came with a window that
-appeared and took the keyboard — several times a second under a test run. That
-window is gone (`CREATE_NO_WINDOW`), which leaves the output going nowhere
-visible rather than somewhere useless.
-
-The connection this design adds is the thing that carries it back. That is not
-a bonus feature to be added later: a run that cannot show its program's output
-is not finished, and the mechanism is the same mechanism.
+The account cannot attach to the console wuserbox was started from. The stub
+therefore runs with `CREATE_NO_WINDOW`; stdout and stderr cross the account
+boundary through inheritable pipe handles, and the parent drains those pipes
+back to the original terminal. Redirected streams remain direct, so they do
+not pass through an unnecessary bounded buffer. A run that cannot show its
+program's output is not finished.
 
 ## What else was measured, and why nothing else is left
 
