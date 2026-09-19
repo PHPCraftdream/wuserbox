@@ -340,3 +340,32 @@ func TestCopyRefusesProfileEntriesRepeatedUnderTwoSpellings(t *testing.T) {
 		t.Errorf("the session the first entry's exclusion protected did not survive the refused run: %q", got)
 	}
 }
+
+// TestValidationRefusesTheSpellingsTheVolumeImprovesOnAndAcceptsTheRest pins
+// the validation level of the spelling question. EntryEscapesProfile is
+// within itself, so --config validate refuses exactly the spellings a run
+// refuses, with the same words: a segment ending in dots or spaces, which
+// Windows strips before it opens or creates anything, and a segment shaped
+// like an 8.3 alias, which the volume resolves onto the long name it
+// aliases. The acceptances are the guard's outside edge: notes~1.html
+// carries an extension longer than the three characters an alias keeps, so
+// it cannot be one; tools/keep and the hive's own plain spelling are stored
+// exactly as written. Two answers to "does this path escape the profile"
+// are how a rules file passes validation and then fails the run.
+func TestValidationRefusesTheSpellingsTheVolumeImprovesOnAndAcceptsTheRest(t *testing.T) {
+	for _, spelling := range []string{
+		"NTUSER.DAT.",
+		"NTUSER.DAT ",
+		"NTUSER~1.DAT",
+		"AppData/Local/Microsoft/Windows/UsrClass.dat.",
+	} {
+		if err := EntryEscapesProfile(spelling); err == nil {
+			t.Errorf("the entry %q passed validation, but the volume would open it onto a name the rules file never wrote", spelling)
+		}
+	}
+	for _, spelling := range []string{"notes~1.html", "tools/keep", "NTUSER.DAT"} {
+		if err := EntryEscapesProfile(spelling); err != nil {
+			t.Errorf("the entry %q was refused: %v", spelling, err)
+		}
+	}
+}

@@ -57,28 +57,10 @@ func Copy(dest string, previously []config.Entry, prints map[string]Print) ([]co
 	if err != nil {
 		return nil, nil, err
 	}
-	// Checked before anything below touches dest, for the same reason the
-	// profile-root refusal in within is checked there and not only at
-	// validation: an ordinary run never calls --config validate.
-	if first, second, found := conflictingProfileEntry(rules.Profile); found {
-		return nil, nil, fmt.Errorf("profile: lists %q twice with different limits -- once as "+
-			"%s, and once as %s. The second entry's copy would land on top of the first, and its "+
-			"mirroring would then delete whatever the first entry's exclusions were protecting, "+
-			"which is data loss arriving from a rules file that only looks redundant. Make the "+
-			"two entries say exactly the same thing, or remove one",
-			first.Path, describeEntryLimits(first), describeEntryLimits(second))
-	}
-	// Refused here rather than only at validation, and before clearCleanup
-	// and forget, both of which delete, so a rules file this refuses has
-	// nothing of it acted on at all -- the same contract as the duplicate
-	// refusal above. Neither of those reads an entry's depths today, so
-	// this placement is not what keeps a profile safe; it is there so the
-	// answer to "what did the run do with my file" is always "nothing, the
-	// file was refused".
-	for _, entry := range rules.Profile {
-		if err := EntryCarriesNegativeDepth(entry); err != nil {
-			return nil, nil, err
-		}
+	// Refused before anything below touches dest, through the same
+	// helper Plan asks, so the two cannot drift.
+	if err := refuseEntriesCopyRefuses(rules.Profile); err != nil {
+		return nil, nil, err
 	}
 	// Cleanup runs first: a rule about what should not be there is applied
 	// before anything decides what to bring in. It is wired in here rather
@@ -148,12 +130,14 @@ func openProfile(dest string) (*os.Root, error) {
 // rather than "path escapes from parent" about a path nobody typed.
 // EntryEscapesProfile answers whether a profile: entry's path, exactly as
 // the rules file spells it, would be refused by within for being absolute,
-// for climbing out of the profile with "..", or for naming the profile root
-// itself -- "." or anything filepath.Clean turns into it -- and if so,
-// within's own message. Exported so validation asks this package the
-// question rather than re-deciding it with a copy of the same rule: two
-// answers to "does this path escape the profile" are exactly how a rules
-// file comes to pass validation and then fail the run.
+// for climbing out of the profile with "..", for naming the profile root
+// itself -- "." or anything filepath.Clean turns into it -- or for a
+// spelling the volume would not store -- a segment ending in dots or
+// spaces, or one shaped like an 8.3 alias -- and if so, within's own
+// message. Exported so validation asks this package the question rather
+// than re-deciding it with a copy of the same rule: two answers to "does
+// this path escape the profile" are exactly how a rules file comes to pass
+// validation and then fail the run.
 func EntryEscapesProfile(path string) error {
 	_, err := within(path)
 	return err
@@ -186,6 +170,68 @@ func within(entry string) (string, error) {
 		return "", fmt.Errorf("%q names the profile root itself, and copying it would copy the "+
 			"user's whole profile into the sandbox's and delete from the sandbox everything the "+
 			"user's profile does not have -- name something inside it instead", entry)
+	}
+	// A spelling Windows improves on is refused, not quietly corrected,
+	// and the improvement is what the refusal names. "NTUSER.DAT." opens
+	// the file "NTUSER.DAT" keeps -- Win32 strips trailing dots and spaces
+	// per segment before the volume looks, when it opens and when it
+	// creates -- so the entry would land on the stripped name while the
+	// rules file and the record spell the padded one, and what gets copied
+	// and what gets taken back would never agree about the name. An 8.3
+	// shape is refused for its own reason: the volume resolves such a
+	// spelling onto the long name it aliases, and only the volume knows
+	// which one. Both refusals hold for copyEntries and previewEntries --
+	// the run and the preview ask the same within -- and for
+	// EntryEscapesProfile, so validation refuses the file with the same
+	// words. Kept here, not only at validation, for the same reason the
+	// refusals above them are: an ordinary run never calls --config
+	// validate, so the copier is the only place these are always on the
+	// path.
+	segments := strings.Split(clean, string(filepath.Separator))
+	for _, segment := range segments {
+		if !stripsTrailingPad(segment) {
+			continue
+		}
+		stripped := make([]string, len(segments))
+		for j, s := range segments {
+			stripped[j] = strings.TrimRight(s, ". ")
+		}
+		return "", fmt.Errorf("%q ends in dots or spaces, and Windows strips those before it opens "+
+			"anything -- %q is the name the volume actually keeps. Name the file as it is stored: "+
+			"the entry would land on the stripped name while the rules file and the record spell "+
+			"the padded one, so what gets copied and what gets taken back never agree about the name",
+			entry, strings.Join(stripped, "/"))
+	}
+	for _, segment := range segments {
+		if looksLikeShortName(segment) {
+			return "", fmt.Errorf("%q is spelled like an 8.3 short name, and Windows resolves those "+
+				"onto the long name they alias -- the volume, not this spelling, says which. Spell the long name",
+				entry)
+		}
+	}
+	return clean, nil
+}
+
+// withinRecorded is within for a path out of the record, which is not a
+// hand-edited file: a spelling in it was written by an earlier run of this
+// tool. The original refusals -- absolute, climbing out, the root itself --
+// hold; the spelling refusals do not, because what a record's spelling
+// resolves to is asked of the volume directly (reservedAtResolved, in
+// forget), and a spelling that survives to here is one the volume resolves
+// onto itself, which is the only thing a record needs. A take-back that
+// refused forever over a spelling would leave the entry's copy stuck
+// behind a name nothing can fix from where a record can be edited.
+func withinRecorded(entry string) (string, error) {
+	clean := cleanEntryPath(entry)
+	if filepath.IsAbs(clean) || clean == ".." ||
+		strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%q does not name anything inside the profile", entry)
+	}
+	// The root-itself answer is worded for clearing, not copying: this is
+	// the take-back's question, and the take-back that reaches "." is one
+	// recorded entry spelling the profile whole.
+	if clean == "." {
+		return "", fmt.Errorf("%q names the profile root itself, and clearing it would take the profile whole", entry)
 	}
 	return clean, nil
 }

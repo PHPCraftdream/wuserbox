@@ -138,3 +138,33 @@ func describeEntryLimits(e config.Entry) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// refuseEntriesCopyRefuses returns the error Copy gives a rules file it
+// refuses before anything touches dest: a path listed twice with different
+// limits, or an entry carrying a depth that cannot bind. Checked before
+// anything below touches dest, for the same reason the profile-root refusal
+// in within is checked there and not only at validation: an ordinary run
+// never calls --config validate. The negative-depth half is refused here
+// rather than only at validation, and before clearCleanup and forget, both
+// of which delete, so a rules file this refuses has nothing of it acted on
+// at all -- the same contract as the duplicate refusal. Neither of those
+// reads an entry's depths today, so this placement is not what keeps a
+// profile safe; it is there so the answer to "what did the run do with my
+// file" is always "nothing, the file was refused". Plan asks it too, so
+// --dry-run cannot describe a run the real Copy would refuse to start.
+func refuseEntriesCopyRefuses(entries []config.Entry) error {
+	if first, second, found := conflictingProfileEntry(entries); found {
+		return fmt.Errorf("profile: lists %q twice with different limits -- once as "+
+			"%s, and once as %s. The second entry's copy would land on top of the first, and its "+
+			"mirroring would then delete whatever the first entry's exclusions were protecting, "+
+			"which is data loss arriving from a rules file that only looks redundant. Make the "+
+			"two entries say exactly the same thing, or remove one",
+			first.Path, describeEntryLimits(first), describeEntryLimits(second))
+	}
+	for _, entry := range entries {
+		if err := EntryCarriesNegativeDepth(entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}

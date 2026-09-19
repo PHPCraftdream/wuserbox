@@ -53,7 +53,14 @@ func walkEntry(sk sink, src, dst, rel string, root *os.Root, info os.FileInfo, l
 	// answer and --dry-run cannot disagree with the run. dst is the path
 	// relative to the profile root, which is the frame the reserved tables
 	// are written in; rel is relative to the entry and would guard nothing.
-	if reservedAt(filepath.ToSlash(dst)) {
+	// The question is asked of the name the volume resolves dst to as well,
+	// and it has to be asked here and not only in within: within refuses a
+	// spelling the rules file wrote wrongly, but dst on this walk is built
+	// out of source directory entries the walk read itself, and a source
+	// carrying the hive as "NTUSER.DAT." or under a short alias lands here
+	// as exactly such a name -- a name the volume resolves onto the hive is
+	// the hive, whatever the walk spelled it.
+	if reservedAtResolved(root, filepath.ToSlash(dst)) {
 		return nil
 	}
 	if info.IsDir() {
@@ -380,8 +387,8 @@ func removeStrayChildren(root *os.Root, dst, rel string, present map[string]bool
 		// entry's own limits protect. childPath, built by Join from dst, is
 		// relative to the profile root -- the tables' frame; childRel is the
 		// entry's and would make a guard that protects nothing.
-		if reservedWithin(filepath.ToSlash(childPath)) {
-			if e.IsDir() && !reservedAt(filepath.ToSlash(childPath)) {
+		if reservedWithinResolved(root, filepath.ToSlash(childPath)) {
+			if e.IsDir() && !reservedAtResolved(root, filepath.ToSlash(childPath)) {
 				if _, err := clearKeepingReserved(root, childPath); err != nil {
 					return err
 				}

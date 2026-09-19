@@ -53,6 +53,13 @@ func Plan(dest string, prints map[string]Print) ([]CleanupPlan, []EntryPlan, err
 	if root != nil {
 		defer func() { _ = root.Close() }()
 	}
+	// In Copy's own order: the two refusals a real fill makes before it
+	// touches dest are made here too, before anything is counted -- a
+	// preview that described a run Copy would refuse to start would have
+	// the two disagreeing about the one thing they exist to agree about.
+	if err := refuseEntriesCopyRefuses(rules.Profile); err != nil {
+		return nil, nil, err
+	}
 	cleanupPlan, err := previewCleanup(root, rules.Cleanup)
 	if err != nil {
 		return nil, nil, err

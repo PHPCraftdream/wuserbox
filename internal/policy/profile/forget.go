@@ -26,11 +26,24 @@ func forget(root *os.Root, previously []config.Entry, current []config.Entry) er
 		if stillNamed(root, current, entry.Path) {
 			continue
 		}
-		stale, err := within(entry.Path)
+		// A recorded entry whose name the volume resolves onto a reserved
+		// path is spared, not refused and not honored: the record may
+		// spell the hive with a trailing dot or a short alias -- measured,
+		// both open the hive through an os.Root -- and clearEntry would
+		// honor the spelling to the letter. Spared rather than refused for
+		// the reason clearEntry spares: nobody editing a rules file wrote
+		// this spelling, an earlier run of this tool did.
+		if reservedAtResolved(root, filepath.ToSlash(cleanEntryPath(entry.Path))) {
+			continue
+		}
+		stale, err := withinRecorded(entry.Path)
 		if err != nil {
 			// A recorded name that does not land inside the profile is one
 			// nothing here wrote. Refusing is the only safe reading: the
-			// alternative is deleting whatever it does point at.
+			// alternative is deleting whatever it does point at. The
+			// question is withinRecorded's, not within's, for the reason
+			// withinRecorded gives: the spelling was not hand-written, and
+			// a refusal over it would strand the entry's copy.
 			return err
 		}
 		// A recorded entry whose limits cannot bind is refused rather than
@@ -91,10 +104,14 @@ func clearEntry(root *os.Root, stale string, entry config.Entry) error {
 	// carried: the record may name the hive outright, bare or with
 	// limits, and both branches below would honor the name to the
 	// letter -- the bare one by RemoveAll, the limits-bearing one the
-	// moment its target is not a directory. Spared rather than refused;
-	// reserved.go records why this spares where refuseReservedCleanup refuses.
+	// moment its target is not a directory. The question is asked of the
+	// name the volume resolves it to as well -- a record spelling the
+	// hive under an alias, a trailing dot or a short name, is spared by
+	// the file the volume reaches, not the one it spells. Spared rather
+	// than refused; reserved.go records why this spares where
+	// refuseReservedCleanup refuses.
 	rel := filepath.ToSlash(stale)
-	if reservedAt(rel) {
+	if reservedAtResolved(root, rel) {
 		return nil
 	}
 	if entry.Bare() {
@@ -102,7 +119,7 @@ func clearEntry(root *os.Root, stale string, entry config.Entry) error {
 		// leaving the list, most commonly -- takes the hive with it by
 		// the roots. What around it is ours still goes: the same walk
 		// the limits-bearing branch uses, clearing around the hive.
-		if reservedWithin(rel) {
+		if reservedWithinResolved(root, rel) {
 			_, err := clearKeepingReserved(root, stale)
 			return err
 		}
@@ -174,10 +191,11 @@ func clearKeeping(root *os.Root, dir, rel string, w *walk, kept *bool) error {
 				continue
 			}
 			// A directory sitting at a reserved path is spared by its
-			// name. Whatever the sandbox made of the hive's name,
+			// name -- and by the name the volume resolves it to, when the
+			// two differ. Whatever the sandbox made of the hive's name,
 			// nothing under a name the tables reserve was ever ours to
 			// sort, and reporting it kept is what leaves it so.
-			if reservedAt(filepath.ToSlash(childPath)) {
+			if reservedAtResolved(root, filepath.ToSlash(childPath)) {
 				*kept = true
 				continue
 			}
@@ -211,8 +229,10 @@ func clearKeeping(root *os.Root, dir, rel string, w *walk, kept *bool) error {
 			// The registry is not ours to take back under any entry: a
 			// depth that reaches four below AppData reaches the class
 			// hive, and the walk honoring the entry's limits would honor
-			// them straight through the profile service's file.
-			if reservedAt(filepath.ToSlash(childPath)) {
+			// them straight through the profile service's file -- spelled
+			// however the destination's own directory entry spells it,
+			// which the resolved question is what answers.
+			if reservedAtResolved(root, filepath.ToSlash(childPath)) {
 				*kept = true
 				continue
 			}

@@ -3,7 +3,9 @@ package profile
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 )
@@ -448,5 +450,193 @@ func TestAFamilyNameAwayFromItsDirectoryIsStillOurs(t *testing.T) {
 	fill(t, dest)
 	if got := read(t, filepath.Join(dest, "tools", "NTUSER.DAT{"+ntuserOtherTMGUID+"}.TM.blf")); got != "just a file an agent needs" {
 		t.Errorf("a file carrying a family member's name away from the family's directory was not copied: %q", got)
+	}
+}
+
+// TestACopyRefusesAnEntrySpelledTheWayTheVolumeImprovesOn pins the rules
+// file's half of the spelling question. "NTUSER.DAT." and "NTUSER.DAT "
+// open the file "NTUSER.DAT" keeps -- Win32 strips trailing dots and spaces
+// per segment before it opens or creates anything, for reading and for
+// writing alike, which is why the trailing-space plant below stores itself
+// under the plain name -- and "NTUSER~1.DAT" is spelled the way Windows
+// spells an 8.3 alias, which the volume resolves onto whatever long name it
+// aliases. An entry carrying one of those spellings would land on a name
+// the rules file never wrote, so what gets copied and what gets taken back
+// would never agree about the name; within refuses it instead of quietly
+// correcting it. The hives are planted at the PLAIN names, on both sides,
+// so the refusal is the only thing standing between the odd spelling and
+// the real file the volume would have found for it.
+func TestACopyRefusesAnEntrySpelledTheWayTheVolumeImprovesOn(t *testing.T) {
+	for _, spelling := range []string{
+		"NTUSER.DAT.",
+		"NTUSER.DAT ",
+		"NTUSER~1.DAT",
+		"AppData/Local/Microsoft/Windows/UsrClass.dat.",
+	} {
+		t.Run(spelling, func(t *testing.T) {
+			home, dest := useProfile(t, []string{spelling})
+			homeHive, destHive := filepath.Join(home, "NTUSER.DAT"), filepath.Join(dest, "NTUSER.DAT")
+			if spelling == "AppData/Local/Microsoft/Windows/UsrClass.dat." {
+				homeHive, destHive = hivePath(t, home), hivePath(t, dest)
+			}
+			write(t, homeHive, userHive)
+			write(t, destHive, profileServiceHive)
+
+			if _, _, err := Copy(dest, nil, nil); err == nil {
+				t.Fatalf("the rules spelling %q was accepted, and the volume would have opened it onto a name the rules file never wrote", spelling)
+			}
+			if got := read(t, destHive); got != profileServiceHive {
+				t.Errorf("the copy laid the user's hive over the sandbox's through the spelling %q: it now holds %q", spelling, got)
+			}
+			if got := read(t, homeHive); got != userHive {
+				t.Errorf("the user's own hive was disturbed by the run spelled %q: it now holds %q", spelling, got)
+			}
+		})
+	}
+}
+
+// TestATakeBackSparesTheHiveARecordSpelledTheWayTheVolumeReadsIt pins the
+// record's half of the same question, where the answer is the opposite of
+// the rules file's. A record is not a hand-edited file -- an earlier run of
+// this tool wrote it -- so the spelling is not refused, it is asked of the
+// volume: forget puts the resolved question ahead of withinRecorded, and a
+// record spelling the hive with a trailing dot or a trailing space opens
+// the hive the plain name keeps, measured through an os.Root, and is
+// spared by the file it reaches. NTUSER~1.DAT needs no special answer: on
+// a volume where the alias exists the resolved question spares it, and
+// where the alias does not the name opens nothing and there is nothing to
+// remove -- the hive survives either way. The root spellings are driven
+// through a real Copy as well, because forget's spare runs inside one, on
+// the way to the copy that rewrites the record.
+func TestATakeBackSparesTheHiveARecordSpelledTheWayTheVolumeReadsIt(t *testing.T) {
+	for _, spelling := range []string{
+		"NTUSER.DAT.",
+		"NTUSER.DAT ",
+		"NTUSER~1.DAT",
+		"AppData/Local/Microsoft/Windows/UsrClass.dat.",
+	} {
+		t.Run(spelling, func(t *testing.T) {
+			_, dest := useProfile(t, []string{})
+			hive := filepath.Join(dest, "NTUSER.DAT")
+			atRoot := spelling != "AppData/Local/Microsoft/Windows/UsrClass.dat."
+			if !atRoot {
+				hive = hivePath(t, dest)
+			}
+			write(t, hive, profileServiceHive)
+
+			if err := Clear(dest, []config.Entry{{Path: spelling}}); err != nil {
+				t.Fatalf("the take-back refused a record spelling %q that an earlier run of this tool wrote: %v", spelling, err)
+			}
+			if got := read(t, hive); got != profileServiceHive {
+				t.Errorf("the take-back honored the record's spelling %q to the letter: the hive now holds %q", spelling, got)
+			}
+
+			if !atRoot {
+				return
+			}
+			if _, _, err := Copy(dest, []config.Entry{{Path: spelling}}, nil); err != nil {
+				t.Fatalf("a fill refused to run over a record spelling %q: %v", spelling, err)
+			}
+			if got := read(t, hive); got != profileServiceHive {
+				t.Errorf("the fill honored the record's spelling %q to the letter: the hive now holds %q", spelling, got)
+			}
+		})
+	}
+}
+
+// shortNameSpelling asks Windows for the 8.3 spelling of an existing path,
+// the way internal/win/acl's own tests do; empty where the volume answers
+// nothing.
+func shortNameSpelling(t *testing.T, path string) string {
+	t.Helper()
+	wide, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]uint16, syscall.MAX_LONG_PATH)
+	proc := syscall.NewLazyDLL("kernel32.dll").NewProc("GetShortPathNameW")
+	written, _, _ := proc.Call(uintptr(unsafe.Pointer(wide)),
+		uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)))
+	if written == 0 {
+		return ""
+	}
+	return syscall.UTF16ToString(buffer[:written])
+}
+
+// TestATakeBackSparesTheFamilyMemberAnAliasResolvesTo pins the resolution
+// question on the one spelling this machine can build. A transaction file's
+// name is far too long for 8.3, so the volume gives it an alias --
+// NTUSER~1.BLF beside NTUSER.DAT{...}.TM.blf, measured -- and a record may
+// carry the alias, the way any listing of the directory would spell it. The
+// alias opens the member, so the resolved question spares the member by the
+// name the volume answers with, whatever the record spelled. Skipped where
+// 8.3 generation is switched off, the way junctionTo skips a machine that
+// will not make a junction: there the alias opens nothing and the take-back
+// simply has nothing to honor.
+func TestATakeBackSparesTheFamilyMemberAnAliasResolvesTo(t *testing.T) {
+	_, dest := useProfile(t, []string{})
+	member := filepath.Join(dest, "NTUSER.DAT{"+familyExampleGUID+"}.TM.blf")
+	const ours = "the member the record named by its alias"
+	write(t, member, ours)
+
+	alias := ""
+	if short := shortNameSpelling(t, member); short != "" {
+		alias = filepath.Base(short)
+	}
+	if alias == "" || alias == filepath.Base(member) {
+		t.Skipf("this machine does not give %s an 8.3 alias (8.3 generation disabled): %q", filepath.Base(member), alias)
+	}
+
+	if err := Clear(dest, []config.Entry{{Path: alias}}); err != nil {
+		t.Fatalf("the take-back refused the alias spelling %q a directory listing carries: %v", alias, err)
+	}
+	if got := read(t, member); got != ours {
+		t.Errorf("the take-back took the family member through its alias %q: it now holds %q", alias, got)
+	}
+}
+
+// TestATakeBackTakesAnAliasShapedNameThatResolvesOntoItself pins the
+// resolved question's narrowness from the other side. notes~1.txt is spelled
+// the way an alias is spelled, and the take-back asks the volume about it --
+// but the only name it can resolve to is its own, and its own name is
+// reserved under none, so the file is the record's to take. A guard that
+// spared every suspicious spelling would let any directory hide behind an
+// unlucky name.
+func TestATakeBackTakesAnAliasShapedNameThatResolvesOntoItself(t *testing.T) {
+	_, dest := useProfile(t, []string{})
+	notes := filepath.Join(dest, "notes~1.txt")
+	write(t, notes, "a file with an unlucky literal name")
+
+	if err := Clear(dest, []config.Entry{{Path: "notes~1.txt"}}); err != nil {
+		t.Fatalf("the take-back refused a record naming notes~1.txt: %v", err)
+	}
+	if _, err := os.Stat(notes); !os.IsNotExist(err) {
+		t.Errorf("an alias-shaped name that resolves onto itself was spared as if it were reserved: %v", err)
+	}
+}
+
+// TestAPlainRunStillCarriesAnAliasShapedNameThatResolvesToItself guards the
+// whole resolution layer against over-refusal. notes~1.txt is spelled the
+// way an alias is spelled, and the copy asks the volume about it on every
+// run -- but the only name it can resolve to is its own, and its own name
+// is reserved under none, so the file is the rules entry's to copy and to
+// skip like any other. A guard that spared every odd spelling would have
+// stopped copying half of what an agent keeps.
+func TestAPlainRunStillCarriesAnAliasShapedNameThatResolvesToItself(t *testing.T) {
+	home, dest := useProfile(t, []string{"tools"})
+	write(t, filepath.Join(home, "tools", "notes~1.txt"), "a plain file an agent needs")
+
+	fill(t, dest)
+	if got := read(t, filepath.Join(dest, "tools", "notes~1.txt")); got != "a plain file an agent needs" {
+		t.Fatalf("an alias-shaped name that resolves onto itself was not copied: %q", got)
+	}
+
+	// The second run must skip it, the way it skips any unchanged file. The
+	// stamps say what that run did -- copied or skipped -- better than a
+	// number restated by hand.
+	plantStaleStamps(t, dest)
+	fill(t, dest)
+	if copied, skipped := whatTheRunDid(t, filepath.Join(dest, "tools")); copied != 0 || skipped != 1 {
+		t.Errorf("the second run copied %d and skipped %d, want the one file skipped", copied, skipped)
 	}
 }

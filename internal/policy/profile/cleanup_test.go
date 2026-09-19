@@ -3,6 +3,7 @@ package profile
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
@@ -364,5 +365,53 @@ func TestCleanupRefusesAGlobReachingAFamilyMemberTheTablesNeverListed(t *testing
 	}
 	if _, err := os.Stat(filepath.Join(dest, "keep.txt")); err != nil {
 		t.Errorf("cleanup cleared other files before refusing the run entirely: %v", err)
+	}
+}
+
+// TestCleanupRefusesAGlobSpelledTheWayTheVolumeReadsIt extends the glob
+// question to the spellings the volume improves on. The question is asked of
+// the glob as written first -- the check that has always run -- and then of
+// its volume-read spellings: the padded-stripped one, each segment losing
+// the trailing dots and spaces Win32 strips before it opens or creates
+// anything, and the de-aliased one, where an 8.3-shaped segment's
+// tilde-and-digits becomes the star the truncation really stands for
+// ("NTUSER~1.DAT" asking, in truth, for "NTUSER*.DAT"). A glob is refused
+// when one of the normalized spellings reaches a reserved family, and the
+// message still names the pattern as written -- that is the line the person
+// reading the rules file can find. The refusal has to arrive through a real
+// Copy, before clearCleanup's walk has removed anything, so the hive and a
+// planted member of its family sit beside the glob and must still hold
+// their content when the run comes back refused.
+func TestCleanupRefusesAGlobSpelledTheWayTheVolumeReadsIt(t *testing.T) {
+	for _, glob := range []string{"NTUSER.DAT.", "NTUSER.DAT ", "NTUSER~1.DAT", "UsrClass.dat."} {
+		t.Run(glob, func(t *testing.T) {
+			_, dest := useCleanup(t, nil, []string{glob})
+			hive := filepath.Join(dest, "NTUSER.DAT")
+			members := plantNTUSERFamily(t, dest)
+			if glob == "UsrClass.dat." {
+				hive = hivePath(t, dest)
+				members = plantUsrClassFamily(t, filepath.Join(dest, "AppData", "Local", "Microsoft", "Windows"))
+			}
+			write(t, hive, profileServiceHive)
+
+			_, _, err := Copy(dest, nil, nil)
+			if err == nil {
+				t.Fatalf("cleanup glob %q was accepted, and the volume would open it onto the hive's name", glob)
+			}
+			if !strings.Contains(err.Error(), glob) {
+				t.Errorf("the refusal did not name the glob as written, %q: %v", glob, err)
+			}
+			if exit.Of(err) != exit.BadConfig {
+				t.Errorf("the refusal carried exit code %v, want %v (bad-config)", exit.Of(err), exit.BadConfig)
+			}
+			if got := read(t, hive); got != profileServiceHive {
+				t.Errorf("the hive was disturbed before the run was refused over %q: it now holds %q", glob, got)
+			}
+			for _, m := range members {
+				if got := read(t, m); got != "windows' work" {
+					t.Errorf("%s was taken before the run was refused over %q: it now holds %q", m, glob, got)
+				}
+			}
+		})
 	}
 }

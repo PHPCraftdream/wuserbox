@@ -3,8 +3,11 @@ package profile
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 )
 
 // staleStamp is the modification time no run could have written, the probe
@@ -311,5 +314,88 @@ func TestThePlanRefusesAnExistingNonDirectoryProfile(t *testing.T) {
 
 	if _, _, err := Plan(dest, nil); err == nil {
 		t.Fatal("the plan described a non-directory destination as a usable profile")
+	}
+}
+
+// TestThePlanRefusesTheConflictingEntriesACopyRefuses pins the first of the
+// two pre-flight refusals Plan now makes: a path listed twice with different
+// limits is refused through the same helper Copy asks, before anything is
+// counted, so --dry-run cannot describe a run the real Copy would refuse to
+// start. The equality is pinned by string, not by "an error came back":
+// two answers to "what is wrong with this file" are exactly how a preview
+// and the run it previews drift apart.
+func TestThePlanRefusesTheConflictingEntriesACopyRefuses(t *testing.T) {
+	_, dest := useProfileEntries(t, []config.Entry{
+		{Path: ".codex", Exclude: config.Masks([]string{"sessions/**"})},
+		{Path: ".codex"},
+	})
+
+	cleanup, plans, err := Plan(dest, nil)
+	if err == nil {
+		t.Fatal("the plan described a run Copy refuses to start")
+	}
+	if !strings.Contains(err.Error(), "twice with different limits") {
+		t.Errorf("the refusal did not name the conflict: %v", err)
+	}
+	if cleanup != nil || plans != nil {
+		t.Errorf("a refused plan came back with content: cleanup %+v, entries %+v", cleanup, plans)
+	}
+
+	_, _, copyErr := Copy(dest, nil, nil)
+	if copyErr == nil {
+		t.Fatal("the copy itself accepted what the plan refuses")
+	}
+	if copyErr.Error() != err.Error() {
+		t.Errorf("the plan and the copy refused the same file with different words:\nplan: %v\ncopy: %v", err, copyErr)
+	}
+}
+
+// TestThePlanRefusesTheNegativeDepthACopyRefuses is the second of the two
+// pre-flight refusals, through Plan's door: a depth that cannot bind is
+// refused before anything is counted, with the copy's own words -- the
+// number nobody meant to write gets the same answer from a --dry-run that
+// the run itself gives.
+func TestThePlanRefusesTheNegativeDepthACopyRefuses(t *testing.T) {
+	_, dest := useProfileEntries(t, []config.Entry{{Path: "agent", Depth: depthPtr(-1)}})
+
+	_, _, err := Plan(dest, nil)
+	if err == nil {
+		t.Fatal("the plan described a run Copy refuses to start")
+	}
+	if !strings.Contains(err.Error(), "negative depth") {
+		t.Errorf("the refusal did not name the negative depth: %v", err)
+	}
+
+	_, _, copyErr := Copy(dest, nil, nil)
+	if copyErr == nil {
+		t.Fatal("the copy itself accepted what the plan refuses")
+	}
+	if copyErr.Error() != err.Error() {
+		t.Errorf("the plan and the copy refused the same file with different words:\nplan: %v\ncopy: %v", err, copyErr)
+	}
+}
+
+// TestThePlanOfAMissingDestinationAsksTheSuspiciousNameAsWritten is the
+// nil-root regression. A preview asked about a sandbox that does not exist
+// yet has no root to open, and the resolved question -- the one that opens
+// an alias-shaped leaf to ask what the volume calls it -- has nothing to
+// open: resolvedRootRel answers "nothing resolves" for a nil root, and the
+// as-written question stands. notes~1.txt is reserved under no spelling of
+// itself, so the plan counts the one file it would copy, and nothing panics
+// on the way there.
+func TestThePlanOfAMissingDestinationAsksTheSuspiciousNameAsWritten(t *testing.T) {
+	home, dest := useProfileEntries(t, []config.Entry{{Path: "tools"}})
+	write(t, filepath.Join(home, "tools", "notes~1.txt"), "a plain file an agent needs")
+	if err := os.RemoveAll(dest); err != nil {
+		t.Fatal(err)
+	}
+
+	_, entries, err := Plan(dest, nil)
+	if err != nil {
+		t.Fatalf("the preview of a not-yet-existing destination failed: %v", err)
+	}
+	plan := planFor(t, entries, "tools")
+	if plan.Files != 1 {
+		t.Errorf("the plan of a missing destination did not count the one file it would copy: %+v", plan)
 	}
 }

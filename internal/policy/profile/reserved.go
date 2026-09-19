@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
 )
 
 // The registry the profile service builds into every sandbox's profile --
@@ -106,6 +108,134 @@ func reservedWithin(rootRel string) bool {
 	return false
 }
 
+// stripsTrailingPad reports whether a Win32 name-spelling loses characters
+// before the volume looks: trailing dots and spaces are stripped per segment
+// by Win32 path normalization (GetFullPathName), both when the volume resolves
+// the name and when it creates it -- measured, os.WriteFile spells "made.DAT."
+// and the directory entry reads "made.DAT". A segment this true of is never
+// the name the volume stores, so a rules file or a record carrying it is
+// naming something else under its own spelling.
+func stripsTrailingPad(segment string) bool {
+	return segment != strings.TrimRight(segment, ". ")
+}
+
+// looksLikeShortName reports whether a segment is spelled the way Windows
+// spells an 8.3 alias: a base that ends in a tilde and a run of digits, with
+// an extension no longer than the three characters an alias keeps ("NTUSER~1",
+// "NTUSER~1.BLF"). The alias itself is the volume's work -- assigned to long
+// names too long for 8.3, resolved by the volume wherever the long name was
+// meant -- and never appears in a directory enumeration, which reports stored
+// long names only. A hand-written spelling shaped like one is either a file
+// with an unlucky literal name or an alias for something else, and only the
+// volume can say which.
+func looksLikeShortName(segment string) bool {
+	base := segment
+	if i := strings.LastIndexByte(segment, '.'); i >= 0 {
+		if len(segment)-i-1 > 3 {
+			return false
+		}
+		base = segment[:i]
+	}
+	i := strings.LastIndexByte(base, '~')
+	if i < 0 || i+1 == len(base) {
+		return false
+	}
+	for _, c := range base[i+1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// resolvedRootRel answers with the path the volume actually resolved rootRel
+// to, relative to the profile root and spelled with forward slashes -- the
+// frame the reserved tables are written in. It opens the name through the
+// root (which refuses a reparse point leading out of the profile) and asks
+// GetFinalPathNameByHandle -- pathid.Canonical -- for the final path, the
+// same question canonicalEntryPath asks one component at a time. A name that
+// opens nothing is not another name for something: false, and the caller
+// falls back to the spelling as written. A nil root is the same answer: a
+// preview asked about a sandbox that does not exist yet has nothing to
+// open, so there is nothing to resolve and the as-written question stands.
+func resolvedRootRel(root *os.Root, rootRel string) (string, bool) {
+	if root == nil {
+		// A preview asked about a sandbox that does not exist yet has
+		// nothing to open -- planSink's own contract, the same answer
+		// from the other side. Nothing resolves, and the as-written
+		// question stands.
+		return "", false
+	}
+	f, err := root.Open(rootRel)
+	if err != nil {
+		return "", false
+	}
+	full, err := pathid.Canonical(f.Name())
+	_ = f.Close()
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(root.Name(), full)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		// root.Name() and the resolved spelling can disagree about the
+		// case of the directories between them; a relative path that
+		// climbs says the two could not be lined up lexically, and the
+		// as-written question stands.
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
+}
+
+// leafSuspicious answers whether a root-relative path's own name is one the
+// volume may resolve under a different spelling: trailing dots or spaces
+// Win32 strips, or a shape an 8.3 alias carries. It is the gate on the
+// resolved questions below -- a spelling that names itself exactly never
+// resolves to anything else (the fold already answers for case), so the
+// walks pay for an open and a final-path question only where the spelling
+// itself says the volume may know better.
+func leafSuspicious(rootRel string) bool {
+	segment := rootRel
+	if i := strings.LastIndexByte(rootRel, '/'); i >= 0 {
+		segment = rootRel[i+1:]
+	}
+	return stripsTrailingPad(segment) || looksLikeShortName(segment)
+}
+
+// reservedAtResolved adds to reservedAt the answer for what the name the
+// volume resolves it to is called: "NTUSER.DAT." and "NTUSER.DAT " open the
+// hive "NTUSER.DAT" names, and a family member's 8.3 alias -- NTUSER~1.BLF
+// beside a real .TM.blf, measured -- opens the member. Measured with a plain
+// Open through an os.Root: the handle's final path is the plain spelling's,
+// file identity and all. The as-written question is asked first, as it always
+// was; only a leaf the spelling itself marks suspicious pays for the
+// resolution. Unresolvable is not reserved: a name that opens nothing is
+// spared or taken exactly as the tables read it.
+func reservedAtResolved(root *os.Root, rootRel string) bool {
+	if reservedAt(rootRel) {
+		return true
+	}
+	if !leafSuspicious(rootRel) {
+		return false
+	}
+	resolved, ok := resolvedRootRel(root, rootRel)
+	return ok && reservedAt(resolved)
+}
+
+// reservedWithinResolved is reservedWithin's resolved twin, asked where a
+// deletion would take a directory whole: a directory the record or the
+// cleanup reaches under an alias spelling takes the reserved files under its
+// resolved name with it, which is the same destruction with one alias more.
+func reservedWithinResolved(root *os.Root, rootRel string) bool {
+	if reservedWithin(rootRel) {
+		return true
+	}
+	if !leafSuspicious(rootRel) {
+		return false
+	}
+	resolved, ok := resolvedRootRel(root, rootRel)
+	return ok && reservedWithin(resolved)
+}
+
 // clearKeepingReserved removes from one directory what a deletion that must
 // spare the registry may still take: every child the reserved tables do not
 // name, links removed as the links they are -- the same defensive Lstat
@@ -131,7 +261,12 @@ func clearKeepingReserved(root *os.Root, dir string) (spared bool, err error) {
 	}
 	for _, child := range children {
 		childPath := filepath.Join(dir, child.Name())
-		if reservedAt(filepath.ToSlash(childPath)) {
+		// The as-written question is asked first; a child spelling the
+		// volume improves on -- a trailing dot, a short alias -- is then
+		// asked again of what the name resolves to, because a child name
+		// the volume resolves onto a reserved file is spared by the file
+		// it reaches, not the one it spells.
+		if reservedAtResolved(root, filepath.ToSlash(childPath)) {
 			spared = true
 			continue
 		}
