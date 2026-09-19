@@ -239,3 +239,42 @@ func TestGrantingADirectoryWithNoListKeepsItsOwner(t *testing.T) {
 //
 // The refusal happens in the reading pass, before anything is written, so a
 // tree turned down this way is left exactly as it was found.
+
+// TestASweepNarrowsAuthenticatedUsersToo is the regression guard for the
+// third shared identity. The granted directory itself is narrowed against
+// Authenticated Users, and the sweep over what is inside answered a
+// different question: an object carrying its own Authenticated Users write
+// entry survived every narrowing, and every sandbox on the machine could go
+// on writing there through it.
+func TestASweepNarrowsAuthenticatedUsersToo(t *testing.T) {
+	root := t.TempDir()
+	inner := filepath.Join(root, "inner")
+	if err := os.Mkdir(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Protected, so nothing above reaches it, and Authenticated Users -- AU
+	// is Windows' own text for the identifier -- is the only writer.
+	setSDDL(t, inner, `D:P(A;OICI;0x1301BF;;;AU)`)
+	t.Cleanup(func() { setSDDL(t, inner, `D:P(A;OICI;FA;;;`+owner+`)`) })
+	if !writableBy(inner, sid.Authenticated) {
+		t.Fatal("Authenticated Users could not write there to begin with, so this proves nothing")
+	}
+
+	if err := Isolate(root, unusedAccount, []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if writableBy(inner, sid.Authenticated) {
+		t.Error("Authenticated Users still writes inside the granted tree")
+	}
+	// Narrowing is only ever narrowing: Modify leaves its reading behind.
+	if !holds(t, inner, "Authenticated Users", "(RX)") {
+		t.Error("Authenticated Users lost its reading instead of being narrowed to it")
+	}
+}

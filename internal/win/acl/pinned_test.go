@@ -17,6 +17,7 @@ package acl
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -66,12 +67,66 @@ func TestPinnedPathsKeepOnlyDescendantsOfTheCurrentRoot(t *testing.T) {
 	}
 }
 
-func TestPinnedPathsFailClosedWhenRelevanceCannotBeResolved(t *testing.T) {
+// A record entry whose directory has been deleted since it was granted is
+// the harmless case the type's contract describes: there is no object for
+// the sweep to spare, so the entry is dropped here rather than failing
+// every later grant on any tree.
+func TestPinnedPathsDropEntriesWhoseDirectoryIsGone(t *testing.T) {
 	root := t.TempDir()
-	missing := filepath.Join(root, "missing")
-	set, err := makePinnedPaths([]string{missing})
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gone := filepath.Join(root, "gone")
+	if err := os.Mkdir(gone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	set, err := makePinnedPaths([]string{gone, child, outside})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// An ordinary deletion between the grant and the sweep.
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+	relevant, err := set.relevant(root)
+	if err != nil {
+		t.Fatalf("a deleted record entry stopped the sweep: %v", err)
+	}
+	if len(relevant.keys) != 1 {
+		t.Fatalf("relevant keep-list has %d entries, want only the surviving descendant", len(relevant.keys))
+	}
+	if kept, err := relevant.contains(child); err != nil || !kept {
+		t.Fatalf("the surviving descendant was not retained: kept=%v err=%v", kept, err)
+	}
+}
+
+// The other half of the split: an entry that exists as a name but cannot be
+// resolved to an object is the ambiguity the contract warns about, and it
+// still stops the operation, because a keep-list quietly narrowed by a
+// lookup failure would be a different security decision.
+func TestPinnedPathsFailClosedWhenRelevanceCannotBeResolved(t *testing.T) {
+	root := t.TempDir()
+	linked := filepath.Join(root, "linked")
+	if err := os.Mkdir(linked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	set, err := makePinnedPaths([]string{linked})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(linked); err != nil {
+		t.Fatal(err)
+	}
+	// The name survives as a dangling junction: Lstat sees it, the identity
+	// lookup cannot reach anything through it.
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", linked, filepath.Join(root, "vanished")).CombinedOutput(); err != nil {
+		t.Skipf("this machine would not make a junction: %v\n%s", err, out)
+	}
+	t.Cleanup(func() { _ = os.Remove(linked) })
+	if _, err := os.Lstat(linked); err != nil {
+		t.Fatalf("the dangling junction is not visible to Lstat, so this test proves nothing: %v", err)
 	}
 	if _, err := set.relevant(root); err == nil {
 		t.Fatal("an unresolved pinned path was silently omitted")

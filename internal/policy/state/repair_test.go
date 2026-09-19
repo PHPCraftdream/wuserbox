@@ -5,6 +5,7 @@ package state
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -372,4 +373,62 @@ func TestNarrowingHandlesANestedPendingChildRemovingAGrandchild(t *testing.T) {
 	if answer.Allowed {
 		t.Errorf("the grandchild is still writable after the parent was narrowed: %s", answer.Reason)
 	}
+}
+
+// TestNarrowingReachesAGrantUnderAnotherSpellingOfTheSameTree is the
+// regression guard for the one path decision in this package that compared
+// strings. A subst alias and the name it stands for are one directory to
+// Windows and two different strings to an ascii prefix compare, so a grant
+// recorded under the alias survived a narrowing made under the real name:
+// the record said read-only and the sandbox went on writing. Measured, on a
+// real subst drive, before the decision went through the filesystem.
+func TestNarrowingReachesAGrantUnderAnotherSpellingOfTheSameTree(t *testing.T) {
+	s := newState(t)
+	parent := t.TempDir()
+	child := filepath.Join(parent, "cache")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := substDrive(t, parent)
+	if alias == "" {
+		t.Skip("no free drive letter for a subst alias on this machine")
+	}
+	// Recorded under the alias, narrowed under the real name.
+	if err := s.Add(filepath.Join(alias, "cache"), grant.RW); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(parent, grant.RO); err != nil {
+		t.Fatal(err)
+	}
+	answer, err := access.Check(access.Sandbox{Group: s.SID}, child, access.Create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Allowed {
+		t.Errorf("the child stayed writable through the spelling the narrowing was not written under: %s", answer.Reason)
+	}
+	if s.Has(filepath.Join(alias, "cache")) {
+		t.Error("the record still claims a permission that was taken back")
+	}
+}
+
+// substDrive maps a free drive letter to target with subst, the way an
+// operator's shell does, and takes the mapping down when the test ends. It
+// returns "" when no letter is free.
+func substDrive(t *testing.T, target string) string {
+	t.Helper()
+	for letter := 'D'; letter <= 'Z'; letter++ {
+		drive := string(letter) + `:`
+		if _, err := os.Stat(drive + `\`); err == nil {
+			continue
+		}
+		if err := exec.Command("cmd", "/c", "subst", drive, target).Run(); err != nil {
+			continue
+		}
+		t.Cleanup(func() {
+			_ = exec.Command("cmd", "/c", "subst", drive, "/D").Run()
+		})
+		return drive
+	}
+	return ""
 }

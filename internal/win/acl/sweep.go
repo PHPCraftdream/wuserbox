@@ -1,11 +1,11 @@
 // Narrowing the tree under a directory that has just been handed over.
 //
 // Rewriting the directory itself is not enough: an object inside it whose
-// permissions are its own no longer hears from above, so whatever Everyone
-// or BUILTIN\Users hold there survives the grant and every sandbox that
-// holds the tree can write through it. The whole tree is read before any of
-// it is changed, so the ordinary reason to stop happens before anything has
-// moved.
+// permissions are its own no longer hears from above, so whatever Everyone,
+// BUILTIN\Users, or Authenticated Users hold there survives the grant and
+// every sandbox that holds the tree can write through it. The whole tree is
+// read before any of it is changed, so the ordinary reason to stop happens
+// before anything has moved.
 
 package acl
 
@@ -22,8 +22,13 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
-// sweep takes the changing rights of Everyone and BUILTIN\Users away from
-// everything under path that holds them in its own entries.
+// sweep takes the changing rights of Everyone, BUILTIN\Users and
+// Authenticated Users away from everything under path that holds them in
+// its own entries.
+//
+// These are the same three identities the granted directory itself is
+// narrowed against in Isolate, so the walk below answers the question the
+// top already answered.
 //
 // Everything the sandbox's own account owns under path is written whole --
 // its entries, the hand-down, and the cap -- because a list written
@@ -49,7 +54,7 @@ import (
 // and it decides which owned objects are spared: a path recorded there was
 // granted by the operator in their own right, and no list the sandbox could
 // have written may stand in for that decision (owner.go).
-func sweep(root string, everyone, users, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) error {
+func sweep(root string, everyone, users, authenticated, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) error {
 	// Read the whole tree before changing any of it. Doing both in one pass
 	// left a failure halfway down with part of the tree already rewritten and
 	// the grant not written at all: narrowings nobody asked for and no record
@@ -60,7 +65,7 @@ func sweep(root string, everyone, users, holder, owner uintptr, sandbox []uintpt
 	if err := inspect(root, pinned); err != nil {
 		return err
 	}
-	return narrowTree(root, everyone, users, holder, owner, sandbox, hand, mark, pinned)
+	return narrowTree(root, everyone, users, authenticated, holder, owner, sandbox, hand, mark, pinned)
 }
 
 // narrowTree reads objects in parallel, but publishes ACL changes in the
@@ -70,7 +75,7 @@ func sweep(root string, everyone, users, holder, owner uintptr, sandbox []uintpt
 // write are read again by narrowOwn immediately before the ordered write; the
 // reread is what preserves the parent-before-child dependency when a parent
 // changes inherited permissions.
-func narrowTree(root string, everyone, users, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) error {
+func narrowTree(root string, everyone, users, authenticated, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) error {
 	type object struct {
 		seq  uint64
 		path string
@@ -101,7 +106,7 @@ func narrowTree(root string, everyone, users, holder, owner uintptr, sandbox []u
 					if !ok {
 						return
 					}
-					decision, err := classifyNarrow(one.path, everyone, users, owner, sandbox, hand, mark, pinned)
+					decision, err := classifyNarrow(one.path, everyone, users, authenticated, owner, sandbox, hand, mark, pinned)
 					answer := result{seq: one.seq, path: one.path, decision: decision, err: err}
 					select {
 					case results <- answer:
@@ -167,7 +172,7 @@ func narrowTree(root string, everyone, users, holder, owner uintptr, sandbox []u
 			case narrowSkip:
 				skipped = append(skipped, one.path)
 			case narrowApply:
-				if err := narrowOwn(one.path, everyone, users, holder, owner, sandbox, hand, mark, pinned); err != nil {
+				if err := narrowOwn(one.path, everyone, users, authenticated, holder, owner, sandbox, hand, mark, pinned); err != nil {
 					failure = err
 					failed = true
 					cancel()
@@ -209,7 +214,7 @@ const (
 // A write decision is deliberately conservative: the ordered writer rereads
 // the object before applying it, because a parent may have changed inherited
 // permissions since this read completed.
-func classifyNarrow(path string, everyone, users, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) (narrowDecision, error) {
+func classifyNarrow(path string, everyone, users, authenticated, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) (narrowDecision, error) {
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
@@ -227,7 +232,7 @@ func classifyNarrow(path string, everyone, users, owner uintptr, sandbox []uintp
 		return narrowNoop, fmt.Errorf("reading the permissions of %s: %w", path, err)
 	}
 	if !owned {
-		for _, who := range []uintptr{everyone, users} {
+		for _, who := range []uintptr{everyone, users, authenticated} {
 			for _, one := range held {
 				if one.inherited || !sameSID(one.access.trustee.name, who) {
 					continue
@@ -393,9 +398,10 @@ func readable(path string) ([]heldEntry, error) {
 	return held, nil
 }
 
-// narrowOwn takes the changing rights of Everyone and BUILTIN\Users out of
-// the entries one object holds itself, leaving what it is handed from above
-// alone, and hands whatever it took to the owner by name.
+// narrowOwn takes the changing rights of Everyone, BUILTIN\Users and
+// Authenticated Users out of the entries one object holds itself, leaving
+// what it is handed from above alone, and hands whatever it took to the
+// owner by name.
 //
 // The handback is not a courtesy, it is the same rule the granted directory
 // itself follows: those two are not who is being kept out, and a grant must
@@ -418,7 +424,7 @@ func readable(path string) ([]heldEntry, error) {
 // that spares an owned object: a path the record names was granted in the
 // operator's own right, and a list the sandbox could have written is no
 // evidence of that (owner.go).
-func narrowOwn(path string, everyone, users, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) error {
+func narrowOwn(path string, everyone, users, authenticated, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) error {
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
@@ -450,7 +456,7 @@ func narrowOwn(path string, everyone, users, holder, owner uintptr, sandbox []ui
 		return fmt.Errorf("reading the permissions of %s: %w", path, err)
 	}
 	var update, handback []explicitAccess
-	for _, who := range []uintptr{everyone, users} {
+	for _, who := range []uintptr{everyone, users, authenticated} {
 		var kept []explicitAccess
 		narrowed := false
 		for _, one := range held {

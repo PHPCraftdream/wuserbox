@@ -2,10 +2,10 @@ package state
 
 import (
 	"os"
-	"strings"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
+	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
 )
 
 // FinishPending applies every change the record says was begun and never
@@ -158,17 +158,18 @@ func (s *State) forget(path string) error {
 	return s.Save()
 }
 
-// inside reports whether child sits under parent. A path is not inside itself.
+// inside reports whether child sits under parent. A path is not inside
+// itself. The question goes through filesystem identity like every other
+// one here: an ascii prefix compare took a subst alias for a different
+// tree, so a grant narrowed under one spelling of a directory stayed
+// writable under the other while the record said read-only. Where identity
+// cannot be resolved the answer is yes, the same fail-closed reading
+// pathsOverlap puts on an unresolved overlap.
 func inside(child, parent string) bool {
-	prefix := strings.TrimSuffix(asciiFold(parent), `\`) + `\`
-	return strings.HasPrefix(asciiFold(child), prefix)
-}
-
-func asciiFold(path string) string {
-	return strings.Map(func(r rune) rune {
-		if r >= 'A' && r <= 'Z' {
-			return r + ('a' - 'A')
-		}
-		return r
-	}, path)
+	same, err := pathid.Same(child, parent)
+	if err == nil && same {
+		return false
+	}
+	under, err := pathid.Within(parent, child)
+	return err != nil || under
 }

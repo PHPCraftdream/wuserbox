@@ -3,6 +3,7 @@ package acl
 import (
 	"fmt"
 	"io/fs"
+	"os"
 	"sync"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
@@ -46,8 +47,11 @@ func makePinnedPaths(paths []string) (pinnedPaths, error) {
 // root itself is published directly by Isolate and is excluded from sweep;
 // paths outside the current grant cannot be spared by its walk either. Both
 // decisions use filesystem identity, never lexical or Unicode path rules.
-// An identity lookup failure is returned: silently dropping an entry could
-// turn a keep-list into a different security decision.
+// A record path whose directory entry is gone is dropped, per the contract
+// above: there is no object for it to spare. An entry that exists but
+// cannot be resolved is still an ambiguity, and an identity lookup failure
+// is returned: silently dropping an entry could turn a keep-list into a
+// different security decision.
 func (set pinnedPaths) relevant(root string) (pinnedPaths, error) {
 	out := pinnedPaths{
 		keys:       make(map[string]struct{}, len(set.entries)),
@@ -55,6 +59,12 @@ func (set pinnedPaths) relevant(root string) (pinnedPaths, error) {
 		resolvedMu: &sync.RWMutex{},
 	}
 	for _, one := range set.entries {
+		if _, err := os.Lstat(one.path); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return pinnedPaths{}, fmt.Errorf("looking at pinned path %s: %w", one.path, err)
+		}
 		inside, err := pathid.Within(root, one.path)
 		if err != nil {
 			return pinnedPaths{}, fmt.Errorf("checking pinned path %s against %s: %w", one.path, root, err)
