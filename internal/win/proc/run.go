@@ -84,12 +84,23 @@ func Run(token syscall.Token, commandLine, directory string) (int, error) {
 // against inherited pipes at all -- start, which is the problem this solves
 // (see internal/sandbox/exec's takeConsoleRelay for the caller side).
 //
-// Standard handles are deliberately NOT duplicated and STARTF_USESTDHANDLES
-// is not set: a child attached through the pseudo console attribute gets its
-// console from the attachment, and bInheritHandles is passed as false, so
-// nothing of the caller's handle table crosses at all. The child's
-// GetStdHandle values staying invalid until it opens CONIN$/CONOUT$ itself
-// is the documented CRT-startup gap, not a defect here.
+// The child is started with NULL standard handles: Flags carries
+// STARTF_USESTDHANDLES and all three handle fields are left zero, and
+// bInheritHandles is false, so nothing of the caller's handle table crosses
+// at all. That is not what leaving STARTF_USESTDHANDLES unset would do --
+// unset, the child inherits this process's own std handle values, and
+// values are all that cross: the handles behind them stay in this table,
+// the child is left holding numbers that name nothing, and only a program
+// that goes and opens the console devices by name itself recovers -- which
+// is exactly what this repository's own test probes do, and what PowerShell
+// does not. Measured on CI as [Console]::IsInputRedirected reporting True
+// through a console the child was genuinely attached to. Started with no
+// standard handles of its own, the child's console attachment hands it the
+// attachment's own handles instead -- measured: FILE_TYPE_CHAR values that
+// answer GetConsoleMode with the relayed console's mode words, where the
+// same child started with inherited values answers "the handle is invalid"
+// -- which is what makes GetStdHandle usable for the console the attribute
+// names, not a different one.
 //
 // The job, the suspended start and the interrupt rules are Run's, shared via
 // runInJob and waitOrStop. The caller keeps the pseudo console and its pipes
@@ -114,6 +125,15 @@ func Run(token syscall.Token, commandLine, directory string) (int, error) {
 // PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE was measured live under a real sandbox
 // account's restricted token, in
 // docs/investigations/2026-09-20-same-window-console.md section 4.
+//
+// CREATE_NO_WINDOW is not a substitute for any of this, and was tried and
+// measured wrong: it detaches the child from the named pseudo console onto
+// a hidden console of its own -- a real one, hence working std handles --
+// and the relayed console never sees the child again. The matrix behind
+// that, and the fix itself, are held by
+// TestRunWithConsoleGivesTheChildAWorkingGetStdHandle in relay_test.go and
+// recorded in docs/investigations/2026-09-20-same-window-console.md
+// section 5.
 func RunWithConsole(token syscall.Token, commandLine, directory string, pseudoConsole syscall.Handle) (int, error) {
 	j, err := newJob()
 	if err != nil {
@@ -135,6 +155,13 @@ func RunWithConsole(token syscall.Token, commandLine, directory string, pseudoCo
 		return -1, err
 	}
 	defer freeStartup()
+	// NULL standard handles on purpose, not an oversight: see the standard
+	// handles paragraph on this function. STARTF_USESTDHANDLES with all
+	// three fields left zero is what actually says "this child has no
+	// standard handles"; leaving the flag unset would copy this process's
+	// own std handle values into the child, where they name handles that
+	// were never inherited behind them.
+	startup.Flags = syscall.STARTF_USESTDHANDLES
 	line, err := syscall.UTF16FromString(commandLine)
 	if err != nil {
 		return -1, err

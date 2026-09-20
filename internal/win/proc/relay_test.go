@@ -10,12 +10,16 @@ package proc
 
 import (
 	"bytes"
+	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 // TestTheRelayCarriesAForwardedCtrlCAsTheKeyboardByte proves the piece of
@@ -314,5 +318,125 @@ func TestConsoleSizeAnswersOnARealConsole(t *testing.T) {
 	}
 	if cols == 0 || rows == 0 {
 		t.Fatalf("consoleSize measured %dx%d, want positive dimensions", cols, rows)
+	}
+}
+
+// TestRunWithConsoleGivesTheChildAWorkingGetStdHandle is the regression
+// test for a real bug that reached CI: a child started attached to a
+// pseudo console through CreateProcessAsUserW held GetStdHandle values
+// that answered nothing, even though the pseudo console attribute was
+// present and CONIN$/CONOUT$ opened and answered GetConsoleMode correctly
+// by name. A program that reads GetStdHandle directly rather than opening
+// the console devices by name -- PowerShell's own
+// [Console]::IsInputRedirected and IsOutputRedirected among them --
+// reported itself redirected and never saw the relay at all, measured
+// live on the account-crossing e2e suite in CI: docs/investigations
+// records the pseudo console working end to end, but every measurement
+// there fed a program that opened CONIN$/CONOUT$ itself, PowerShell's own
+// redirection check never having been exercised until the
+// account-crossing test finally ran with real administrator rights.
+//
+// The cause, and the fix this test holds in place: a child launched
+// without STARTF_USESTDHANDLES inherits its parent's standard handle
+// values, and values are all that cross -- with bInheritHandles false the
+// handles behind them stay in the parent's table, so the child is left
+// holding numbers that name nothing, and nothing in the console attach
+// overwrites std handle values that are already set. RunWithConsole now
+// starts the child with NULL standard handles -- STARTF_USESTDHANDLES,
+// all three fields zero -- and a child attached to a console with no
+// standard handles of its own is handed the attachment's own handles: the
+// same launch measured here answers with FILE_TYPE_CHAR values whose
+// GetConsoleMode modes are the relayed console's own. That the handing is
+// the attachment's, not something about the values, is the contrast the
+// launch-shape matrix was run for --
+// docs/investigations/2026-09-20-same-window-console.md section 5, where a
+// detached child gets nothing and a CREATE_NO_WINDOW child gets a
+// different console's handles.
+//
+// CREATE_NO_WINDOW is not the fix, and was tried and measured wrong:
+// adding it to RunWithConsole's flags does make this test pass, but it
+// does so by silently detaching the child from the pseudo console named
+// in the STARTUPINFOEX attribute onto a separate, hidden console of its
+// own -- a real one, hence GetStdHandle answering correctly -- rather
+// than fixing the attachment. That was caught by this package's sibling
+// in internal/sandbox/exec: with the flag added,
+// TestTheConsoleRelayCarriesTheChildsRenderedOutput's captured output
+// went to empty (nothing crosses to a console the child was never
+// actually attached to) and
+// TestTheRelayPumpCarriesRenderedBytesOutAndKeystrokesIn hung outright.
+// The real fix had to make GetStdHandle answer correctly *for the same
+// console the pseudo console attribute names*, not hand the child a
+// different one; the paragraph above is that shape, and this test is
+// what keeps it.
+//
+// This runs same-account, no elevation and nothing account-crossing about
+// it: the property under test -- whether GetStdHandle answers usably for a
+// child attached to the given pseudo console -- does not depend on which
+// token names the account, only on how that attachment is built, which is
+// exactly what a same-account reproduction can isolate and iterate against
+// far more cheaply than a CI round trip.
+//
+// The report crosses through a file PowerShell writes with Set-Content, not
+// through the pseudo console's own rendered-output pipe: a first draft read
+// the pipe instead and measured PowerShell's ordinary Write-Output not
+// reaching it before the process exited and the console closed -- .NET's
+// own buffered console writer, not GetStdHandle, and not what this test is
+// about. Set-Content writes the file directly, independent of that
+// buffering, and is the same shape the fix itself was confirmed with.
+func TestRunWithConsoleGivesTheChildAWorkingGetStdHandle(t *testing.T) {
+	if err := procCreatePseudoConsole.Find(); err != nil {
+		t.Skip("CreatePseudoConsole is not available on this Windows build (ConPTY needs Windows 10 1809+)")
+	}
+	inRead, inWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inWrite.Close()
+	outRead, outWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hpc syscall.Handle
+	const width, height = 80, 25
+	size := uintptr(uint32(uint16(width)) | uint32(uint16(height))<<16)
+	r, _, callErr := procCreatePseudoConsole.Call(size, inRead.Fd(), outWrite.Fd(), 0, uintptr(unsafe.Pointer(&hpc)))
+	inRead.Close()
+	outWrite.Close()
+	if r != 0 {
+		t.Fatalf("CreatePseudoConsole: hresult 0x%x (%v)", r, callErr)
+	}
+	// Nothing reads this pipe -- the report crosses through a file instead,
+	// for the reason above -- so it is drained only to keep conhost's own
+	// writes from blocking on a full pipe, never inspected.
+	go func() { _, _ = io.Copy(io.Discard, outRead) }()
+	defer procClosePseudoConsole.Call(uintptr(hpc))
+	defer outRead.Close()
+
+	var own syscall.Token
+	if err := syscall.OpenProcessToken(syscall.Handle(^uintptr(0)), syscall.TOKEN_ALL_ACCESS, &own); err != nil {
+		t.Fatal(err)
+	}
+	defer own.Close()
+
+	resultFile := filepath.Join(t.TempDir(), "redirected.txt")
+	commandLine := fmt.Sprintf(
+		`powershell.exe -NoProfile -Command "'redirected=' + [Console]::IsInputRedirected + ',' + `+
+			`[Console]::IsOutputRedirected | Set-Content -LiteralPath '%s'"`,
+		resultFile)
+	code, err := RunWithConsole(own, commandLine, t.TempDir(), hpc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 {
+		t.Fatalf("the probe ended with exit code %d, want 0", code)
+	}
+
+	raw, err := os.ReadFile(resultFile)
+	if err != nil {
+		t.Fatalf("the probe wrote no result (exit code %d): %v", code, err)
+	}
+	report := strings.TrimSpace(string(raw))
+	if report != "redirected=False,False" {
+		t.Errorf("PowerShell reported %q, want \"redirected=False,False\"", report)
 	}
 }

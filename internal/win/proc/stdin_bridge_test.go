@@ -170,26 +170,19 @@ func TestDuplicateInputLeavesARedirectedStdinAlone(t *testing.T) {
 	}
 }
 
-// fixupStdinFromConin compensates for a gap in this test's own plumbing, not
-// in production: a process attached to a Windows pseudo console
-// (CreatePseudoConsole + PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE) gets a real,
-// working console -- CONIN$ opens and answers GetConsoleMode correctly,
-// measured while building this test -- but GetStdHandle(STD_INPUT_HANDLE)
-// keeps whatever raw, unusable value CreateProcessW happened to copy in and
-// is never repointed at that console.
-//
-// C-runtime-linked console apps (cmd.exe, powershell.exe) never notice,
-// because their own CRT startup validates GetStdHandle's answer and opens
-// CONIN$/CONOUT$/CONERR$ itself when it looks unusable -- a decades-old
-// piece of console bootstrapping this repository's own e2e tests never
-// needed, because wuserbox is always started by an ordinary shell through
-// ordinary console inheritance, which populates GetStdHandle correctly
-// without any pseudo console involved. ConPTY is only this test's surrogate
-// for "stdin is a console", and this particular gap belongs to that
-// surrogate, not to the thing being tested. Go's runtime skips CRT startup
-// entirely, so nothing does the CRT's fixup for a Go binary; this function
-// is that fixup, done once, only inside the pseudo-console child this test
-// starts.
+// fixupStdinFromConin compensates for this file's probe launch shape, not
+// production's any more: the re-exec here goes through plain CreateProcessW
+// with no standard-handle treatment, so the child's os.Stdin -- captured
+// from GetStdHandle at runtime init -- holds values that name nothing, even
+// though the process is genuinely attached to its pseudo console. The
+// production launch no longer has this gap: RunWithConsole starts its
+// children with NULL standard handles and the console attachment hands them
+// the console's own, which is
+// TestRunWithConsoleGivesTheChildAWorkingGetStdHandle in relay_test.go's
+// measurement. This fallback stays because the probe still needs it, and
+// because the CONIN$-by-name path it takes is what a program left with
+// unusable standard handles falls back to -- the same shape the C runtime's
+// own startup and exec's openConsoleStreams follow.
 func fixupStdinFromConin() {
 	if console(os.Stdin) {
 		return
@@ -212,16 +205,13 @@ func fixupStdinFromConin() {
 }
 
 // fixupStdoutFromConout is fixupStdinFromConin's counterpart for the output
-// side, and compensates for the same gap in this test's own plumbing, not
-// in production: a process attached to a Windows pseudo console gets a real,
-// working console -- CONOUT$ opens and answers GetConsoleMode correctly --
-// but GetStdHandle(STD_OUTPUT_HANDLE) can keep whatever raw value
-// CreateProcessW happened to copy in instead of that console. Rather than
-// repoint os.Stdout, this returns the console file itself for the one caller
-// that wants to measure a viewport: production measures os.Stdout, which a
-// real operator console populates, and the GetStdHandle gap belongs to this
-// surrogate, not to the thing being tested. nil when even CONOUT$ will not
-// answer, which means there is no console to measure and the caller says so.
+// side, and compensates for the same gap fixupStdinFromConin does -- see its
+// own comment for where that gap actually comes from.
+// Rather than repoint
+// os.Stdout, this returns the console file itself for the one caller that
+// wants to measure a viewport: production measures os.Stdout, which a real
+// operator console populates. nil when even CONOUT$ will not answer, which
+// means there is no console to measure and the caller says so.
 func fixupStdoutFromConout() *os.File {
 	name, err := syscall.UTF16PtrFromString("CONOUT$")
 	if err != nil {

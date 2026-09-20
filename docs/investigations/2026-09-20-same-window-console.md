@@ -403,3 +403,47 @@ end of the pipe is rendered VT ready for the operator's window. What remains
 for same-window rendering is implementation work — the relay, raw mode on the
 operator's side, resize, interrupt forwarding — and no longer a boundary
 question.
+
+## 5 — The child's standard handles: the question CI asked first (measured)
+
+The relay shipped and CI came back red on exactly one question the local
+work had never asked: `GetStdHandle` *inside* the relayed program.
+PowerShell's `[Console]::IsInputRedirected` reported True through a console
+it was genuinely attached to — `CONIN$`/`CONOUT$` by name answered, and the
+first half of the same e2e test, whose probe opens the devices by name,
+passed — and its `Read-Host` read nothing of the line the run fed.
+
+The mechanism, measured same-account with a scratch probe (re-exec of a
+test binary through the same launch call `RunWithConsole` makes, five
+launch shapes, the report written to a file the parent reads): a child
+launched without `STARTF_USESTDHANDLES` inherits its parent's standard
+handle *values*, and values are all that cross — with `bInheritHandles`
+false the handles behind them stay in the parent's table. The child is
+left holding numbers that name nothing (`GetConsoleMode`: "The handle is
+invalid."), and nothing in the console attach overwrites std handle
+values that are already set, so it never recovers. Every measurement this
+document had made until now either opened `CONIN$`/`CONOUT$` by hand or
+fed a program whose C runtime does that fallback automatically;
+PowerShell does neither.
+
+| launch shape | child's `GetStdHandle` | PowerShell `IsInputRedirected` | pty carries the child's echo* |
+| --- | --- | --- | --- |
+| as the code shipped | unusable, "The handle is invalid." | True,True | yes |
+| parent's std handles zeroed around the launch | the pty's own (FILE_TYPE_CHAR, mode 0x1f7/0x7) | False,False | yes |
+| `STARTF_USESTDHANDLES` with three zero handles | the pty's own, same modes | False,False | yes |
+| third shape + `CREATE_NO_WINDOW` | a hidden console of its own | False,False | **no** — detached |
+| third shape + `DETACHED_PROCESS` | none at all | — | **no** — detached |
+
+\* the echo leg ran as a `cmd /c echo …> CON` child, whose output does not
+depend on std handles; the PowerShell column is the one that does.
+
+A child attached to a console and started with NULL standard handles is
+handed the attachment's own handles — the gap between the first and third
+rows is the whole fix, and the last two rows are why the flag-shaped
+shortcuts fail: both give the child *a* console, never the relayed one.
+`RunWithConsole` now starts every child with `STARTF_USESTDHANDLES` and
+three zero handles; the regression test holding it in place is
+`TestRunWithConsoleGivesTheChildAWorkingGetStdHandle`
+(internal/win/proc/relay_test.go), same-account, no elevation, PowerShell
+included. The account crossing itself is unchanged and awaits CI the way
+every admin-gated e2e test in this repository does.

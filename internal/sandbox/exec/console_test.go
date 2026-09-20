@@ -320,6 +320,11 @@ func TestTheRelayPumpCarriesRenderedBytesOutAndKeystrokesIn(t *testing.T) {
 	// what the CRT refuses, so the CRT's own CONIN$ fallback is what reads
 	// the relayed keystrokes; clearing this process's standard handles for
 	// the length of the start is what puts the child in that same shape.
+	// RunWithConsole now shapes the child at the launch itself -- every child
+	// starts with NULL standard handles -- so this clearing is belt and braces
+	// rather than load-bearing; it stays because explicit is cheaper than
+	// subtle. The launch-side fix is
+	// TestRunWithConsoleGivesTheChildAWorkingGetStdHandle's measurement.
 	const stdInputHandle, stdOutputHandle, stdErrorHandle = ^uintptr(9), ^uintptr(10), ^uintptr(11)
 	savedIn, _, _ := procGetStdHandle.Call(stdInputHandle)
 	savedOut, _, _ := procGetStdHandle.Call(stdOutputHandle)
@@ -454,7 +459,12 @@ func TestAResizeMessageReshapesTheRelayedConsole(t *testing.T) {
 	// handles for the length of the start puts the child in the shape the
 	// real stub's child sits in: GetStdHandle invalid at startup, the
 	// console devices opened by name, and [Console] reading the
-	// pseudoconsole it was born attached to.
+	// pseudoconsole it was born attached to. RunWithConsole now shapes the
+	// child at the launch itself -- every child starts with NULL standard
+	// handles -- so this clearing is belt and braces rather than
+	// load-bearing; it stays because explicit is cheaper than subtle. The
+	// launch-side fix is
+	// TestRunWithConsoleGivesTheChildAWorkingGetStdHandle's measurement.
 	const stdInputHandle, stdOutputHandle, stdErrorHandle = ^uintptr(9), ^uintptr(10), ^uintptr(11)
 	savedIn, _, _ := procGetStdHandle.Call(stdInputHandle)
 	savedOut, _, _ := procGetStdHandle.Call(stdOutputHandle)
