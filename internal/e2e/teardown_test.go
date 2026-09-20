@@ -26,6 +26,7 @@
 package e2e
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	goexec "os/exec"
@@ -33,6 +34,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -126,18 +128,19 @@ func TestARunComesBackWhenItsProgramLeavesAChildHoldingTheOutput(t *testing.T) {
 		syscall.EscapeArg(box.password) + " " + syscall.EscapeArg(stub) + " " +
 		syscall.EscapeArg(root) + " " + syscall.EscapeArg(pidFile)
 
-	code, cameBack := insideAPseudoConsole(t, runnerLine, 120*time.Second)
+	code, cameBack, console := insideAPseudoConsole(t, runnerLine, 120*time.Second)
 	if !cameBack {
-		t.Fatal("the run never came back: the program left a child holding the output " +
-			"bridge's write end and the teardown waited on the child it should have killed")
+		t.Fatalf("the run never came back: the program left a child holding the output "+
+			"bridge's write end and the teardown waited on the child it should have killed.\n"+
+			"what the pseudo console printed:\n%s", console)
 	}
 	raw, err := os.ReadFile(resultFile)
 	if err != nil {
-		t.Fatalf("the runner wrote no result (exit code %d): %v", code, err)
+		t.Fatalf("the runner wrote no result (exit code %d): %v\nwhat the pseudo console printed:\n%s", code, err, console)
 	}
 	report := string(raw)
 	if !strings.HasPrefix(report, "ok: ") {
-		t.Fatalf("the runner did not come back clean: %s", report)
+		t.Fatalf("the runner did not come back clean: %s\nwhat the pseudo console printed:\n%s", report, console)
 	}
 	if !strings.Contains(report, "code=7") {
 		t.Errorf("the run ended %s, want the program's own exit code 7", report)
@@ -160,17 +163,18 @@ func TestARunComesBackWhenItsProgramLeavesAChildHoldingTheOutput(t *testing.T) {
 
 // insideAPseudoConsole runs commandLine in a fresh child of this test
 // binary attached to a Windows pseudo console, waits up to wait for it to
-// end, and returns its exit code and whether it came back in time. A child
-// that overstays is killed and reported as not having come back: that is
-// the shape of the deadlock this test exists to catch, and the timeout is
-// what turns it from a hung suite into a failure with a name.
+// end, and returns its exit code, whether it came back in time, and
+// everything the child printed to that console. A child that overstays is
+// killed and reported as not having come back: that is the shape of the
+// deadlock this test exists to catch, and the timeout is what turns it from
+// a hung suite into a failure with a name.
 //
-// The pty's two directions exist and are kept open but unused: nothing here
-// types into the child and nothing drains what it prints to its console.
-// The console has to exist and stay attached all the same -- it is what
-// makes the child's stdout a console and so what makes the run below build
-// the output bridge at all.
-func insideAPseudoConsole(t *testing.T, commandLine string, wait time.Duration) (uint32, bool) {
+// The captured text is what makes a failure here readable rather than a
+// bare exit code: the runner's own stderr crosses the account boundary
+// through the very output bridge this test is about, and lands on this
+// console like any interactive run's would, so a stub or a run that failed
+// before writing its own result file still says why, here, in words.
+func insideAPseudoConsole(t *testing.T, commandLine string, wait time.Duration) (code uint32, cameBack bool, captured string) {
 	t.Helper()
 	if err := procTeardownCreatePseudoConsole.Find(); err != nil {
 		t.Skip("CreatePseudoConsole is not available on this Windows build (ConPTY needs Windows 10 1809+)")
@@ -186,7 +190,30 @@ func insideAPseudoConsole(t *testing.T, commandLine string, wait time.Duration) 
 		ptyInRead.Close()
 		t.Fatal(err)
 	}
-	defer ptyOutRead.Close()
+
+	// Drained continuously from the moment the console exists, into a
+	// buffer this function's own return captures: reading only after the
+	// child ends would deadlock against a child whose own console output
+	// fills the pipe before it exits, and reading nothing at all is the gap
+	// that once turned a real stub failure into a bare, unexplained "90".
+	var out bytes.Buffer
+	var outMu sync.Mutex
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := ptyOutRead.Read(buf)
+			if n > 0 {
+				outMu.Lock()
+				out.Write(buf[:n])
+				outMu.Unlock()
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}()
 
 	var hpc syscall.Handle
 	const width, height = 80, 25
@@ -200,9 +227,26 @@ func insideAPseudoConsole(t *testing.T, commandLine string, wait time.Duration) 
 	ptyInRead.Close()
 	ptyOutWrite.Close()
 	if r != 0 {
+		ptyOutRead.Close()
 		t.Fatalf("CreatePseudoConsole: hresult 0x%x (%v)", r, callErr)
 	}
-	defer procTeardownClosePseudoConsole.Call(uintptr(hpc))
+	// Closing the console is what lets the drain goroutine's Read see EOF:
+	// ptyOutWrite's own copy is long gone, and the console's internal write
+	// end is the last one standing. This has to run, and the capture has to
+	// be read, before this function returns -- a plain defer would still be
+	// queued behind the named return already being set, so both are done by
+	// hand at every return point below instead of trusted to unwind order.
+	finish := func() string {
+		procTeardownClosePseudoConsole.Call(uintptr(hpc))
+		select {
+		case <-drained:
+		case <-time.After(5 * time.Second):
+		}
+		_ = ptyOutRead.Close()
+		outMu.Lock()
+		defer outMu.Unlock()
+		return out.String()
+	}
 
 	var attrSize uintptr
 	procTeardownInitAttrList.Call(0, 1, 0, uintptr(unsafe.Pointer(&attrSize)))
@@ -256,12 +300,11 @@ func insideAPseudoConsole(t *testing.T, commandLine string, wait time.Duration) 
 		}
 	case <-time.After(wait):
 		procTeardownTerminate.Call(uintptr(created.Process), 1)
-		return 0, false
+		return 0, false, finish()
 	}
 
-	var code uint32
 	procTeardownGetExitCode.Call(uintptr(created.Process), uintptr(unsafe.Pointer(&code)))
-	return code, true
+	return code, true, finish()
 }
 
 // childIsGone answers whether the process pid is dead, waiting up to wait
