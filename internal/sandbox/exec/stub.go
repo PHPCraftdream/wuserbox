@@ -21,6 +21,7 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
@@ -38,6 +39,11 @@ import (
 // help, and this is neither of those things. Nobody types it, and nothing
 // that does carry two dashes can ever collide with it.
 const StubFlag = "-sandbox-stub"
+
+// relayFlushGrace is the bounded window the relay's output pump gets
+// after the program has ended, before this process exits and closes
+// everything it names.
+const relayFlushGrace = 250 * time.Millisecond
 
 // Stub restricts this process's own token to the sandbox's identities and
 // starts the program under it. It is what runs as the sandbox's account.
@@ -67,7 +73,10 @@ const StubFlag = "-sandbox-stub"
 // with no window at all, taken in the same pre-Shield window for the same
 // measured reason, and the program started attached to it through
 // proc.RunWithConsole. The two are refused together: they are two different
-// consoles for one program, not two halves of one.
+// consoles for one program, not two halves of one. In relay mode the stub
+// also pumps: rendered bytes out of the relay's output onto its own standard
+// streams, forwarded keystrokes from its stdin into the relay's input, the
+// two bridges the run built across the account line doing the carrying.
 func Stub(args []string) error {
 	if len(args) != 2 && len(args) != 3 {
 		return exit.Errorf(exit.Usage,
@@ -177,12 +186,36 @@ func Stub(args []string) error {
 	// the program the way they always were.
 	var code int
 	if relay != nil {
+		// The relay crosses the account line on this process's own
+		// standard streams: rendered bytes out through the stdout the
+		// caller's output bridge is already draining, keystrokes in from
+		// the stdin its input bridge already fills. RunWithConsole passes
+		// the program no standard handles and starts it with
+		// bInheritHandles false, so nothing under the program -- a
+		// backgrounded child included -- ever holds a copy of either pipe:
+		// the leftover-holder shape P1-2 was about cannot form here, and
+		// the pipes' last holders are this process and the console's own
+		// conhost, both of which go away below.
+		pumpRelay(relay, os.Stdout, os.Stdin)
 		code, err = proc.RunWithConsole(restricted, args[2], here, relay.hpc)
 	} else {
 		code, err = proc.Run(restricted, args[2], here)
 	}
 	if err != nil {
 		return err
+	}
+	if relay != nil {
+		// conhost renders on a timer of its own and holds the last write
+		// end of the relay's output pipe: ending the console the instant
+		// the program exits can drop the last rendered bytes on the floor
+		// -- the shape TestTheConsoleRelayCarriesTheChildsRenderedOutput
+		// measured. The pump gets this long to carry the tail across.
+		// Then the console is closed here, explicitly, because os.Exit
+		// skips the deferred close and a conhost outliving this process
+		// is exactly the kind of handle holder the run's caller is
+		// draining against; close is safe to call twice.
+		time.Sleep(relayFlushGrace)
+		relay.close()
 	}
 	// The program's own exit code, carried out of this process as its own, the
 	// same way a run carries it out of wuserbox. Nothing after this line runs,

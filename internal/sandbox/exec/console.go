@@ -23,6 +23,7 @@ package exec
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"syscall"
 	"unsafe"
@@ -238,4 +239,23 @@ func (r *consoleRelay) close() {
 	}
 	_ = r.input.Close()
 	_ = r.output.Close()
+}
+
+// pumpRelay starts the two copy loops that carry the relayed console
+// across this process's own standard streams -- the bridge pipes the
+// run's caller duplicated its console into at this stub's birth. Rendered
+// VT read from the relay's output goes out as this process writes it, and
+// whatever the caller forwarded in is written to the relay's input as it
+// arrives; neither loop translates, because both ends already hold the
+// bytes a terminal would have sent or drawn. Nothing here waits for them:
+// they run until this process ends, which is the same moment the
+// program's exit makes the run move on, and the streams they name close
+// with it.
+func pumpRelay(relay *consoleRelay, stdout io.Writer, stdin io.Reader) {
+	go func() {
+		_, _ = io.Copy(stdout, relay.output)
+	}()
+	go func() {
+		_, _ = io.Copy(relay.input, stdin)
+	}()
 }

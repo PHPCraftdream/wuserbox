@@ -232,6 +232,8 @@ func stdinBridgeProbe(resultFile string, mode ...string) int {
 		mode = os.Args[3:4]
 	}
 	standDown := len(mode) > 0 && mode[0] == "stand-down"
+	relayStandDown := len(mode) > 0 && mode[0] == "relay-stand-down"
+	relayInputMode := len(mode) > 0 && mode[0] == "relay-input"
 	report := func(ok bool, msg string) int {
 		prefix := "error: "
 		if ok {
@@ -275,6 +277,91 @@ func stdinBridgeProbe(resultFile string, mode ...string) int {
 		}
 		handles.close()
 		return report(true, "duplicateInput stood down for the stub's own console")
+	}
+
+	if relayStandDown {
+		if os.Getenv(EnvConsoleRelay) == "" {
+			return report(false, EnvConsoleRelay+" is not set inside the pseudo-console child, so duplicateInput had nothing to stand down for and the check would prove nothing")
+		}
+		handles, err := duplicateStandardHandles()
+		if err != nil {
+			return report(false, "duplicateStandardHandles: "+err.Error())
+		}
+		before := handles.input
+		bridge, err := duplicateInput(&handles)
+		if err != nil {
+			handles.close()
+			return report(false, "duplicateInput: "+err.Error())
+		}
+		if bridge != nil {
+			bridge.close()
+			handles.close()
+			return report(false, "duplicateInput built a bridge although "+EnvConsoleRelay+" is set and the relay owns the input side")
+		}
+		if handles.input != before {
+			handles.close()
+			return report(false, "duplicateInput replaced handles.input although it stood down")
+		}
+		handles.close()
+		return report(true, "duplicateInput stood down for the console relay")
+	}
+
+	if relayInputMode {
+		if os.Getenv(EnvConsoleRelay) == "" {
+			return report(false, EnvConsoleRelay+" is not set inside the pseudo-console child, so the relay's own input pipe had nothing to carry and the check would prove nothing")
+		}
+		handles, err := duplicateStandardHandles()
+		if err != nil {
+			return report(false, "duplicateStandardHandles: "+err.Error())
+		}
+		bridge, err := duplicateInput(&handles)
+		if err != nil {
+			handles.close()
+			return report(false, "duplicateInput: "+err.Error())
+		}
+		if bridge != nil {
+			bridge.close()
+			handles.close()
+			return report(false, "duplicateInput built the ordinary bridge although "+EnvConsoleRelay+" is set and the relay owns the input side")
+		}
+		relay, err := relayInput(&handles)
+		if err != nil {
+			handles.close()
+			return report(false, "relayInput: "+err.Error())
+		}
+		if relay == nil {
+			syscall.CloseHandle(handles.input)
+			syscall.CloseHandle(handles.output)
+			syscall.CloseHandle(handles.errout)
+			return report(false, "relayInput built no pipe for a real console stdin")
+		}
+		relay.start()
+		// handles.input is now the pipe relayInput built, the exact value
+		// runAsAccount would place in STARTUPINFO.StdInput for the account
+		// process; reading it here stands in for the stub reading its
+		// inherited stdin, the pump on the far side carrying it the last
+		// hop into the pseudo console's own input.
+		reader := os.NewFile(uintptr(handles.input), "relay-input-child")
+		var line []byte
+		buf := make([]byte, 64)
+		deadline := time.Now().Add(20 * time.Second)
+		for !strings.Contains(string(line), "\n") {
+			if time.Now().After(deadline) {
+				reader.Close()
+				syscall.CloseHandle(handles.output)
+				syscall.CloseHandle(handles.errout)
+				return report(false, "timed out reading the relay's input pipe, got so far: "+string(line))
+			}
+			n, readErr := reader.Read(buf)
+			line = append(line, buf[:n]...)
+			if readErr != nil {
+				break
+			}
+		}
+		reader.Close()
+		syscall.CloseHandle(handles.output)
+		syscall.CloseHandle(handles.errout)
+		return report(true, strings.TrimSpace(string(line)))
 	}
 
 	handles, err := duplicateStandardHandles()
@@ -508,5 +595,47 @@ func TestDuplicateInputStandsDownForTheStubsOwnConsole(t *testing.T) {
 	// typed line back instead of the stand-down answer.
 	if report != "ok: duplicateInput stood down for the stub's own console" {
 		t.Fatalf("probe reported %q (exit code %d), want the stand-down answer", report, code)
+	}
+}
+
+// TestDuplicateInputStandsDownForTheConsoleRelay is
+// TestDuplicateInputStandsDownForTheStubsOwnConsole's counterpart for the
+// relay: with EnvConsoleRelay set, the input side of the crossing belongs
+// to relayInput, and the ordinary bridge standing down is what keeps one
+// console from ever being read by two bridges. The same pseudo-console
+// surrogate supplies the console, and the child inherits the variable, the
+// way a run sets it.
+//
+// What this does not measure: the account crossing, exactly as in
+// TestStdinBridgeCarriesRealConsoleInput above.
+func TestDuplicateInputStandsDownForTheConsoleRelay(t *testing.T) {
+	t.Setenv(EnvConsoleRelay, "1")
+	report, code := probeInsideAPseudoConsole(t, "relay-stand-down")
+	// The exact message, not just an ok prefix: a child that ignored its
+	// mode and ran the bridge probe would also report ok, carrying the
+	// typed line back instead of the stand-down answer.
+	if report != "ok: duplicateInput stood down for the console relay" {
+		t.Fatalf("probe reported %q (exit code %d), want the stand-down answer", report, code)
+	}
+}
+
+// TestTheRelayInputBridgeCarriesRealConsoleInput measures the input side
+// of the console relay against a real console: duplicateInput stands down,
+// relayInput builds the relay's own pipe for that same console, and a line
+// typed into the console arrives at the handle value runAsAccount would
+// hand the stub as its stdin.
+//
+// What this does not measure: the stub-side pump, which is
+// internal/sandbox/exec's and is covered there, and the account crossing,
+// which needs a real second account and a typed console on the far side at
+// once -- the same gap every test in this file records.
+func TestTheRelayInputBridgeCarriesRealConsoleInput(t *testing.T) {
+	t.Setenv(EnvConsoleRelay, "1")
+	report, code := probeInsideAPseudoConsole(t, "relay-input")
+	if !strings.HasPrefix(report, "ok:") {
+		t.Fatalf("probe reported %q (exit code %d)", report, code)
+	}
+	if !strings.Contains(report, "from-a-real-console") {
+		t.Errorf("probe read %q, want it to contain what was typed into the pseudo console", report)
 	}
 }

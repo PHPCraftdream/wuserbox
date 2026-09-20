@@ -7,6 +7,7 @@ package e2e
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,4 +146,131 @@ func TestAProgramThatNeedsARealTerminalFindsOneUnderOwnConsole(t *testing.T) {
 
 	run(filepath.Join(root, "tty-bridged.txt"), "True", os.Environ())
 	run(filepath.Join(root, "tty-own-console.txt"), "False", append(os.Environ(), proc.EnvOwnConsole+"=1"))
+}
+
+// TestAProgramThroughTheConsoleRelaySeesARealTerminalAndRelaysItsBytes
+// measures the relay end to end on the real account -> stub -> restricted
+// program chain: the program's terminal is a pseudo console inside the
+// sandbox, so the console check that answers True against the ordinary
+// bridged pipes answers False here; its rendered output crosses the
+// stub's stdout and lands on the run's own captured stdout; and a line
+// fed to the run's stdin crosses the stub's pump into the console the
+// program reads. Unlike --own-console there is no window: the console has
+// none, which is also why this test costs the desktop nothing.
+//
+// The legs read answers the programs wrote to files wherever one exists,
+// so no assertion depends on relay timing except the two that read the
+// captured stream itself.
+func TestAProgramThroughTheConsoleRelaySeesARealTerminalAndRelaysItsBytes(t *testing.T) {
+	requireAdministrator(t)
+	root, err := paths.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	openToEveryone(t, root)
+	stub := stubBinary(t, root)
+	box := newRealBox(t, firstSandbox, root)
+	box.hand(t, root, grant.RW)
+
+	// terminal runs the IsInputRedirected probe once per env and holds
+	// the answer against want: through the ordinary bridge the program's
+	// stdin is a redirected pipe; through the relay it is a real console,
+	// which is the whole reason the relay exists.
+	terminal := func(resultFile, want string, env []string) {
+		t.Helper()
+		if err := os.Remove(resultFile); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		commandLine := fmt.Sprintf(`powershell.exe -NoProfile -Command "Set-Content -LiteralPath '%s' -Value ([Console]::IsInputRedirected)"`, resultFile)
+		line := box.throughTheStub(t, stub, commandLine)
+		code, err := proc.RunAsAccount(box.account, box.password, line, root, env)
+		if err != nil {
+			t.Fatalf("starting %q as %s: %v", line, box.account, err)
+		}
+		if code != 0 {
+			t.Fatalf("the terminal probe ended with exit code %d", code)
+		}
+		raw, err := os.ReadFile(resultFile)
+		if err != nil {
+			t.Fatalf("the terminal probe wrote no result (exit code %d): %v", code, err)
+		}
+		if got := strings.TrimSpace(string(raw)); got != want {
+			t.Errorf("[Console]::IsInputRedirected was reported %q, want %q", got, want)
+		}
+	}
+	terminal(filepath.Join(root, "tty-bridged.txt"), "True", os.Environ())
+	terminal(filepath.Join(root, "tty-relay.txt"), "False", append(os.Environ(), proc.EnvConsoleRelay+"=1"))
+
+	// relayed runs one command with the run's own stdin and stdout
+	// standing in for the operator's console -- redirected pipes, the
+	// shape every harness has -- and answers with what the captured
+	// stdout received. The parent's bridge machinery works unchanged
+	// here: stdout is not a console, so the run hands the stub a plain
+	// duplicate of the pipe, and the stub's pump writes the relay's
+	// rendered bytes into it.
+	relayed := func(commandLine, stdinText string) string {
+		t.Helper()
+		inRead, inWrite, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		outRead, outWrite, err := os.Pipe()
+		if err != nil {
+			inRead.Close()
+			inWrite.Close()
+			t.Fatal(err)
+		}
+		if stdinText != "" {
+			if _, err := inWrite.WriteString(stdinText); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := inWrite.Close(); err != nil {
+			t.Fatal(err)
+		}
+		oldIn, oldOut := os.Stdin, os.Stdout
+		os.Stdin, os.Stdout = inRead, outWrite
+		line := box.throughTheStub(t, stub, commandLine)
+		code, runErr := proc.RunAsAccount(box.account, box.password, line, root,
+			append(os.Environ(), proc.EnvConsoleRelay+"=1"))
+		if err := outWrite.Close(); err != nil {
+			t.Fatal(err)
+		}
+		stdout, readErr := io.ReadAll(outRead)
+		os.Stdin, os.Stdout = oldIn, oldOut
+		_ = inRead.Close()
+		_ = outRead.Close()
+		if runErr != nil {
+			t.Fatalf("running through the account and stub: %v", runErr)
+		}
+		if code != 0 {
+			t.Fatalf("the relayed run ended with exit code %d", code)
+		}
+		if readErr != nil {
+			t.Fatalf("reading the captured stdout pipe: %v", readErr)
+		}
+		return string(stdout)
+	}
+
+	// The output leg: what the child writes to its own console comes back
+	// as rendered VT on the run's stdout.
+	const marker = "WUSERBOX-RELAY-E2E"
+	stdout := relayed(`cmd.exe /c echo `+marker+`> CON`, "")
+	if !strings.Contains(stdout, marker) {
+		t.Errorf("the relayed console's output never named the marker; captured:\n%s", stdout)
+	}
+
+	// The input leg: a line fed to the run's stdin crosses the stub's
+	// pump into the console's input, and the program reads it there. The
+	// answer lands in a file, so the assertion does not depend on how the
+	// console echoed the line back.
+	answerFile := filepath.Join(root, "relay-stdin-answer.txt")
+	stdout = relayed(fmt.Sprintf(`powershell.exe -NoProfile -Command "$v = Read-Host; Set-Content -LiteralPath '%s' -Value $v"`, answerFile), "from-relay-stdin\r\n")
+	raw, err := os.ReadFile(answerFile)
+	if err != nil {
+		t.Fatalf("the relayed program wrote no answer (captured stdout:\n%s): %v", stdout, err)
+	}
+	if got := strings.TrimSpace(string(raw)); got != "from-relay-stdin" {
+		t.Errorf("the program read %q from the relayed console, want the line the run fed its stdin", got)
+	}
 }

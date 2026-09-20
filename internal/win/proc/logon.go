@@ -18,6 +18,7 @@ import (
 var (
 	procCreateProcessWithLogon = w32.Advapi32.NewProc("CreateProcessWithLogonW")
 	procSetHandleInformation   = w32.Kernel32.NewProc("SetHandleInformation")
+	procSetConsoleMode         = w32.Kernel32.NewProc("SetConsoleMode")
 )
 
 const (
@@ -294,8 +295,35 @@ func (b *inputBridge) close() {
 // console of its own, and the bridge stands down even where stdin is a
 // console: the program will not be reading this pipe, and a bridge left
 // running would carry the caller's keystrokes nowhere.
+//
+// When EnvConsoleRelay is set the stub relays a pseudo console's bytes
+// instead, and the input side of that crossing belongs to relayInput
+// below: this stands down so the two can never both run, because one
+// console read by two bridges would deal the caller's keystrokes out
+// between them rather than deliver them.
 func duplicateInput(handles *inheritedStandardHandles) (*inputBridge, error) {
-	if !console(os.Stdin) || os.Getenv(EnvOwnConsole) != "" {
+	if !console(os.Stdin) || os.Getenv(EnvOwnConsole) != "" || os.Getenv(EnvConsoleRelay) != "" {
+		return nil, nil
+	}
+	write, handle, err := inputBridgePipe()
+	if err != nil {
+		return nil, err
+	}
+	syscall.CloseHandle(handles.input)
+	handles.input = handle
+	return &inputBridge{write: write, stdin: os.Stdin}, nil
+}
+
+// relayInput is the input side of the console relay: when duplicateInput
+// has stood down for EnvConsoleRelay, this builds the pipe the caller's
+// keystrokes cross the account line on -- the same inputBridgePipe, and
+// the same copy loop once the run starts it -- and the stub's pump hands
+// what arrives to the pseudo console's own input pipe, the last hop
+// before the program's console. Redirected standard input needs none of
+// this: the stub inherits the source itself and its pump forwards it
+// unchanged.
+func relayInput(handles *inheritedStandardHandles) (*inputBridge, error) {
+	if !console(os.Stdin) {
 		return nil, nil
 	}
 	write, handle, err := inputBridgePipe()
@@ -329,6 +357,79 @@ func inputBridgePipe() (*os.File, syscall.Handle, error) {
 		return nil, 0, fmt.Errorf("duplicating stdin bridge: %w", err)
 	}
 	return write, handle, nil
+}
+
+// Console mode bits. ENABLE_LINE_INPUT and ENABLE_ECHO_INPUT are the
+// console's own line editor, which collects a line, echoes it and hands it
+// over only on Enter -- the opposite of what a relayed terminal wants,
+// where each keystroke leaves for the bridge as it is typed.
+// ENABLE_VIRTUAL_TERMINAL_INPUT reports the special keys as the VT
+// sequences a terminal would have sent. ENABLE_VIRTUAL_TERMINAL_PROCESSING
+// makes the console act on the VT it is given rather than print it raw; it
+// wears the same number as ENABLE_ECHO_INPUT because the two name bits of
+// different mode words.
+const (
+	enableLineInput                 = 0x00000002
+	enableEchoInput                 = 0x00000004
+	enableVirtualTerminalInput      = 0x00000200
+	enableVirtualTerminalProcessing = 0x00000004
+)
+
+// relayConsoleModes puts the operator's own console into the shape a
+// relayed terminal needs and returns the call that puts it back. Input
+// loses its line editor -- line input and echo off, so a keystroke
+// reaches the bridge as it is typed, unbuffered and unechoed -- and gains
+// VT input, so the special keys arrive as sequences rather than scan
+// codes. Output gains VT processing, because what the relay delivers is
+// already rendered VT and the console is the thing that has to act on it.
+// ENABLE_PROCESSED_INPUT is deliberately left as it was: Ctrl-C stays the
+// run's own interrupt in this mode too, raised on this process and
+// answered by waitOrStop exactly as ever, and whether the keystroke should
+// also travel into the relay as a byte is the next task's question, not
+// this one's.
+//
+// The restore runs on every ordinary return, success and error both; a
+// panic or a kill skips it, and making the mode survive those is later
+// work, not an oversight here.
+func relayConsoleModes() (func(), error) {
+	type savedMode struct {
+		handle syscall.Handle
+		mode   uint32
+	}
+	var saved []savedMode
+	restore := func() {
+		for _, m := range saved {
+			procSetConsoleMode.Call(uintptr(m.handle), uintptr(m.mode))
+		}
+	}
+	if console(os.Stdin) {
+		handle := syscall.Handle(os.Stdin.Fd())
+		var mode uint32
+		if err := syscall.GetConsoleMode(handle, &mode); err != nil {
+			restore()
+			return nil, fmt.Errorf("reading standard input's console mode: %w", err)
+		}
+		relay := mode&^(enableLineInput|enableEchoInput) | enableVirtualTerminalInput
+		if r, _, callErr := procSetConsoleMode.Call(uintptr(handle), uintptr(relay)); r == 0 {
+			restore()
+			return nil, fmt.Errorf("setting standard input's console mode for the relay: %w", callErr)
+		}
+		saved = append(saved, savedMode{handle: handle, mode: mode})
+	}
+	if console(os.Stdout) {
+		handle := syscall.Handle(os.Stdout.Fd())
+		var mode uint32
+		if err := syscall.GetConsoleMode(handle, &mode); err != nil {
+			restore()
+			return nil, fmt.Errorf("reading standard output's console mode: %w", err)
+		}
+		if r, _, callErr := procSetConsoleMode.Call(uintptr(handle), uintptr(mode|enableVirtualTerminalProcessing)); r == 0 {
+			restore()
+			return nil, fmt.Errorf("setting standard output's console mode for the relay: %w", callErr)
+		}
+		saved = append(saved, savedMode{handle: handle, mode: mode})
+	}
+	return restore, nil
 }
 
 // EnvOwnConsole is how a run tells the stub that the program should get a
@@ -431,6 +532,12 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 	if err != nil {
 		return -1, fmt.Errorf("looking up %s to narrow its own stub before it runs: %w", username, err)
 	}
+	// Read once, here, where every relay-mode decision below reads it: the
+	// stub reads the same variable in its own birth window, and the two
+	// halves of the relay -- its console inside the account, this side's
+	// modes and pipes out here -- agree because both were set by the same
+	// run.
+	relayMode := os.Getenv(EnvConsoleRelay) != ""
 	j, err := newJob()
 	if err != nil {
 		return -1, err
@@ -479,6 +586,19 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 			bridge.close()
 		}
 		return -1, err
+	}
+	if relayMode {
+		// duplicateInput stood down for the relay; the relay's own input
+		// pipe is what the caller's keystrokes cross on instead. See
+		// relayInput.
+		input, err = relayInput(&streams)
+		if err != nil {
+			streams.close()
+			if bridge != nil {
+				bridge.close()
+			}
+			return -1, err
+		}
 	}
 	streamsClosed := false
 	closeStreams := func() {
@@ -531,6 +651,17 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 	defer clear(secret)
 
 	user, domain, cwd := w32.UTF16(username), w32.UTF16(local), w32.UTF16(directory)
+	if relayMode {
+		// The operator's own console serves the relay for the run's
+		// duration and comes back out of it on every ordinary return --
+		// success and error both, the defers being what carries the
+		// restore; a panic or a kill is the gap later work owes.
+		restoreConsole, err := relayConsoleModes()
+		if err != nil {
+			return -1, err
+		}
+		defer restoreConsole()
+	}
 	// Suspended, for the same reason Run starts its own child suspended:
 	// nothing it starts can slip out before it is assigned to the job.
 	//

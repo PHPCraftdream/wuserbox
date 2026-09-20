@@ -28,6 +28,12 @@ import (
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
+	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
+)
+
+var (
+	procGetStdHandle = w32.Kernel32.NewProc("GetStdHandle")
+	procSetStdHandle = w32.Kernel32.NewProc("SetStdHandle")
 )
 
 // TestOpenConsoleStreamsRepointsTheStandardStreamsAtARealConsole covers the
@@ -177,5 +183,139 @@ func TestAStubAskedForTwoConsolesAtOnceRefuses(t *testing.T) {
 		if !strings.Contains(err.Error(), named) {
 			t.Errorf("the refusal does not name %s: %v", named, err)
 		}
+	}
+}
+
+// TestTheRelayPumpCarriesRenderedBytesOutAndKeystrokesIn measures both
+// directions of pumpRelay against one live pseudo console: a child sits in
+// the relay's console waiting on a line, the keystrokes enter through the
+// stdin the pump reads, and what the console makes of them -- the child's
+// answer to the line -- comes back through the stdout the pump writes. It
+// is the stub's half of the relay inside one process and one account; the
+// account crossing itself is internal/e2e's business.
+func TestTheRelayPumpCarriesRenderedBytesOutAndKeystrokesIn(t *testing.T) {
+	if err := procCreatePseudoConsole.Find(); err != nil {
+		t.Skip("CreatePseudoConsole is not available on this Windows build (ConPTY needs Windows 10 1809+)")
+	}
+	relay, err := takeConsoleRelay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.close()
+	// A stand-in operator console: keystrokes arrive on keyRead, rendered
+	// bytes leave on screenWrite. pumpRelay is handed the swapped streams
+	// exactly as Stub hands it the real ones.
+	keyRead, keyWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keyWrite.Close()
+	screenRead, screenWrite, err := os.Pipe()
+	if err != nil {
+		keyRead.Close()
+		t.Fatal(err)
+	}
+	defer screenRead.Close()
+	oldIn, oldOut := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = keyRead, screenWrite
+	defer func() {
+		os.Stdin, os.Stdout = oldIn, oldOut
+		keyRead.Close()
+	}()
+	pumpRelay(relay, os.Stdout, os.Stdin)
+	// Queued before the child exists, so nothing in the test's timing
+	// decides whether the console ever sees them.
+	const keys = "WUSERBOX-KEYS"
+	if _, err := keyWrite.WriteString(keys + "\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	// Drained continuously from before the child starts: reading only
+	// after it ends would risk a full pipe blocking the very rendering
+	// this test waits for.
+	var out bytes.Buffer
+	var outMu sync.Mutex
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := screenRead.Read(buf)
+			if n > 0 {
+				outMu.Lock()
+				out.Write(buf[:n])
+				outMu.Unlock()
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}()
+	captured := func() string {
+		outMu.Lock()
+		defer outMu.Unlock()
+		return out.String()
+	}
+
+	var own syscall.Token
+	if err := syscall.OpenProcessToken(syscall.Handle(^uintptr(0)), syscall.TOKEN_ALL_ACCESS, &own); err != nil {
+		t.Fatal(err)
+	}
+	defer own.Close()
+
+	// A child that reads one line from its own console and answers on it,
+	// both through the console by name -- the shape a real terminal
+	// program's C runtime reaches under the stub, where the inherited
+	// standard handles are the documented CRT-startup gap. The answer
+	// must contain the expanded value, which proves the line traveled
+	// keystroke -> console -> child and not only child -> console.
+	//
+	// The gap has to be built here rather than inherited, because `go test`
+	// runs this process with valid, inheritable pipe handles of its own, and
+	// a child started while those stand simply inherits them -- measured:
+	// the child's echo and set /p's prompt landed on the test harness, and
+	// set /p read the harness's empty stdin, leaving its variable unset.
+	// The real stub has no console behind it and its GetStdHandle values are
+	// what the CRT refuses, so the CRT's own CONIN$ fallback is what reads
+	// the relayed keystrokes; clearing this process's standard handles for
+	// the length of the start is what puts the child in that same shape.
+	const stdInputHandle, stdOutputHandle, stdErrorHandle = ^uintptr(9), ^uintptr(10), ^uintptr(11)
+	savedIn, _, _ := procGetStdHandle.Call(stdInputHandle)
+	savedOut, _, _ := procGetStdHandle.Call(stdOutputHandle)
+	savedErr, _, _ := procGetStdHandle.Call(stdErrorHandle)
+	procSetStdHandle.Call(stdInputHandle, 0)
+	procSetStdHandle.Call(stdOutputHandle, 0)
+	procSetStdHandle.Call(stdErrorHandle, 0)
+	defer func() {
+		procSetStdHandle.Call(stdInputHandle, savedIn)
+		procSetStdHandle.Call(stdOutputHandle, savedOut)
+		procSetStdHandle.Call(stdErrorHandle, savedErr)
+	}()
+	const answer = "GOT=" + keys
+	code, err := proc.RunWithConsole(own,
+		`C:\Windows\System32\cmd.exe /v:on /c "set /p V= & echo GOT=!V!> CON"`,
+		t.TempDir(), relay.hpc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 {
+		t.Fatalf("the child ended with exit code %d, want 0", code)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(captured(), answer) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	relay.close()
+	// The pump's output side is the last writer on screenWrite, and the
+	// relay's close is what ends it: closing the write end here is what
+	// lets the drain below reach EOF at all, the same moment the stub's
+	// own exit would hand the caller's drain one.
+	screenWrite.Close()
+	select {
+	case <-drained:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the relay's output never reached EOF; captured so far:\n%s", captured())
+	}
+	if got := captured(); !strings.Contains(got, answer) {
+		t.Errorf("the relayed console never answered %q; captured:\n%s", answer, got)
 	}
 }
