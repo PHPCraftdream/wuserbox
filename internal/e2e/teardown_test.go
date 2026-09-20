@@ -104,8 +104,16 @@ type teardownStartupInfoEx struct {
 func TestARunComesBackWhenItsProgramLeavesAChildHoldingTheOutput(t *testing.T) {
 	requireAdministrator(t)
 	// The lock files land here, in this test's own state directory, the way
-	// lease_test points its commands at one.
-	t.Setenv("LOCALAPPDATA", stateDir(t))
+	// lease_test points its commands at one. Unlike lease_test's own uses,
+	// this run crosses into a real second account that has to read the slot
+	// handoff PassTo writes under this same directory -- opened to Everyone
+	// for the reason openToEveryone exists for root below: a refusal here
+	// must come from what this test arranged, not from a state directory
+	// that, unlike the real LOCALAPPDATA a run answers to, was never on the
+	// path the account's read group was ever granted.
+	state := stateDir(t)
+	t.Setenv("LOCALAPPDATA", state)
+	openToEveryone(t, state)
 	root, err := paths.Resolve(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
