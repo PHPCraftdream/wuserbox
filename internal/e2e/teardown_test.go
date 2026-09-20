@@ -40,11 +40,14 @@ import (
 	"time"
 	"unsafe"
 
+	acct "github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/exec"
+	"github.com/PHPCraftdream/wuserbox/internal/win/group"
 	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
@@ -105,12 +108,12 @@ func TestARunComesBackWhenItsProgramLeavesAChildHoldingTheOutput(t *testing.T) {
 	requireAdministrator(t)
 	// The lock files land here, in this test's own state directory, the way
 	// lease_test points its commands at one. Unlike lease_test's own uses,
-	// this run crosses into a real second account that has to read the slot
-	// handoff PassTo writes under this same directory -- opened to Everyone
-	// for the reason openToEveryone exists for root below: a refusal here
-	// must come from what this test arranged, not from a state directory
-	// that, unlike the real LOCALAPPDATA a run answers to, was never on the
-	// path the account's read group was ever granted.
+	// this run crosses into a real second account that has to open a file
+	// under this same directory -- the plain slot file itself, whose access
+	// check walks every ancestor, so it is opened to Everyone the same way
+	// root is below, and a refusal here comes from what this test arranged
+	// rather than from a state directory the real LOCALAPPDATA a run
+	// answers to would never have this problem with.
 	state := stateDir(t)
 	t.Setenv("LOCALAPPDATA", state)
 	openToEveryone(t, state)
@@ -122,6 +125,35 @@ func TestARunComesBackWhenItsProgramLeavesAChildHoldingTheOutput(t *testing.T) {
 	stub := stubBinary(t, root)
 	box := newRealBox(t, firstSandbox, root)
 	box.hand(t, root, grant.RW)
+
+	// The slot handoff PassTo writes is protected by acl.Protect, which
+	// names the account's own per-owner read group explicitly rather than
+	// inheriting anything -- the one file in this whole chain openToEveryone
+	// above cannot reach. A real sandbox is always a member of that group by
+	// the time it runs, made so by the same grants pipeline that hands it
+	// read access to the operator's home (internal/sandbox/grants/read.go's
+	// ensureReadable); newRealBox, being the fixture underneath every e2e
+	// test rather than a real --init, does not build a sandbox that way and
+	// so does not carry that membership. Every other e2e test using this
+	// fixture happens not to need it -- RunAsAccount without a lease never
+	// touches PrepareTransfer/PassTo at all -- so this is the first to ask
+	// for it. Reproduced live: without this, the stub's own read of the
+	// handoff answers "Access is denied", not because anything in the fix
+	// this test measures is wrong, but because the fixture never gave this
+	// one file's own guard the identity it checks for.
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	readGroup := group.ReadGroupFor(owner)
+	if _, err := sid.Lookup(readGroup); err != nil {
+		if err := group.Add(readGroup, "wuserbox: reads a profile from inside a sandbox"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := acct.EnsureMembership(box.account, readGroup); err != nil {
+		t.Fatal(err)
+	}
 
 	pidFile := filepath.Join(root, "leftover.pid")
 	resultFile := filepath.Join(root, "runner.txt")
