@@ -18,7 +18,9 @@
 package proc
 
 import (
+	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -38,6 +40,7 @@ var (
 	procClosePseudoConsole   = w32.Kernel32.NewProc("ClosePseudoConsole")
 	procCreateProcessForPty  = w32.Kernel32.NewProc("CreateProcessW")
 	procGetHandleInformation = w32.Kernel32.NewProc("GetHandleInformation")
+	procResizePseudoConsole  = w32.Kernel32.NewProc("ResizePseudoConsole")
 )
 
 // handleInheritable reads HANDLE_FLAG_INHERIT back off a handle through
@@ -208,6 +211,79 @@ func fixupStdinFromConin() {
 	os.Stdin = candidate
 }
 
+// fixupStdoutFromConout is fixupStdinFromConin's counterpart for the output
+// side, and compensates for the same gap in this test's own plumbing, not
+// in production: a process attached to a Windows pseudo console gets a real,
+// working console -- CONOUT$ opens and answers GetConsoleMode correctly --
+// but GetStdHandle(STD_OUTPUT_HANDLE) can keep whatever raw value
+// CreateProcessW happened to copy in instead of that console. Rather than
+// repoint os.Stdout, this returns the console file itself for the one caller
+// that wants to measure a viewport: production measures os.Stdout, which a
+// real operator console populates, and the GetStdHandle gap belongs to this
+// surrogate, not to the thing being tested. nil when even CONOUT$ will not
+// answer, which means there is no console to measure and the caller says so.
+func fixupStdoutFromConout() *os.File {
+	name, err := syscall.UTF16PtrFromString("CONOUT$")
+	if err != nil {
+		return nil
+	}
+	handle, err := syscall.CreateFile(name, syscall.GENERIC_READ|syscall.GENERIC_WRITE,
+		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE, nil, syscall.OPEN_EXISTING, 0, 0)
+	if err != nil {
+		return nil
+	}
+	candidate := os.NewFile(uintptr(handle), "CONOUT$")
+	if !console(candidate) {
+		_ = candidate.Close()
+		return nil
+	}
+	return candidate
+}
+
+// readResizeMessage reads exactly one resize message -- ResizeMessageLen
+// bytes, the length both ends of the relay's resize pipe share -- and
+// unpacks it the way encodeResize packed it: columns first, then rows. A
+// read deadline the caller set on r is what bounds the wait; this measures
+// nothing on its own.
+func readResizeMessage(r io.Reader) (cols, rows uint16, err error) {
+	var message [ResizeMessageLen]byte
+	if _, err = io.ReadFull(r, message[:]); err != nil {
+		return 0, 0, err
+	}
+	return binary.LittleEndian.Uint16(message[0:]),
+		binary.LittleEndian.Uint16(message[2:]), nil
+}
+
+// readResizeWithin races one resize message against within. It has to be a
+// race: an os.Pipe end on Windows is a synchronous CreatePipe handle, where
+// SetReadDeadline answers ErrNoDeadline and a read with nothing to read
+// blocks for good -- measured while building the watcher test, which hung
+// on exactly that. The loser leaves its read blocked in the kernel, which
+// is harmless here and once per test, and never comes up in production:
+// every production reader of these pipes is entitled to wait for as long
+// as the run lasts, because the other end closing is the only thing that
+// is ever allowed to end one.
+func readResizeWithin(r *os.File, within time.Duration) (cols, rows uint16, ok bool) {
+	type sized struct {
+		cols uint16
+		rows uint16
+	}
+	done := make(chan sized, 1)
+	go func() {
+		c, ro, err := readResizeMessage(r)
+		if err != nil {
+			return
+		}
+		done <- sized{c, ro}
+	}()
+	select {
+	case s := <-done:
+		return s.cols, s.rows, true
+	case <-time.After(within):
+		return 0, 0, false
+	}
+}
+
 // stdinBridgeProbe runs inside the pseudo-console-attached child
 // TestStdinBridgeCarriesRealConsoleInput starts. Its own os.Stdin is the
 // pseudo console's device side, which GetConsoleMode answers for exactly as
@@ -234,6 +310,8 @@ func stdinBridgeProbe(resultFile string, mode ...string) int {
 	standDown := len(mode) > 0 && mode[0] == "stand-down"
 	relayStandDown := len(mode) > 0 && mode[0] == "relay-stand-down"
 	relayInputMode := len(mode) > 0 && mode[0] == "relay-input"
+	relayCtrlCMode := len(mode) > 0 && mode[0] == "relay-ctrlc"
+	relayResizeDetectMode := len(mode) > 0 && mode[0] == "relay-resize-detect"
 	report := func(ok bool, msg string) int {
 		prefix := "error: "
 		if ok {
@@ -364,6 +442,136 @@ func stdinBridgeProbe(resultFile string, mode ...string) int {
 		return report(true, strings.TrimSpace(string(line)))
 	}
 
+	if relayCtrlCMode {
+		if os.Getenv(EnvConsoleRelay) == "" {
+			return report(false, EnvConsoleRelay+" is not set inside the pseudo-console child, so the relay's own input pipe had nothing to carry and the check would prove nothing")
+		}
+		// The production operator-side pairing, in the order a run does it:
+		// the mode change first, the stand-down, relayInput's pipe, and the
+		// interrupt forwarder. The pty's console answers Get/SetConsoleMode
+		// the same as a real one, which relayConsoleModes succeeding here is
+		// the measurement of.
+		restore, err := relayConsoleModes()
+		if err != nil {
+			return report(false, "relayConsoleModes: "+err.Error())
+		}
+		defer restore()
+		handles, err := duplicateStandardHandles()
+		if err != nil {
+			return report(false, "duplicateStandardHandles: "+err.Error())
+		}
+		bridge, err := duplicateInput(&handles)
+		if err != nil {
+			handles.close()
+			return report(false, "duplicateInput: "+err.Error())
+		}
+		if bridge != nil {
+			bridge.close()
+			handles.close()
+			return report(false, "duplicateInput built the ordinary bridge although "+EnvConsoleRelay+" is set and the relay owns the input side")
+		}
+		relay, err := relayInput(&handles)
+		if err != nil {
+			handles.close()
+			return report(false, "relayInput: "+err.Error())
+		}
+		if relay == nil {
+			syscall.CloseHandle(handles.input)
+			syscall.CloseHandle(handles.output)
+			syscall.CloseHandle(handles.errout)
+			return report(false, "relayInput built no pipe for a real console stdin")
+		}
+		relay.start()
+		relayWatchInterrupts(relay.write)
+		// handles.input is the pipe relayInput built, read here exactly as
+		// relay-input reads it; what is different is the source. Group 0 is
+		// every process attached to the caller's console, and this probe is
+		// the pty console's only attached process -- the parent holds the
+		// pty's pipe ends, not the console. CTRL_BREAK is the exercisable
+		// path because interrupt_test.go measured that
+		// CREATE_NEW_PROCESS_GROUP processes ignore CTRL_C_EVENT, and that
+		// Go's runtime maps both events to the same os.Interrupt the
+		// forwarder listens for; the probe has a console -- the pty's --
+		// which is the condition that file's notes say a
+		// GenerateConsoleCtrlEvent caller needs.
+		if r, _, callErr := procGenerateCtrlEvent.Call(ctrlBreakEvent, 0); r == 0 {
+			syscall.CloseHandle(handles.input)
+			syscall.CloseHandle(handles.output)
+			syscall.CloseHandle(handles.errout)
+			return report(false, "GenerateConsoleCtrlEvent: "+callErr.Error())
+		}
+		reader := os.NewFile(uintptr(handles.input), "relay-ctrlc-child")
+		var all []byte
+		buf := make([]byte, 64)
+		deadline := time.Now().Add(20 * time.Second)
+		found := false
+		for !found {
+			if time.Now().After(deadline) {
+				reader.Close()
+				syscall.CloseHandle(handles.output)
+				syscall.CloseHandle(handles.errout)
+				return report(false, fmt.Sprintf("timed out waiting for the forwarded Ctrl-C byte, got so far: %x", all))
+			}
+			n, readErr := reader.Read(buf)
+			all = append(all, buf[:n]...)
+			for _, b := range buf[:n] {
+				if b == ctrlCByte {
+					found = true
+					break
+				}
+			}
+			if readErr != nil {
+				break
+			}
+		}
+		reader.Close()
+		syscall.CloseHandle(handles.output)
+		syscall.CloseHandle(handles.errout)
+		if !found {
+			return report(false, fmt.Sprintf("the relay's input pipe ended without a forwarded Ctrl-C byte, got: %x", all))
+		}
+		return report(true, fmt.Sprintf("the forwarded 0x03 arrived among %d byte(s): %x", len(all), all))
+	}
+
+	if relayResizeDetectMode {
+		// This mode measures the resize watcher alone: no EnvConsoleRelay
+		// involvement, no relayConsoleModes, no relayInput.
+		conout := fixupStdoutFromConout()
+		if conout == nil {
+			return report(false, "CONOUT$ inside the pseudo-console child did not answer GetConsoleMode, so the resize watcher has no console to measure")
+		}
+		defer conout.Close()
+		resizeRead, resizeWrite, err := os.Pipe()
+		if err != nil {
+			conout.Close()
+			return report(false, "os.Pipe for the resize messages: "+err.Error())
+		}
+		defer resizeRead.Close()
+		defer resizeWrite.Close()
+		startRelayResize(conout, resizeWrite)
+		startCols, startRows, ok := readResizeWithin(resizeRead, 20*time.Second)
+		if !ok {
+			return report(false, "the resize watcher's first message never arrived within 20s")
+		}
+		if startCols != 80 || startRows != 25 {
+			return report(false, fmt.Sprintf("the resize watcher's first message was %dx%d, want the pseudo console's birth size 80x25", startCols, startRows))
+		}
+		// Written only after the first measurement, never before, so the
+		// parent's resize cannot race the baseline.
+		if err := os.WriteFile(resultFile+".ready", []byte("ready"), 0o600); err != nil {
+			return report(false, "writing the baseline ready marker: "+err.Error())
+		}
+		for {
+			cols, rows, ok := readResizeWithin(resizeRead, 20*time.Second)
+			if !ok {
+				return report(false, fmt.Sprintf("timed out waiting for a size different from %dx%d", startCols, startRows))
+			}
+			if cols != startCols || rows != startRows {
+				return report(true, fmt.Sprintf("measured %dx%d at start and %dx%d after the resize", startCols, startRows, cols, rows))
+			}
+		}
+	}
+
 	handles, err := duplicateStandardHandles()
 	if err != nil {
 		return report(false, "duplicateStandardHandles: "+err.Error())
@@ -427,7 +635,13 @@ func stdinBridgeProbe(resultFile string, mode ...string) int {
 // block on a full pipe for a reason unrelated to what is being tested.
 // The line is typed in every mode: the stand-down probe never reads it,
 // and bytes nobody reads are simply drained when both ends close.
-func probeInsideAPseudoConsole(t *testing.T, mode string) (string, uint32) {
+//
+// afterReady, when given, runs right after the typed line is written and
+// before the child is waited for, called with the pty handle and the
+// result file path. It is how a parent acts on the pty mid-flight: the
+// resize test needs the child alive and past its baseline measurement
+// before the console changes, and this is the point between those.
+func probeInsideAPseudoConsole(t *testing.T, mode string, afterReady ...func(hpc syscall.Handle, resultFile string)) (string, uint32) {
 	t.Helper()
 	if err := procCreatePseudoConsole.Find(); err != nil {
 		t.Skip("CreatePseudoConsole is not available on this Windows build (ConPTY needs Windows 10 1809+)")
@@ -509,6 +723,10 @@ func probeInsideAPseudoConsole(t *testing.T, mode string) (string, uint32) {
 	// What a person would type into the prompt.
 	if _, err := ptyInWrite.WriteString("from-a-real-console\r\n"); err != nil {
 		t.Fatal(err)
+	}
+
+	if len(afterReady) > 0 {
+		afterReady[0](hpc, resultFile)
 	}
 
 	done := make(chan error, 1)

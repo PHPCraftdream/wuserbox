@@ -76,7 +76,10 @@ const relayFlushGrace = 250 * time.Millisecond
 // consoles for one program, not two halves of one. In relay mode the stub
 // also pumps: rendered bytes out of the relay's output onto its own standard
 // streams, forwarded keystrokes from its stdin into the relay's input, the
-// two bridges the run built across the account line doing the carrying.
+// two bridges the run built across the account line doing the carrying. The
+// relay's third pipe carries only the operator console's size as it changes,
+// and this process answers each message with ResizePseudoConsole on the
+// console itself.
 func Stub(args []string) error {
 	if len(args) != 2 && len(args) != 3 {
 		return exit.Errorf(exit.Usage,
@@ -107,6 +110,26 @@ func Stub(args []string) error {
 		// handle, and keeping the path in its environment would disclose a
 		// protected state location to code inside the sandbox.
 		_ = os.Unsetenv(lock.TransferEnv)
+	}
+	// The relay's resize pipe, adopted in the same pre-Shield window as the
+	// slot handoff above: the handoff file is readable to this account
+	// through its read group, which is not a promise Shield's restricted
+	// token renews; and the handle value is only meaningful in this
+	// process, which is what makes a stolen path useless everywhere else.
+	var resizeRead *os.File
+	if path := os.Getenv(proc.EnvResizeTransfer); path != "" {
+		// Read and dropped at once, the way the slot handoff above is: the
+		// program must not learn the path.
+		_ = os.Unsetenv(proc.EnvResizeTransfer)
+		handle, release, err := lock.AdoptTransfer(path)
+		if err != nil {
+			return err
+		}
+		// os.Exit skips deferred calls, so on the success path this never
+		// runs; the stub's own death closes what it names -- the documented
+		// pattern here.
+		defer release()
+		resizeRead = os.NewFile(uintptr(handle), "relay-resize")
 	}
 	// Read and dropped at once, the way the slot handoff above is: the env
 	// vars that ask for a console are the caller's business, and the program
@@ -197,6 +220,12 @@ func Stub(args []string) error {
 		// the pipes' last holders are this process and the console's own
 		// conhost, both of which go away below.
 		pumpRelay(relay, os.Stdout, os.Stdin)
+		if resizeRead != nil {
+			// The third leg of the relay: the operator's console changes
+			// size, and this process is the only one that can answer,
+			// because the hpc lives here.
+			pumpRelayResizes(relay, resizeRead)
+		}
 		code, err = proc.RunWithConsole(restricted, args[2], here, relay.hpc)
 	} else {
 		code, err = proc.Run(restricted, args[2], here)

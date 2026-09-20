@@ -1,13 +1,16 @@
 package proc
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"runtime"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
@@ -16,9 +19,10 @@ import (
 )
 
 var (
-	procCreateProcessWithLogon = w32.Advapi32.NewProc("CreateProcessWithLogonW")
-	procSetHandleInformation   = w32.Kernel32.NewProc("SetHandleInformation")
-	procSetConsoleMode         = w32.Kernel32.NewProc("SetConsoleMode")
+	procCreateProcessWithLogon     = w32.Advapi32.NewProc("CreateProcessWithLogonW")
+	procGetConsoleScreenBufferInfo = w32.Kernel32.NewProc("GetConsoleScreenBufferInfo")
+	procSetHandleInformation       = w32.Kernel32.NewProc("SetHandleInformation")
+	procSetConsoleMode             = w32.Kernel32.NewProc("SetConsoleMode")
 )
 
 const (
@@ -382,11 +386,15 @@ const (
 // VT input, so the special keys arrive as sequences rather than scan
 // codes. Output gains VT processing, because what the relay delivers is
 // already rendered VT and the console is the thing that has to act on it.
-// ENABLE_PROCESSED_INPUT is deliberately left as it was: Ctrl-C stays the
-// run's own interrupt in this mode too, raised on this process and
-// answered by waitOrStop exactly as ever, and whether the keystroke should
-// also travel into the relay as a byte is the next task's question, not
-// this one's.
+// ENABLE_PROCESSED_INPUT is deliberately left as it was, and the leaving
+// is what makes the forwarding work: the event it raises is the only thing
+// a Ctrl-C keypress on this console ever produces -- the console consumes
+// the key and never puts it in the input buffer the keystroke bridge reads
+// -- so the event is both what relayWatchInterrupts forwards from and what
+// waitOrStop counts; turning the flag off would hand the bridge the byte
+// for free but silence the event, and the run would gain an interrupt it
+// could forward while losing the insisting escalation that ends a run
+// whose program never answered the first one.
 //
 // The restore runs on every ordinary return, success and error both; a
 // panic or a kill skips it, and making the mode survive those is later
@@ -432,6 +440,207 @@ func relayConsoleModes() (func(), error) {
 	return restore, nil
 }
 
+// ctrlCByte is the byte a real terminal's keyboard sends when Ctrl-C is
+// pressed. It is a named constant rather than an inline literal because the
+// point is not the number but the claim it carries: the relay's whole
+// premise is that bytes are all a console's input is, so the pseudo console
+// cannot tell a forwarded 0x03 from a keypress and is not meant to.
+const ctrlCByte = 0x03
+
+// resizePollInterval is how often the resize watcher measures the
+// operator's viewport. A human dragging a window edge is slower than this,
+// so no intermediate size anyone would have wanted is skipped; the cost is
+// one syscall per tick, and only for as long as a relay run lasts.
+const resizePollInterval = 200 * time.Millisecond
+
+// resizeReassertInterval is how often the resize watcher re-writes the size
+// it last reported, unchanged or not. A resize message that crossed before
+// the program had attached to the relayed console landed as nothing -- the
+// child measured 80x25 with the message already consumed, 2 runs out of 7,
+// measured in internal/sandbox/exec's console test -- and production has
+// the same window: the run's watcher pushes the operator console's size
+// while the stub is still starting the program. Re-asserting means a
+// dropped shape comes back on the next beat instead of never;
+// ResizePseudoConsole at an unchanged size is harmless, and the cost is
+// four bytes every two seconds of a relay run.
+const resizeReassertInterval = 2 * time.Second
+
+// coord, smallRect and consoleScreenBufferInfo mirror the three structures
+// GetConsoleScreenBufferInfo fills: a position or size in two int16s, a
+// rectangle in four inclusive bounds, and the buffer description that
+// carries one of each plus the character attributes. They are declared by
+// hand rather than half-borrowed because the syscall package carries the two
+// small shapes but not the buffer info around them, and a layout a syscall
+// writes memory into has to be visible whole, next to the proc that fills
+// it; the field names follow the API's so a reader can check them against
+// the documentation without translating.
+type coord struct {
+	x int16
+	y int16
+}
+
+type smallRect struct {
+	left   int16
+	top    int16
+	right  int16
+	bottom int16
+}
+
+type consoleScreenBufferInfo struct {
+	dwSize              coord
+	dwCursorPosition    coord
+	wAttributes         uint16
+	srWindow            smallRect
+	dwMaximumWindowSize coord
+}
+
+// consoleSize measures the viewport of the console file names, in columns
+// and rows. The viewport is srWindow -- right-left+1 by bottom-top+1, the
+// bounds being inclusive, hence the +1s -- and deliberately not dwSize,
+// whose height counts the scrollback a terminal does not show: the size
+// worth forwarding is the size of the window the operator is looking at,
+// not the size of the history above it. ok is false when the call fails,
+// which a caller treats as one skipped measurement rather than an error.
+func consoleSize(file *os.File) (cols, rows uint16, ok bool) {
+	if file == nil {
+		return 0, 0, false
+	}
+	var info consoleScreenBufferInfo
+	if r, _, _ := procGetConsoleScreenBufferInfo.Call(file.Fd(), uintptr(unsafe.Pointer(&info))); r == 0 {
+		return 0, 0, false
+	}
+	return uint16(int32(info.srWindow.right) - int32(info.srWindow.left) + 1),
+		uint16(int32(info.srWindow.bottom) - int32(info.srWindow.top) + 1), true
+}
+
+// encodeResize packs one resize message: ResizeMessageLen bytes, two
+// little-endian uint16s, columns first. The stub's pump reads the same
+// layout off the other end of the pipe, and the shared length constant is
+// part of what keeps the two ends of the wire from drifting.
+func encodeResize(cols, rows uint16) []byte {
+	message := make([]byte, ResizeMessageLen)
+	binary.LittleEndian.PutUint16(message[0:], cols)
+	binary.LittleEndian.PutUint16(message[2:], rows)
+	return message
+}
+
+// relayWatchInterrupts forwards each interrupt this process receives into
+// the relay input bridge as the raw byte a keyboard would have sent -- the
+// one thing a keypress on the operator's console cannot do for itself in
+// relay mode. ENABLE_PROCESSED_INPUT is left on, so Ctrl-C raises
+// CTRL_C_EVENT, the console consumes it, and it never appears in the
+// keystroke byte stream; and the program is attached to a pseudo console
+// the event does not reach at all, so without this the keypress would
+// arrive nowhere but here.
+//
+// It is signal.Notify and deliberately not SetConsoleCtrlHandler. A handler
+// replaces the default handling rather than adding to it: returning TRUE
+// from one would swallow the event and starve waitOrStop's own listener,
+// and the insisting escalation -- a second press inside its window ends the
+// job -- is unchanged policy that has to keep working; returning FALSE adds
+// machinery without changing the semantics Notify already gives. Notify
+// listeners get broadcast copies, so waitOrStop sees every event this does;
+// the process already survives the event for exactly that reason, because
+// waitOrStop registers a listener, and this adds a second one, not a new
+// mechanism.
+//
+// Ctrl-Break rides along. Go's runtime maps both CTRL_C_EVENT and
+// CTRL_BREAK_EVENT to os.Interrupt, so a Ctrl-Break is forwarded as the
+// same 0x03 -- the same aliasing waitOrStop already applies when it counts
+// presses.
+//
+// The write blocks, and that cannot deadlock the escalation: only this
+// goroutine sits in the write, waitOrStop's channel is independent of the
+// pipe, and the moment the job is torn down the stub's read end goes with
+// it -- the write fails, and the failed write is what ends this goroutine.
+//
+// Like inputBridge.start, this is fired and abandoned for the run: nobody
+// waits on it, and it is the whole process ending that retires it -- the
+// accepted shape for a CLI wrapper's forwarding goroutine.
+func relayWatchInterrupts(write *os.File) {
+	interrupted := make(chan os.Signal, 1)
+	signal.Notify(interrupted, os.Interrupt)
+	go func() {
+		defer signal.Stop(interrupted)
+		for range interrupted {
+			if _, err := write.Write([]byte{ctrlCByte}); err != nil {
+				return
+			}
+		}
+	}()
+}
+
+// relayResizeLoop watches the operator's console size and writes one resize
+// message on write for every change -- including the first. The pseudo
+// console is born 80 columns by 25 rows (takeConsoleRelay in
+// internal/sandbox/exec), and a run begun in a 120x40 terminal must not
+// live at its birth size, so the loop measures once and writes before its
+// first wait; last's zero value is what makes that fall out without a
+// special case, the first good measurement always differing from it.
+//
+// On top of writing changes, the loop re-writes the size it last reported
+// every resizeReassertInterval, unchanged or not -- same-size polls write
+// nothing until the re-assert falls due. A resize message that crossed
+// before the program had attached to the relayed console landed as nothing:
+// the child measured 80x25 with the message already consumed, 2 runs out of
+// 7 in internal/sandbox/exec's console test, and production has the same
+// window -- the run's watcher pushes the operator console's size while the
+// stub is still starting the program, and a watcher that only wrote changes
+// would leave a run begun in a 120x40 terminal at the 80x25 birth size for
+// its whole life if that first push was the one dropped. The re-assert is
+// the fix: a dropped shape comes back on the next beat instead of never,
+// and ResizePseudoConsole at an unchanged size is harmless, which is what
+// makes re-asserting cheaper than it is clever -- four bytes every two
+// seconds of a relay run.
+//
+// It polls rather than asking the console to announce events.
+// ENABLE_WINDOW_INPUT would deliver WINDOW_BUFFER_SIZE_EVENT records, but
+// only to a ReadConsoleInput reader, and the keystroke bridge is a ReadFile
+// reader -- the two reader APIs read different shapes off the same queue,
+// reasoned from the documented split between them rather than measured --
+// and a second ReadConsoleInput reader would contend for that same input
+// queue, exactly the dealing-out that duplicateInput's and relayInput's
+// stand-down comments refuse. The poll touches the output side only, where
+// no other reader exists to contend with.
+//
+// A measurement that fails is skipped for that tick, never fatal: a console
+// that will not answer one GetConsoleScreenBufferInfo may answer the next,
+// and nothing about the run has ended. What has ended announces itself
+// where it matters -- a write fails once the stub is gone, and that is this
+// loop's only exit.
+func relayResizeLoop(write *os.File, every time.Duration, size func() (uint16, uint16, bool)) {
+	var lastCols, lastRows uint16
+	var lastWrite time.Time
+	for {
+		if cols, rows, ok := size(); ok {
+			changed := cols != lastCols || rows != lastRows
+			// lastWrite's zero value is due immediately --
+			// lastWrite.Add(resizeReassertInterval) lies far in the
+			// past -- so the initial push falls out of this without a
+			// special case, exactly as last's zero value does above.
+			reassertDue := !lastWrite.Add(resizeReassertInterval).After(time.Now())
+			if changed || reassertDue {
+				if _, err := write.Write(encodeResize(cols, rows)); err != nil {
+					return
+				}
+				lastCols, lastRows = cols, rows
+				lastWrite = time.Now()
+			}
+		}
+		time.Sleep(every)
+	}
+}
+
+// startRelayResize is the pair -- the operator console to measure and the
+// pipe to write -- that a relay run starts when the operator's stdout is a
+// console it can measure. Like the bridge loops it runs as a goroutine
+// nobody waits for; the run ending is what retires it.
+func startRelayResize(console, write *os.File) {
+	go relayResizeLoop(write, resizePollInterval, func() (uint16, uint16, bool) {
+		return consoleSize(console)
+	})
+}
+
 // EnvOwnConsole is how a run tells the stub that the program should get a
 // console of its own rather than the caller's piped-around one. It is set by
 // the --own-console run flag the same way EnvNonInteractive is set by
@@ -449,6 +658,26 @@ const EnvOwnConsole = "WUSERBOX_OWN_CONSOLE"
 // read and unset by the stub before the program starts, so nothing inside
 // the sandbox ever sees it.
 const EnvConsoleRelay = "WUSERBOX_CONSOLE_RELAY"
+
+// EnvResizeTransfer is how a relay run tells the stub where the resize
+// pipe's read end is. It is set by runAsAccount only in relay mode and only
+// when the operator's stdout is a console -- without a console to measure
+// there is no resize to forward -- and it names the protected handoff file
+// lock.PrepareHandleTransfer made, whose value is the relay's resize pipe
+// read end duplicated into the still-suspended stub by lock.PassHandleTo.
+// The stub reads and unsets it in its pre-Shield window, like the slot
+// handoff it is patterned on. Absence is the normal state of every
+// non-relay run and of every relay run whose operator stdout is not a
+// console: nothing measures a resize, so nothing crosses.
+const EnvResizeTransfer = "WUSERBOX_RESIZE_TRANSFER"
+
+// ResizeMessageLen is the length of one resize message on the relay's
+// resize pipe: two little-endian uint16s, columns then rows. encodeResize
+// writes it on this side and the stub's pump reads it on the other, and the
+// constant is exported so the stub-side reader in internal/sandbox/exec can
+// import it rather than restate it -- one wire format, two ends, and they
+// cannot then drift apart.
+const ResizeMessageLen = 4
 
 // RunAsAccount starts commandLine logged on as a local account, in the same
 // job object and with the same interrupt handling as Run, but through
@@ -628,6 +857,69 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 			input.close()
 		}
 	}()
+	var resizeRead, resizeWrite *os.File
+	var resizeTransferPath string
+	resizeLive := false
+	if relayMode && console(os.Stdout) {
+		// The resize pipe is the relay's third crossing: bytes on the
+		// other two are the console's input and output, bytes on this one
+		// are only ever resize messages. The write end stays here for
+		// good -- the watcher writes it for the rest of the run -- and the
+		// read end crosses only by the explicit duplicate further down,
+		// never by ambient inheritance, so BOTH ends are stripped:
+		// ambient inheritance at the account crossing is unmeasured and
+		// must not be leaned on, which is the whole point of
+		// docs/reviews/sandbox-security-review-2026-09-19.md's P2-1, the
+		// review noInherit exists for.
+		read, write, err := os.Pipe()
+		if err != nil {
+			return -1, fmt.Errorf("creating the relay's resize pipe: %w", err)
+		}
+		resizeRead, resizeWrite = read, write
+		if err := noInherit(resizeRead); err != nil {
+			_ = resizeRead.Close()
+			_ = resizeWrite.Close()
+			return -1, fmt.Errorf("excluding the resize pipe read end from inheritance: %w", err)
+		}
+		if err := noInherit(resizeWrite); err != nil {
+			_ = resizeRead.Close()
+			_ = resizeWrite.Close()
+			return -1, fmt.Errorf("excluding the resize pipe write end from inheritance: %w", err)
+		}
+		transferPath, cleanup, err := lock.PrepareHandleTransfer()
+		if err != nil {
+			_ = resizeRead.Close()
+			_ = resizeWrite.Close()
+			return -1, fmt.Errorf("preparing the resize handoff: %w", err)
+		}
+		resizeTransferPath = transferPath
+		defer cleanup()
+		// Any return before the handoff succeeds leaves a pipe no stub ever
+		// learned about; this closes both ends. The flag flips only after
+		// lock.PassHandleTo has duplicated the read end into the stub --
+		// from then on the write end belongs to the resize watcher and the
+		// read end is closed deliberately there, not by this cleanup.
+		defer func() {
+			if resizeLive {
+				return
+			}
+			_ = resizeRead.Close()
+			_ = resizeWrite.Close()
+		}()
+		// Filtered exactly the way RunAsAccountWithLease filters
+		// lock.TransferEnv: a caller-supplied env naming its own handoff
+		// must not survive -- the value the stub adopts has to be this
+		// run's.
+		filtered := make([]string, 0, len(env)+1)
+		for _, entry := range env {
+			key, _, ok := strings.Cut(entry, "=")
+			if ok && strings.EqualFold(key, EnvResizeTransfer) {
+				continue
+			}
+			filtered = append(filtered, entry)
+		}
+		env = append(filtered, EnvResizeTransfer+"="+transferPath)
+	}
 	startup.Flags = syscall.STARTF_USESTDHANDLES
 	startup.StdInput = streams.input
 	startup.StdOutput = streams.output
@@ -700,6 +992,11 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 	if input != nil {
 		input.start()
 		inputStarted = true
+		if relayMode {
+			// The keypress cannot reach the program by attachment in relay
+			// mode; relayWatchInterrupts is what carries it across instead.
+			relayWatchInterrupts(input.write)
+		}
 	}
 	defer syscall.CloseHandle(created.Process)
 	defer syscall.CloseHandle(created.Thread)
@@ -713,6 +1010,19 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 			procTerminateProcess.Call(uintptr(created.Process), 1)
 			return -1, err
 		}
+	}
+	if resizeWrite != nil {
+		if err := lock.PassHandleTo(syscall.Handle(resizeRead.Fd()), created.Process, resizeTransferPath); err != nil {
+			procTerminateProcess.Call(uintptr(created.Process), 1)
+			return -1, err
+		}
+		// Before ResumeThread, the same ordering constraint lock.PassTo
+		// documents: the value in the handoff file names a handle in the
+		// stub's own table, and it is only meaningful before the stub has
+		// executed anything of its own.
+		resizeLive = true
+		startRelayResize(os.Stdout, resizeWrite)
+		_ = resizeRead.Close()
 	}
 	// Before ResumeThread and not after: the stub has not executed one
 	// instruction of its own yet, so this is the earliest anything in this

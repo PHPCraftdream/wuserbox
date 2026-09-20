@@ -22,12 +22,14 @@
 package exec
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
 	"syscall"
 	"unsafe"
 
+	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
@@ -36,6 +38,7 @@ var (
 	procAllocConsole         = w32.Kernel32.NewProc("AllocConsole")
 	procCreatePseudoConsole  = w32.Kernel32.NewProc("CreatePseudoConsole")
 	procClosePseudoConsole   = w32.Kernel32.NewProc("ClosePseudoConsole")
+	procResizePseudoConsole  = w32.Kernel32.NewProc("ResizePseudoConsole")
 	procSetHandleInformation = w32.Kernel32.NewProc("SetHandleInformation")
 )
 
@@ -163,9 +166,11 @@ type consoleRelay struct {
 // docs/reviews/sandbox-security-review-2026-09-19.md's P2-1 is about. The
 // kept ends are stripped of HANDLE_FLAG_INHERIT for the same reason.
 //
-// The console is born 80 columns by 25 rows and nothing resizes it yet; that,
-// the relay across the operator bridge, and interrupt forwarding are later
-// work, not oversights here.
+// The console is born 80 columns by 25 rows and holds that size only until
+// the first resize message crosses the relay's third pipe -- the stub's own
+// pumpRelayResizes answering it with ResizePseudoConsole. The relay across
+// the operator bridge and the interrupt forwarding live on the run side, in
+// internal/win/proc: relayInput, relayWatchInterrupts, startRelayResize.
 func takeConsoleRelay() (*consoleRelay, error) {
 	inRead, inWrite, err := os.Pipe()
 	if err != nil {
@@ -178,11 +183,8 @@ func takeConsoleRelay() (*consoleRelay, error) {
 		return nil, fmt.Errorf("creating the relay's output pipe: %w", err)
 	}
 	var hpc syscall.Handle
-	// COORD{X: 80, Y: 25} packed into the single register the x64 calling
-	// convention uses for a struct this size -- X in the low 16 bits, Y in
-	// the next 16.
 	const width, height = 80, 25
-	size := uintptr(uint32(uint16(width)) | uint32(uint16(height))<<16)
+	size := coordValue(width, height)
 	r, _, _ := procCreatePseudoConsole.Call(size, inRead.Fd(), outWrite.Fd(), 0, uintptr(unsafe.Pointer(&hpc)))
 	// CreatePseudoConsole duplicates what it needs; this process's own
 	// copies of the two ends are surplus the moment the call returns, kept
@@ -207,6 +209,16 @@ func takeConsoleRelay() (*consoleRelay, error) {
 		return nil, fmt.Errorf("excluding the relay's output end from inheritance: %w", err)
 	}
 	return relay, nil
+}
+
+// coordValue packs a console size into the single register the x64 calling
+// convention uses for a COORD -- cols in the low 16 bits, rows in the next
+// 16. It is the same packing ResizePseudoConsole takes, which is the point:
+// one helper, both callers, so the birth size takeConsoleRelay hands
+// CreatePseudoConsole and every later resize pumpRelayResizes hands
+// ResizePseudoConsole cross the calling convention in the same shape.
+func coordValue(cols, rows int) uintptr {
+	return uintptr(uint32(uint16(cols)) | uint32(uint16(rows))<<16)
 }
 
 // noInherit strips HANDLE_FLAG_INHERIT from file's underlying handle -- the
@@ -257,5 +269,57 @@ func pumpRelay(relay *consoleRelay, stdout io.Writer, stdin io.Reader) {
 	}()
 	go func() {
 		_, _ = io.Copy(relay.input, stdin)
+	}()
+}
+
+// resize asks the relayed console to become cols by rows. Best effort by
+// design: a refused or lost resize must not take the relay or the pump down
+// -- the next message retries, and the console keeping its previous size is
+// the honest visible outcome of a resize conhost would not take -- so the
+// call's result is deliberately ignored. No-op on a nil relay or a closed
+// one (hpc 0), which is the same twice-safe shape close keeps, for the same
+// reason: the pump can outlive neither.
+func (r *consoleRelay) resize(cols, rows int) {
+	if r == nil || r.hpc == 0 {
+		return
+	}
+	procResizePseudoConsole.Call(uintptr(r.hpc), coordValue(cols, rows))
+}
+
+// pumpRelayResizes starts the one loop that reads the relay's third pipe --
+// the resize bridge the run built alongside the other two -- and answers
+// every message by reshaping the relayed console. The stub is the only side
+// that can resize the console -- the hpc lives here -- which is why the
+// notification crosses as bytes at all.
+//
+// It is a separate pipe rather than a convention on the relay's byte
+// streams, and that is deliberate: the relay's other two pipes are
+// transparent byte streams, rendered VT out and keystrokes in, and an
+// escape-prefixed side channel would make every keystroke a parse case --
+// the same preference for explicit, separate pipes the two bridge pipes
+// already embody.
+//
+// One message is proc.ResizeMessageLen bytes, two little-endian uint16s,
+// columns then rows -- the layout encodeResize writes on the operator side;
+// importing the length constant rather than restating it is what keeps the
+// one wire format's two ends from drifting. A degenerate message -- columns
+// or rows zero, nothing measured, nothing to ask for -- is skipped. ReadFull
+// failing ends the loop: the write end closing is the run ending, the same
+// shape as every drain here. Nothing waits on the loop; it runs until this
+// process ends, like the two copy loops pumpRelay starts.
+func pumpRelayResizes(relay *consoleRelay, resized io.Reader) {
+	go func() {
+		var message [proc.ResizeMessageLen]byte
+		for {
+			if _, err := io.ReadFull(resized, message[:]); err != nil {
+				return
+			}
+			cols := int(binary.LittleEndian.Uint16(message[0:]))
+			rows := int(binary.LittleEndian.Uint16(message[2:]))
+			if cols == 0 || rows == 0 {
+				continue
+			}
+			relay.resize(cols, rows)
+		}
 	}()
 }

@@ -27,7 +27,10 @@ var (
 // most of what runs here -- an agent interrupting the turn it is in the
 // middle of, a shell clearing its line, a REPL -- Ctrl+C is the program's own
 // business and not a request to end the run. Insisting is what ends it; see
-// waitOrStop.
+// waitOrStop. Relay mode is the one place the keypress cannot travel by
+// attachment -- the program's console is a pseudo console the operator's
+// keypress never reaches -- and there the run forwards the byte itself; see
+// relayWatchInterrupts in logon.go.
 func Run(token syscall.Token, commandLine, directory string) (int, error) {
 	j, err := newJob()
 	if err != nil {
@@ -91,6 +94,21 @@ func Run(token syscall.Token, commandLine, directory string) (int, error) {
 // The job, the suspended start and the interrupt rules are Run's, shared via
 // runInJob and waitOrStop. The caller keeps the pseudo console and its pipes
 // open for as long as the program runs.
+//
+// Attachment decides Ctrl-C against the operator here. A console control
+// event is delivered on the console of whoever is attached when the key is
+// pressed, and the operator's keypress happens on the operator's console,
+// which this child is not attached to, so the event reaches the run's own
+// wiring and never the program; the run answers by forwarding the keystroke
+// through the relay itself. relayWatchInterrupts in logon.go turns each
+// interrupt into the raw byte 0x03 on the relay's input bridge -- what a
+// real terminal's keyboard sends -- and waitOrStop's insisting escalation is
+// unchanged: the first press stays the program's business, a second inside
+// its window still ends the job. The console's size crosses a third,
+// dedicated pipe the same relay carries: the run watches the operator's
+// screen buffer and the stub's pump (internal/sandbox/exec) answers each
+// change with ResizePseudoConsole, so the birth size of 80x25 holds only
+// until the first measurement.
 //
 // The combination CreateProcessAsUserW + STARTUPINFOEX +
 // PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE was measured live under a real sandbox

@@ -201,17 +201,138 @@ func PassTo(slotPath string, target syscall.Handle, transferPath string) error {
 // process. The returned release function is deliberately idempotent because
 // Stub also has an error path before it starts a child.
 func Adopt(value string) (func(), error) {
+	handle, err := parseHandleValue(value)
+	if err != nil {
+		return nil, fmt.Errorf("adopting the slot handle: %w", err)
+	}
+	var once sync.Once
+	return func() { once.Do(func() { _ = syscall.CloseHandle(handle) }) }, nil
+}
+
+// PrepareHandleTransfer creates the protected file through which a suspended
+// stub receives a duplicated handle, for a handoff that carries no lease.
+// PrepareTransfer exists for the lease and takes the slot path to find the
+// directory; a relay run carries no lease at all -- the sandbox's slot, when
+// it is held, is held by the run the relay serves, and Lease refuses a
+// second holder outright -- yet it still has one handle to duplicate into
+// its suspended stub, and the file naming that handle needs exactly
+// PrepareTransfer's answer for exactly PrepareTransfer's reason: the stub
+// reads it back after it starts, so it must be readable by the sandbox's
+// per-owner read group, and it must be writable by nobody but the user who
+// is launching it, because the value it carries is a handle the next stage
+// will adopt, and a file the sandboxed program could rewrite is that program
+// choosing the handle.
+//
+// The file is created in the state directory itself, and the directory is
+// made first for the same reason takeSlot makes it: StateDir only says where
+// a thing belongs and never creates it, and a caller early enough to be
+// preparing a handoff can assume nothing else has made it yet.
+func PrepareHandleTransfer() (string, func(), error) {
+	dir := paths.StateDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", nil, fmt.Errorf("preparing the state directory %s: %w", dir, err)
+	}
+	f, err := os.CreateTemp(dir, ".wuserbox-handle-transfer-")
+	if err != nil {
+		return "", nil, fmt.Errorf("creating the handle handoff: %w", err)
+	}
+	path := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", nil, fmt.Errorf("closing the handle handoff: %w", err)
+	}
+	if err := acl.Protect(path); err != nil {
+		_ = os.Remove(path)
+		return "", nil, fmt.Errorf("protecting the handle handoff: %w", err)
+	}
+	var once sync.Once
+	return path, func() { once.Do(func() { _ = os.Remove(path) }) }, nil
+}
+
+// PassHandleTo duplicates source into the suspended target process and
+// records the target-side handle value in transferPath, the file
+// PrepareHandleTransfer made. It is PassTo for a caller that has a handle
+// but no lease, and it differs from PassTo in two places, both deliberate.
+//
+// The duplicate carries the source's access -- DUPLICATE_SAME_ACCESS, which
+// makes the desired-access argument beside it ignored -- where PassTo's
+// carries zero, and the two choices are measurements of opposite shapes
+// rather than inconsistency. PassTo's zero is load-bearing because a lease's
+// exclusion lives in the share mode of its original open, so the stub's copy
+// is useful with no access at all, while a copy that carried the access
+// measured able to set FILE_ATTRIBUTE_READONLY on the slot file and brick
+// every later Lease (the numbers are in PassTo's comment). This handoff is
+// the inverted case: the handle is a pipe read end, and the only thing the
+// stub will ever do with it is ReadFile -- a zero-access duplicate arrives
+// unable to do the one thing it was handed over for, and unlike the slot
+// there is no share mode already carrying the point instead.
+//
+// The ordering constraint is PassTo's, unchanged: the target must not be
+// resumed until this returns. The value written is a handle in the target's
+// own table, meaningful only there and only before the target has executed
+// anything of its own.
+func PassHandleTo(source, target syscall.Handle, transferPath string) error {
+	if transferPath == "" {
+		return fmt.Errorf("the handle handoff path is empty")
+	}
+	if source == 0 || target == 0 {
+		return fmt.Errorf("the handle and the process to receive it must both be named")
+	}
+	current, err := syscall.GetCurrentProcess()
+	if err != nil {
+		return fmt.Errorf("getting the current process for the handle handoff: %w", err)
+	}
+	// Same-access is the deliberate difference from PassTo, whose zero
+	// access is load-bearing over a slot file: this handle is a pipe read
+	// end the stub must actually ReadFile, so it arrives carrying the
+	// source's access (see above for why each side measures what it does).
+	var duplicate syscall.Handle
+	if err := syscall.DuplicateHandle(current, source, target, &duplicate, 0, false, syscall.DUPLICATE_SAME_ACCESS); err != nil {
+		return fmt.Errorf("duplicating the handle into the stub: %w", err)
+	}
+	if err := os.WriteFile(transferPath, []byte(strconv.FormatUint(uint64(duplicate), 10)), 0o600); err != nil {
+		return fmt.Errorf("writing the handle handoff: %w", err)
+	}
+	return nil
+}
+
+// AdoptTransfer takes ownership of the handle value a handoff file names,
+// returning the handle and an idempotent close, Adopt's shape exactly. The
+// idempotence is the same necessity here as there, and not tidiness: a
+// handle is a number Windows hands out again as soon as it is free, and
+// closing a number twice closes whatever holds it now.
+func AdoptTransfer(path string) (syscall.Handle, func(), error) {
+	value, err := os.ReadFile(path)
+	if err != nil {
+		return 0, nil, fmt.Errorf("reading the handle handoff: %w", err)
+	}
+	handle, err := parseHandleValue(string(value))
+	if err != nil {
+		return 0, nil, fmt.Errorf("adopting the handed-off handle: %w", err)
+	}
+	var once sync.Once
+	return handle, func() { once.Do(func() { _ = syscall.CloseHandle(handle) }) }, nil
+}
+
+// parseHandleValue reads the decimal text a handoff file carries into the
+// handle it names. The refusals are the point, not pedantry: a handoff is
+// read back by a second process that had no part in writing it, so every
+// value that says "no handle ever arrived" -- zero, the all-ones sentinel,
+// anything wider than a pointer on this platform -- has to come back as an
+// error rather than as a number with a close attached. A handle is a number
+// Windows hands out again as soon as it is free, and closing a number closes
+// whatever holds it now, so an adopted nothing is not harmless (see
+// takeSlot, which guards its own close against the same fact).
+func parseHandleValue(value string) (syscall.Handle, error) {
 	n, err := strconv.ParseUint(strings.TrimSpace(value), 0, 64)
 	if err == nil && (n == 0 || n == ^uint64(0) ||
 		uint64(uintptr(n)) != n || uintptr(n) == ^uintptr(0)) {
 		err = fmt.Errorf("invalid handle value")
 	}
 	if err != nil {
-		return nil, fmt.Errorf("adopting the slot handle: %w", err)
+		return 0, err
 	}
-	handle := syscall.Handle(uintptr(n))
-	var once sync.Once
-	return func() { once.Do(func() { _ = syscall.CloseHandle(handle) }) }, nil
+	return syscall.Handle(uintptr(n)), nil
 }
 
 // takeSlot opens the slot file once, with no sharing at all. The lease handle

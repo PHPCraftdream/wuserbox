@@ -19,7 +19,10 @@ package exec
 
 import (
 	"bytes"
+	"encoding/binary"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -317,5 +320,179 @@ func TestTheRelayPumpCarriesRenderedBytesOutAndKeystrokesIn(t *testing.T) {
 	}
 	if got := captured(); !strings.Contains(got, answer) {
 		t.Errorf("the relayed console never answered %q; captured:\n%s", answer, got)
+	}
+}
+
+// TestAResizeMessageReshapesTheRelayedConsole is the live measurement that a
+// resize message reaches the child's console through the production pump:
+// messages are queued on the relay's third pipe, pumpRelayResizes -- the
+// same loop the real stub runs -- reads them, and a child that polls its own
+// console's window size writes what it measured into a file this test reads.
+// It does not prove the account crossing -- the sibling tests' caveat, and
+// internal/e2e's business -- and it does not prove the operator side, whose
+// loop is measured in internal/win/proc's relay tests. What it proves is the
+// link neither of those can see end to end: bytes on the third pipe become
+// ResizePseudoConsole on the console the child is attached to.
+//
+// The first message is all zeros, and the pump must skip it: columns or rows
+// zero is "nothing measured", and a pump that forwarded it would ask the
+// console for a size nobody measured, while a pump that stopped on it would
+// never read the real message queued behind it.
+//
+// The messages are queued only after the child has marked that it is up and
+// polling, and that order is measured, not taste: a resize sent before the
+// child exists sometimes never reaches the console the child is born into --
+// the first draft of this test measured 80x25 on a run whose message had
+// already been consumed -- because a ResizePseudoConsole landing before any
+// client is attached can be refused by the pty's conhost, and resize is best
+// effort, so a refusal is never retried. The .ready gate in
+// internal/win/proc's relay tests is the same lesson. Queued after, the
+// resize lands while the child is polling -- the production shape, the
+// watcher writing while the program runs -- and the child's poll is the
+// determinism, not any test-side sleep: it measures only after the resize
+// has landed or 5s have gone. If the resize never lands the file says 80x25
+// -- the birth size takeConsoleRelay gives -- and that is the failure. The
+// captured stream is not the oracle here, the file is; the drain runs
+// anyway, because PowerShell writes to the console and an undrained pipe
+// would block it -- the sibling test's reason, unchanged.
+func TestAResizeMessageReshapesTheRelayedConsole(t *testing.T) {
+	if err := procCreatePseudoConsole.Find(); err != nil {
+		t.Skip("CreatePseudoConsole is not available on this Windows build (ConPTY needs Windows 10 1809+)")
+	}
+	relay, err := takeConsoleRelay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.close()
+	// Drained continuously from before anything else; see the sibling test
+	// for why reading only after the child ends would deadlock.
+	var out bytes.Buffer
+	var outMu sync.Mutex
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := relay.output.Read(buf)
+			if n > 0 {
+				outMu.Lock()
+				out.Write(buf[:n])
+				outMu.Unlock()
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}()
+	captured := func() string {
+		outMu.Lock()
+		defer outMu.Unlock()
+		return out.String()
+	}
+
+	answerFile := filepath.Join(t.TempDir(), "relay-resize-answer.txt")
+	readyFile := filepath.Join(t.TempDir(), "relay-resize-ready.txt")
+	// The child marks that it is up, polls its own console until the resize
+	// shows up or its 5s run out, then writes what it measured; the paths
+	// are single-quoted the way internal/e2e's relay test quotes its paths.
+	dir := t.TempDir()
+	line := fmt.Sprintf(`powershell.exe -NoProfile -Command "$d = 50; Set-Content -LiteralPath '%s' 'ready'; while ([Console]::WindowWidth -lt 90 -and $d -gt 0) { Start-Sleep -Milliseconds 100; $d-- }; Set-Content -LiteralPath '%s' -Value ([Console]::WindowWidth.ToString() + 'x' + [Console]::WindowHeight)"`, readyFile, answerFile)
+
+	var own syscall.Token
+	// The child runs under the current, same-account, unrestricted token;
+	// the account crossing is not this test's business.
+	if err := syscall.OpenProcessToken(syscall.Handle(^uintptr(0)), syscall.TOKEN_ALL_ACCESS, &own); err != nil {
+		t.Fatal(err)
+	}
+	defer own.Close()
+	// The gap has to be built here rather than inherited, exactly as the
+	// keystroke sibling test records: `go test` runs this process with
+	// valid, inheritable pipe handles of its own, and a child started while
+	// those stand simply inherits them -- measured in this test's first
+	// draft, with [Console]::WindowWidth answering "the handle is invalid"
+	// about the harness's pipe and the child's error landing on the test
+	// output rather than the relay. Clearing this process's standard
+	// handles for the length of the start puts the child in the shape the
+	// real stub's child sits in: GetStdHandle invalid at startup, the
+	// console devices opened by name, and [Console] reading the
+	// pseudoconsole it was born attached to.
+	const stdInputHandle, stdOutputHandle, stdErrorHandle = ^uintptr(9), ^uintptr(10), ^uintptr(11)
+	savedIn, _, _ := procGetStdHandle.Call(stdInputHandle)
+	savedOut, _, _ := procGetStdHandle.Call(stdOutputHandle)
+	savedErr, _, _ := procGetStdHandle.Call(stdErrorHandle)
+	procSetStdHandle.Call(stdInputHandle, 0)
+	procSetStdHandle.Call(stdOutputHandle, 0)
+	procSetStdHandle.Call(stdErrorHandle, 0)
+	defer func() {
+		procSetStdHandle.Call(stdInputHandle, savedIn)
+		procSetStdHandle.Call(stdOutputHandle, savedOut)
+		procSetStdHandle.Call(stdErrorHandle, savedErr)
+	}()
+	// RunWithConsole waits the child out, and the messages cannot be queued
+	// until the child says it is polling, so the wait runs beside it the
+	// way internal/win/proc's relay test runs its afterReady beside its
+	// probe.
+	started := make(chan error, 1)
+	finished := make(chan int, 1)
+	go func() {
+		got, runErr := proc.RunWithConsole(own, line, dir, relay.hpc)
+		started <- runErr
+		finished <- got
+	}()
+	readyDeadline := time.Now().Add(20 * time.Second)
+	for {
+		if _, err := os.Stat(readyFile); err == nil {
+			break
+		}
+		if time.Now().After(readyDeadline) {
+			t.Fatalf("the child never began to poll (%s never appeared); captured:\n%s", readyFile, captured())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// The child is polling; now the messages, in the order the pump must
+	// cope with them: first the degenerate one it must skip, then the real
+	// 101x37, packed little-endian, columns first -- the layout
+	// encodeResize writes on the operator side, and the one wire format
+	// both ends share.
+	resizedRead, resizedWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resizedWrite.Close()
+	degenerate := make([]byte, proc.ResizeMessageLen)
+	if _, err := resizedWrite.Write(degenerate); err != nil {
+		t.Fatal(err)
+	}
+	message := make([]byte, proc.ResizeMessageLen)
+	binary.LittleEndian.PutUint16(message[0:], 101)
+	binary.LittleEndian.PutUint16(message[2:], 37)
+	if _, err := resizedWrite.Write(message); err != nil {
+		t.Fatal(err)
+	}
+	pumpRelayResizes(relay, resizedRead)
+
+	if err := <-started; err != nil {
+		t.Fatal(err)
+	}
+	code := <-finished
+	if code != 0 {
+		t.Fatalf("the child ended with exit code %d, want 0; captured:\n%s", code, captured())
+	}
+	answer, err := os.ReadFile(answerFile)
+	if err != nil {
+		t.Fatalf("the child wrote no answer file: %v; captured:\n%s", err, captured())
+	}
+	if got := strings.TrimSpace(string(answer)); got != "101x37" {
+		t.Fatalf("the relayed console measured %q, want 101x37 -- a wrong size says the resize message never took; captured:\n%s", got, captured())
+	}
+	// Closing the console is what lets the drain below reach EOF, the
+	// sibling pattern; close is safe to call twice -- the deferred call
+	// finds nothing left to do.
+	relay.close()
+	select {
+	case <-drained:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the relay's output never reached EOF; captured so far:\n%s", captured())
 	}
 }
