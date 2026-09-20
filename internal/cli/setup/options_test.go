@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
+	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
 	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
@@ -32,8 +33,19 @@ func TestParseOptionsDefaultsToTheCurrentDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.EqualFold(filepath.Clean(options.Dir), filepath.Clean(dir)) {
-		t.Errorf("project directory is %q, want %q", options.Dir, dir)
+	// ParseOptions now resolves --dir (and a defaulted cwd is no exception)
+	// the same way P2-6/P3-3 resolve every directory that crosses the
+	// elevation boundary, so the spelling it answers with is Resolve's, not
+	// t.TempDir()'s own -- measured to differ on a machine whose TEMP
+	// resolves through an 8.3 alias. The want side goes through the same
+	// call for the same reason the fix does: two paths naming one directory
+	// are not made to disagree by which one asks first.
+	want, err := paths.Resolve(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(filepath.Clean(options.Dir), filepath.Clean(want)) {
+		t.Errorf("project directory is %q, want %q", options.Dir, want)
 	}
 	if len(command) != 0 {
 		t.Errorf("unexpected command %v", command)
