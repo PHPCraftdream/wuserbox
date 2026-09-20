@@ -341,6 +341,14 @@ func inputBridgePipe() (*os.File, syscall.Handle, error) {
 // anymore would only swallow them.
 const EnvOwnConsole = "WUSERBOX_OWN_CONSOLE"
 
+// EnvConsoleRelay is EnvOwnConsole's counterpart for the other mechanism: a
+// pseudo console the stub takes and the program is attached to, with no
+// window of its own, whose rendered bytes reach the caller as pipe bytes
+// rather than as a second window on the desktop. Set by a run the same way,
+// read and unset by the stub before the program starts, so nothing inside
+// the sandbox ever sees it.
+const EnvConsoleRelay = "WUSERBOX_CONSOLE_RELAY"
+
 // RunAsAccount starts commandLine logged on as a local account, in the same
 // job object and with the same interrupt handling as Run, but through
 // CreateProcessWithLogonW rather than a token this process already holds.

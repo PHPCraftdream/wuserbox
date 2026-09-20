@@ -31,32 +31,14 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
-const (
-	stdinBridgeProbeFlag = "-wuserbox-stdin-bridge-probe"
-
-	pseudoConsoleAttribute     = 0x00020016 // PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE
-	extendedStartupInfoPresent = 0x00080000
-)
+const stdinBridgeProbeFlag = "-wuserbox-stdin-bridge-probe"
 
 var (
-	procCreatePseudoConsole       = w32.Kernel32.NewProc("CreatePseudoConsole")
-	procClosePseudoConsole        = w32.Kernel32.NewProc("ClosePseudoConsole")
-	procInitAttributeListForPty   = w32.Kernel32.NewProc("InitializeProcThreadAttributeList")
-	procUpdateAttributeForPty     = w32.Kernel32.NewProc("UpdateProcThreadAttribute")
-	procDeleteAttributeListForPty = w32.Kernel32.NewProc("DeleteProcThreadAttributeList")
-	procCreateProcessForPty       = w32.Kernel32.NewProc("CreateProcessW")
-	procGetHandleInformation      = w32.Kernel32.NewProc("GetHandleInformation")
+	procCreatePseudoConsole  = w32.Kernel32.NewProc("CreatePseudoConsole")
+	procClosePseudoConsole   = w32.Kernel32.NewProc("ClosePseudoConsole")
+	procCreateProcessForPty  = w32.Kernel32.NewProc("CreateProcessW")
+	procGetHandleInformation = w32.Kernel32.NewProc("GetHandleInformation")
 )
-
-// startupInfoExPty mirrors STARTUPINFOEXW: a plain STARTUPINFOW followed by
-// the attribute-list pointer CreateProcessW reads when
-// EXTENDED_STARTUPINFO_PRESENT is set. Go's own syscall package has the same
-// shape internally (_STARTUPINFOEXW, embedding StartupInfo), unexported and
-// so not reusable here.
-type startupInfoExPty struct {
-	syscall.StartupInfo
-	attributeList uintptr
-}
 
 // handleInheritable reads HANDLE_FLAG_INHERIT back off a handle through
 // GetHandleInformation, the same call
@@ -401,29 +383,14 @@ func probeInsideAPseudoConsole(t *testing.T, mode string) (string, uint32) {
 	}
 	defer procClosePseudoConsole.Call(uintptr(hpc))
 
-	var attrSize uintptr
-	procInitAttributeListForPty.Call(0, 1, 0, uintptr(unsafe.Pointer(&attrSize)))
-	if attrSize == 0 {
-		t.Fatal("InitializeProcThreadAttributeList did not report a buffer size")
+	// startupInfoForPseudoConsole is the production builder; exercising it
+	// here stands in for the hand-rolled attribute-list sequence this test
+	// used to carry itself.
+	startup, freeAttr, err := startupInfoForPseudoConsole(hpc)
+	if err != nil {
+		t.Fatal(err)
 	}
-	attrBuf := make([]byte, attrSize)
-	// attrList is a uintptr, invisible to the collector; attrBuf has to stay
-	// reachable through every use of attrList below, all the way past
-	// CreateProcessW, or the collector could reclaim it first -- the same
-	// reasoning RunAsAccount's own runtime.KeepAlive calls exist for.
-	defer runtime.KeepAlive(attrBuf)
-	attrList := uintptr(unsafe.Pointer(&attrBuf[0]))
-	if r, _, callErr := procInitAttributeListForPty.Call(attrList, 1, 0, uintptr(unsafe.Pointer(&attrSize))); r == 0 {
-		t.Fatalf("InitializeProcThreadAttributeList: %v", callErr)
-	}
-	defer procDeleteAttributeListForPty.Call(attrList)
-	if r, _, callErr := procUpdateAttributeForPty.Call(attrList, 0, pseudoConsoleAttribute, uintptr(hpc), unsafe.Sizeof(hpc), 0, 0); r == 0 {
-		t.Fatalf("UpdateProcThreadAttribute: %v", callErr)
-	}
-
-	var startup startupInfoExPty
-	startup.Cb = uint32(unsafe.Sizeof(startup))
-	startup.attributeList = attrList
+	defer freeAttr()
 
 	var created syscall.ProcessInformation
 	commandLine := syscall.EscapeArg(exe) + " " + stdinBridgeProbeFlag + " " + syscall.EscapeArg(resultFile)
@@ -443,8 +410,9 @@ func probeInsideAPseudoConsole(t *testing.T, mode string) (string, uint32) {
 	const flags = extendedStartupInfoPresent
 	r, _, callErr = procCreateProcessForPty.Call(
 		0, uintptr(unsafe.Pointer(line)), 0, 0, inheritHandles, flags, 0, 0,
-		uintptr(unsafe.Pointer(&startup)), uintptr(unsafe.Pointer(&created)))
+		uintptr(unsafe.Pointer(&startup.StartupInfo)), uintptr(unsafe.Pointer(&created)))
 	runtime.KeepAlive(line)
+	runtime.KeepAlive(startup)
 	if r == 0 {
 		t.Fatalf("CreateProcessW: %v", callErr)
 	}

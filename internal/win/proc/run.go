@@ -4,6 +4,7 @@ package proc
 
 import (
 	"fmt"
+	"runtime"
 	"syscall"
 	"unsafe"
 
@@ -70,6 +71,84 @@ func Run(token syscall.Token, commandLine, directory string) (int, error) {
 	if r == 0 {
 		return -1, fmt.Errorf("starting %s: %w", commandLine, callErr)
 	}
+	return runInJob(j, &created)
+}
+
+// RunWithConsole is Run's counterpart for a program whose terminal is a
+// pseudo console: pass the HPCON CreatePseudoConsole returned and the child
+// is born attached to that console. GetConsoleMode answers on an attached
+// console, so raw-mode terminal programs -- the ones that will not start
+// against inherited pipes at all -- start, which is the problem this solves
+// (see internal/sandbox/exec's takeConsoleRelay for the caller side).
+//
+// Standard handles are deliberately NOT duplicated and STARTF_USESTDHANDLES
+// is not set: a child attached through the pseudo console attribute gets its
+// console from the attachment, and bInheritHandles is passed as false, so
+// nothing of the caller's handle table crosses at all. The child's
+// GetStdHandle values staying invalid until it opens CONIN$/CONOUT$ itself
+// is the documented CRT-startup gap, not a defect here.
+//
+// The job, the suspended start and the interrupt rules are Run's, shared via
+// runInJob and waitOrStop. The caller keeps the pseudo console and its pipes
+// open for as long as the program runs.
+//
+// The combination CreateProcessAsUserW + STARTUPINFOEX +
+// PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE was measured live under a real sandbox
+// account's restricted token, in
+// docs/investigations/2026-09-20-same-window-console.md section 4.
+func RunWithConsole(token syscall.Token, commandLine, directory string, pseudoConsole syscall.Handle) (int, error) {
+	j, err := newJob()
+	if err != nil {
+		return -1, err
+	}
+	// Behind every other teardown in this function, and safe there: nothing
+	// here waits on a pipe the child could keep open -- closing a handle
+	// does not wait for its other holders -- so this Close always runs, and
+	// promptly, with kill-on-close ending whatever the program left
+	// running. RunAsAccount cannot leave its own Close in this position,
+	// because its bridge finish waits for EOF on exactly the handles a
+	// backgrounded child inherits; it closes its job before draining
+	// instead. See P1-2 in
+	// docs/reviews/release-review-P-2026-09-19-round10.md.
+	defer j.Close()
+
+	startup, freeStartup, err := startupInfoForPseudoConsole(pseudoConsole)
+	if err != nil {
+		return -1, err
+	}
+	defer freeStartup()
+	line, err := syscall.UTF16FromString(commandLine)
+	if err != nil {
+		return -1, err
+	}
+	dir := w32.UTF16(directory)
+	var created syscall.ProcessInformation
+	// Suspended only, so that nothing it starts can slip out before it is
+	// assigned to the job. Deliberately not in a process group of its own,
+	// for the same reason Run's child is not: that would disable Ctrl+C for
+	// it entirely, and the console the attachment gives it already leaves
+	// the keypress with the program.
+	const flags = createSuspended | extendedStartupInfoPresent
+	r, _, callErr := procCreateProcessAsUser.Call(uintptr(token), 0, uintptr(unsafe.Pointer(&line[0])),
+		0, 0, 0, flags, 0, uintptr(unsafe.Pointer(dir)),
+		uintptr(unsafe.Pointer(&startup.StartupInfo)), uintptr(unsafe.Pointer(&created)))
+	// Every argument above reaches the call as a plain number, which is not
+	// a reference the collector can see: without these, nothing stops it
+	// freeing any of them while Windows is still reading them -- the same
+	// reasoning as runAsAccount in logon.go.
+	runtime.KeepAlive(line)
+	runtime.KeepAlive(dir)
+	runtime.KeepAlive(startup)
+	if r == 0 {
+		return -1, fmt.Errorf("starting %s: %w", commandLine, callErr)
+	}
+	return runInJob(j, &created)
+}
+
+// runInJob is the part of starting a child that is the same whichever way it
+// was launched: into its job while still suspended, so nothing it starts can
+// slip out unwatched, then running, then waited for.
+func runInJob(j *job, created *syscall.ProcessInformation) (int, error) {
 	defer syscall.CloseHandle(created.Process)
 	defer syscall.CloseHandle(created.Thread)
 

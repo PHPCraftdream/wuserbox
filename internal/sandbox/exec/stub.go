@@ -62,6 +62,12 @@ const StubFlag = "-sandbox-stub"
 // the caller's: a different account cannot attach to it, for input any more
 // than for output. AllocConsole gives the account a real one instead, and
 // the program starts against that.
+//
+// EnvConsoleRelay is the second answer to the same problem: a pseudo console
+// with no window at all, taken in the same pre-Shield window for the same
+// measured reason, and the program started attached to it through
+// proc.RunWithConsole. The two are refused together: they are two different
+// consoles for one program, not two halves of one.
 func Stub(args []string) error {
 	if len(args) != 2 && len(args) != 3 {
 		return exit.Errorf(exit.Usage,
@@ -93,13 +99,24 @@ func Stub(args []string) error {
 		// protected state location to code inside the sandbox.
 		_ = os.Unsetenv(lock.TransferEnv)
 	}
-	// Read and dropped at once, the way the slot handoff above is: the flag
-	// that asked for a console of its own is the caller's business, and the
-	// program would inherit it as plain environment if it stayed. Whether a
+	// Read and dropped at once, the way the slot handoff above is: the env
+	// vars that ask for a console are the caller's business, and the program
+	// would inherit either as plain environment if it stayed. Whether a
 	// console is wanted is decided here, and the console itself is taken just
 	// before Shield.
 	ownConsole := os.Getenv(proc.EnvOwnConsole) != ""
 	_ = os.Unsetenv(proc.EnvOwnConsole)
+	relayWanted := os.Getenv(proc.EnvConsoleRelay) != ""
+	_ = os.Unsetenv(proc.EnvConsoleRelay)
+	// Two answers to one question -- a real console in a window of its own,
+	// or a windowless one relayed as bytes -- and only one of them can be
+	// given. Refused rather than resolved: whoever set both asked for a
+	// contradiction, and silently honoring one half of it would hide that.
+	if ownConsole && relayWanted {
+		return exit.Errorf(exit.Usage,
+			"%s and %s name two different consoles for the program; set only one",
+			proc.EnvOwnConsole, proc.EnvConsoleRelay)
+	}
 	restricted, err := token.AsSandbox(args[0], args[1])
 	if err != nil {
 		return err
@@ -124,6 +141,18 @@ func Stub(args []string) error {
 		}
 		defer restore()
 	}
+	var relay *consoleRelay
+	if relayWanted {
+		r, err := takeConsoleRelay()
+		if err != nil {
+			return err
+		}
+		relay = r
+		// The same blind spot the own-console restore above sits in:
+		// os.Exit skips deferred calls, so on the success path this close
+		// never runs, and the stub's death closes what it names.
+		defer relay.close()
+	}
 	// Before the program exists, and not after -- and before the two-argument
 	// return below, not conditioned on it. What is about to start, when there
 	// is something to start, is the same account as this process, holding a
@@ -143,7 +172,15 @@ func Stub(args []string) error {
 	if err != nil {
 		return err
 	}
-	code, err := proc.Run(restricted, args[2], here)
+	// When the relay's console exists it is the program's, handles and all;
+	// when it does not, the streams this process holds are duplicated into
+	// the program the way they always were.
+	var code int
+	if relay != nil {
+		code, err = proc.RunWithConsole(restricted, args[2], here, relay.hpc)
+	} else {
+		code, err = proc.Run(restricted, args[2], here)
+	}
 	if err != nil {
 		return err
 	}
