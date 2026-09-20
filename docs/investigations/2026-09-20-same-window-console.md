@@ -280,3 +280,126 @@ it is worth saying plainly rather than as an apology:
 
 Windows Terminal's tab mechanism does not change that answer, and neither does
 any ACL.
+
+## 4 — ConPTY under a real sandbox token, via the actual launch call: **VIABLE** (measured)
+
+Section 3 ended on one risk it could not retire from the desk it was written
+at: whether `CreatePseudoConsole` succeeds under a *real* sandbox account —
+"AllocConsole works there" was an argument, not the measurement — and whether
+a child attaches to it through the call wuserbox itself uses,
+`CreateProcessAsUserW` with `STARTUPINFOEX` +
+`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` + `EXTENDED_STARTUPINFO_PRESENT`, never
+tested with `STARTUPINFOEX` anywhere in this codebase. Both are now measured,
+on a real account, live.
+
+**Where the account came from.** No new sandbox was built and no elevation
+was asked for. The account from this machine's earlier probe session,
+`wub-25e03ccf5218477d`, still answers `net user`: the OS account outlived the
+worktree that owned it, and its sealed password outlived that worktree too,
+in the state record `%LOCALAPPDATA%\wuserbox\wub-conpty-probe-5218477d.json`.
+`account.Unprotect` opens that seal under the operator account the same way
+it does on every run — 24 characters, never printed — and the account's group
+and read-group memberships are still exactly what `--init` gives a sandbox.
+Before trusting any of it, the shipped binary ran a control against the same
+sandbox and succeeded (`wuserbox --dir D:\dev\go\wuserbox\scratch\conpty-probe
+cmd /c echo …` printed through the whole stub chain), so the account was
+known to log on and run before the probe said a word. The operator clicked
+nothing: no UAC prompt appeared at any point.
+
+**The probe.** A standalone scratch program (untracked, gitignored, not
+committed) with three modes mirroring the production chain and nothing else.
+The parent mode logs the host on exactly as `runAsAccount` does —
+`LOGON_WITH_PROFILE`, `CREATE_UNICODE_ENVIRONMENT`, `CREATE_NO_WINDOW`,
+bridge pipes for output, no lease, no narrowing — and relays the host's
+output live. The host mode is the stub's pre-`Shield` window standing still:
+the account's unrestricted token, no narrowing of any kind. It calls
+`CreatePseudoConsole`, then starts a child through `CreateProcessAsUserW`
+with the pseudo console attribute — first with the account token, then with
+the token `token.AsSandbox` builds, which is the token `proc.Run` receives
+after `Shield`. The child mode is avenue 3's checker verbatim in shape: what
+`GetStdHandle` says, then `CONIN$`/`CONOUT$` opened by name and answered for
+`GetConsoleMode`, the report written to a `CONOUT$` it opened itself and, so
+the evidence could not depend on relay timing, to a file in the account's
+temp directory.
+
+**What was measured.** The final run of the corrected probe, verbatim:
+
+```
+parent: probe=C:\Users\Computer\AppData\Local\wuserbox\tmp\wub-conpty-probe-5218477d\wub-conpty-probe.exe account=wub-25e03ccf5218477d readGroup=wub-read-e2144bd9 hostDir=C:\Users\Computer\AppData\Local\wuserbox\tmp\wub-conpty-probe-5218477d
+
+== host variant: production shape (CREATE_NO_WINDOW: a console without a window) ==
+-- host stdout --
+-- host stderr --
+running as: wub-25e03ccf5218477d
+GetConsoleWindow at start: 0x0 (0 means no console attached)
+[account token] CreatePseudoConsole: ok, handle 0x159b7807ac0
+[account token] calling CreateProcessAsUserW with the pseudo console attached
+[account token] CreateProcessAsUserW with the pseudo console attached: ok, pid 66664
+[account token] child exited 0 (259 would mean it never came back)
+[account token] child report file: CHILD[account token] std handles: stdin console=false (The handle is invalid.); stdout console=false (The handle is invalid.); CONIN$ open=true mode=0x1f7 (no error); CONOUT$ open=true mode=0x7 (no error)
+[account token] closing the pseudo console
+[account token] what the pseudo console printed: "\x1b[2J\x1b[m\x1b[HCHILD[account token] std handles: stdin console=false (The handle is invalid.);\r\nstdout console=false (The handle is invalid.); CONIN$ open=true mode=0x1f7 (no e\r\nrror); CONOUT$ open=true mode=0x7 (no error)\r\n\x1b]0;C:\\Users\\Computer\\AppData\\Local\\wuserbox\\tmp\\wub-conpty-probe-5218477d\\wub-conpty-probe.exe\a\x1b[?25h"
+[restricted token] token.AsSandbox: ok
+[restricted token] CreatePseudoConsole: ok, handle 0x159b7807b40
+[restricted token] calling CreateProcessAsUserW with the pseudo console attached
+[restricted token] CreateProcessAsUserW with the pseudo console attached: ok, pid 38380
+[restricted token] child exited 0 (259 would mean it never came back)
+[restricted token] child report file: CHILD[restricted token] std handles: stdin console=false (The handle is invalid.); stdout console=false (The handle is invalid.); CONIN$ open=true mode=0x1f7 (no error); CONOUT$ open=true mode=0x7 (no error)
+[restricted token] closing the pseudo console
+[restricted token] what the pseudo console printed: "\x1b[2J\x1b[m\x1b[HCHILD[restricted token] std handles: stdin console=false (The handle is invalid.\r\n); stdout console=false (The handle is invalid.); CONIN$ open=true mode=0x1f7 (n\r\no error); CONOUT$ open=true mode=0x7 (no error)\r\n\x1b]0;C:\\Users\\Computer\\AppData\\Local\\wuserbox\\tmp\\wub-conpty-probe-5218477d\\wub-conpty-probe.exe\a\x1b[?25h"
+== host exited 0 ==
+```
+
+**What the lines say.**
+
+- `CreatePseudoConsole` succeeds under the real account token, in the stub's
+  own birth shape — a console without a window, `GetConsoleWindow` 0x0 —
+  twice, once per child. Section 3's premise is no longer an argument; it is
+  the measurement, and the recommendation's "first step" is done.
+- `CreateProcessAsUserW` accepts `STARTUPINFOEX` with the pseudo console
+  attribute under both tokens, and the children ran: pid, exit 0, and a real
+  console — `CONIN$` at mode `0x1f7`, `CONOUT$` at `0x7`, the same numbers
+  avenue 3's ordinary-token probe measured. The earlier closure survives
+  contact with the right API: what `CreateProcessWithLogonW` refuses,
+  `CreateProcessAsUserW` — the call that does not cross the account line
+  because the stub is already inside it — takes and honors.
+- The restricted token is the important half. `token.AsSandbox` builds inside
+  the account, and the child created with it attached to the pseudo console's
+  console and reported the same modes. The production shape — console taken
+  before `Shield`, program started after it through `proc.Run`'s
+  `CreateProcessAsUserW` — is measured end to end in miniature.
+- The CRT-startup gap reproduces under the account exactly as avenue 3 found
+  it: standard handles invalid until the console devices are opened by name.
+  The fix shape already exists in this tree (`openConsoleStreams`).
+- The relay is real bytes, not a hope: the drain captured conhost's own
+  opening sequence (`\x1b[2J\x1b[m\x1b[H`), the child's report re-wrapped at
+  the pseudo console's 80 columns, the title escape naming the probe
+  executable, and `\x1b[?25h` — the same rendered-VT stream avenue 3
+  described, now produced under the account and read back by the probe.
+
+One fact about the launch call itself is worth keeping: `DETACHED_PROCESS` is
+refused by `CreateProcessWithLogonW` with "The parameter is incorrect" —
+measured — so avenue 3's exact host shape (no console at all) cannot be
+produced through the account-crossing call. Nothing is lost: the shape the
+real implementation would have is the production stub's own, and that is the
+one measured here.
+
+**What was not measured, said plainly.** The host never ran `Shield` itself;
+the child carried the same restricted token `AsSandbox` builds, which is what
+`proc.Run` receives, but the host's own process token stayed un-narrowed
+throughout, as it does in the real pre-`Shield` window. Input direction —
+keystrokes typed into the relay — was never exercised. Resize, Ctrl-C
+forwarding and mode restoration remain section 3's list of implementation
+debts, untouched by this section. And the first two probe runs were lost to
+defects in the probe itself — an HRESULT read as a BOOL, and a drain that
+only delivered at EOF, which arrives after the drain — both probe-side, both
+fixed before any output above was taken; no successful step changed behavior
+across retries, which the repeated identical lines are there to show.
+
+**Verdict.** Viable, measured live: the pseudo console exists under the
+account's real token, children attach to it through the exact call wuserbox
+uses, the restricted token inherits nothing bad, and what comes out the other
+end of the pipe is rendered VT ready for the operator's window. What remains
+for same-window rendering is implementation work — the relay, raw mode on the
+operator's side, resize, interrupt forwarding — and no longer a boundary
+question.
