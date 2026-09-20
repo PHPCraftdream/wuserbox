@@ -175,12 +175,23 @@ func resolvedRootRel(root *os.Root, rootRel string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	rel, err := filepath.Rel(root.Name(), full)
+	// root.Name() is whatever spelling the caller opened the root with, not
+	// the volume's own answer for it -- measured on a machine whose TEMP
+	// resolves to an 8.3-shortened directory (a GitHub-hosted Windows
+	// runner's runneradmin profile among them): root.Name() then carries
+	// the short form while full, from GetFinalPathNameByHandle, always
+	// carries the long one, and no relative path lines the two up. Both
+	// sides go through the same resolution before they are compared.
+	rootFull, err := pathid.Canonical(root.Name())
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(rootFull, full)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		// root.Name() and the resolved spelling can disagree about the
-		// case of the directories between them; a relative path that
-		// climbs says the two could not be lined up lexically, and the
-		// as-written question stands.
+		// The two resolved spellings can still disagree about the case of
+		// the directories between them; a relative path that climbs says
+		// they could not be lined up lexically, and the as-written
+		// question stands.
 		return "", false
 	}
 	return filepath.ToSlash(rel), true

@@ -3,6 +3,7 @@ package profile
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"unsafe"
@@ -638,5 +639,42 @@ func TestAPlainRunStillCarriesAnAliasShapedNameThatResolvesToItself(t *testing.T
 	fill(t, dest)
 	if copied, skipped := whatTheRunDid(t, filepath.Join(dest, "tools")); copied != 0 || skipped != 1 {
 		t.Errorf("the second run copied %d and skipped %d, want the one file skipped", copied, skipped)
+	}
+}
+
+// TestATakeBackSparesTheHiveWhenTheProfileRootItselfIsShortSpelled pins the
+// resolution question against a root opened through its own 8.3 spelling,
+// not only a leaf's. resolvedRootRel compares the volume's answer for a leaf
+// against root.Name() as the caller opened it: a root opened through a
+// short-name alias of a directory carries that short spelling for as long as
+// it stays open, while GetFinalPathNameByHandle always answers a leaf's own
+// question in the long form -- a comparison between an unresolved short root
+// and a resolved long leaf never lines up, and the whole resolution question
+// silently falls back to the as-written check, which is the bug this test
+// exists to keep closed.
+//
+// This is not a machine-specific corner: a GitHub-hosted Windows runner's own
+// TEMP resolves to an 8.3-shortened profile directory (runneradmin ->
+// RUNNER~1), which is exactly this shape and is where the bug first showed --
+// every profile-package test opens its root under such a runner's own short
+// spelling without asking for one. Reproduced here deliberately, through
+// GetShortPathNameW's own answer for a directory this test creates, rather
+// than depending on a machine's TEMP already being short-spelled the way
+// that runner's happened to be.
+func TestATakeBackSparesTheHiveWhenTheProfileRootItselfIsShortSpelled(t *testing.T) {
+	_, longDest := useProfile(t, []string{})
+	shortDest := shortNameSpelling(t, longDest)
+	if shortDest == "" || strings.EqualFold(shortDest, longDest) {
+		t.Skip("this machine does not give the profile directory an 8.3 alias (8.3 generation disabled)")
+	}
+
+	hive := filepath.Join(longDest, "NTUSER.DAT")
+	write(t, hive, profileServiceHive)
+
+	if err := Clear(shortDest, []config.Entry{{Path: "NTUSER.DAT."}}); err != nil {
+		t.Fatalf("the take-back refused a record spelling asked through a short-spelled root: %v", err)
+	}
+	if got := read(t, hive); got != profileServiceHive {
+		t.Errorf("the take-back took the hive because the profile root itself was short-spelled: %q", got)
 	}
 }
