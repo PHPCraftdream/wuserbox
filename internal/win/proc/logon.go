@@ -23,6 +23,7 @@ var (
 	procGetConsoleScreenBufferInfo = w32.Kernel32.NewProc("GetConsoleScreenBufferInfo")
 	procSetHandleInformation       = w32.Kernel32.NewProc("SetHandleInformation")
 	procSetConsoleMode             = w32.Kernel32.NewProc("SetConsoleMode")
+	procSetConsoleCtrlHandler      = w32.Kernel32.NewProc("SetConsoleCtrlHandler")
 )
 
 const (
@@ -396,9 +397,11 @@ const (
 // could forward while losing the insisting escalation that ends a run
 // whose program never answered the first one.
 //
-// The restore runs on every ordinary return, success and error both; a
-// panic or a kill skips it, and making the mode survive those is later
-// work, not an oversight here.
+// The restore runs on every ordinary return, success and error both, and
+// on every panic unwinding through runAsAccount too -- Go runs deferred
+// calls while unwinding. The kill that arrives as a console control event
+// is answered by startRelayKillRestore's handler; only TerminateProcess
+// remains past reach, which nothing outside the killer can answer.
 func relayConsoleModes() (func(), error) {
 	type savedMode struct {
 		handle syscall.Handle
@@ -438,6 +441,88 @@ func relayConsoleModes() (func(), error) {
 		saved = append(saved, savedMode{handle: handle, mode: mode})
 	}
 	return restore, nil
+}
+
+// Console control events worth naming, and the add/remove flag
+// SetConsoleCtrlHandler takes. CTRL_C_EVENT (0) and CTRL_BREAK_EVENT (1)
+// are deliberately absent: they belong to the interrupt-forwarding
+// machinery -- relayWatchInterrupts and waitOrStop's insisting escalation
+// -- and the relay's kill restore must not act on them, because a first
+// Ctrl-C press leaves the run alive under waitOrStop's first-press policy,
+// and tearing the relay's modes down on it would resurrect line editing
+// and echo mid-run while the run continues. See relayWatchInterrupts' doc
+// comment for that machinery.
+const (
+	// CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT: the three
+	// events Windows answers by terminating this process once the handlers
+	// have had their window, whether any handler returned TRUE or not.
+	ctrlCloseEvent    = 5
+	ctrlLogoffEvent   = 6
+	ctrlShutdownEvent = 7
+
+	consoleCtrlHandlerAdd    = 1
+	consoleCtrlHandlerRemove = 0
+)
+
+// relayCtrlRestoreHandler answers one console control event for the handler
+// startRelayKillRestore registers: restore the operator's console modes,
+// then let the event go on its way. It always returns FALSE, never
+// swallowing the event -- relayWatchInterrupts' own doc comment explains
+// what a TRUE-returning handler would swallow, and this must not fight it.
+//
+// Only the three close-class events act. They are the only console control
+// events where the process is terminated when the handlers finish no matter
+// what, so the ordinary defer in runAsAccount can never run and this call
+// is the console's only way back; CTRL_C_EVENT and CTRL_BREAK_EVENT are
+// left entirely alone, for the reasons the constant block above records.
+//
+// The restore is best effort: a failed SetConsoleMode inside the handler is
+// ignored, because there is nothing left to report a failure to and the
+// process is about to be terminated regardless.
+//
+// restore is the closure relayConsoleModes returned. Calling it here and
+// from the ordinary defer are the same idempotent calls -- SetConsoleMode
+// with the same saved values -- so no synchronization is added for the
+// hypothetical event racing a normal return.
+func relayCtrlRestoreHandler(event uint32, restore func()) uintptr {
+	switch event {
+	case ctrlCloseEvent, ctrlLogoffEvent, ctrlShutdownEvent:
+		restore()
+	}
+	return 0 // FALSE
+}
+
+// startRelayKillRestore registers a console control handler that puts the
+// operator's console modes back on the kill the ordinary defer cannot
+// answer -- the console closing, logoff, shutdown -- where Windows hands
+// each registered handler a bounded window of about five seconds and then
+// terminates the process no matter what; restoring here costs microseconds
+// of that window.
+//
+// Handlers are called most-recently-registered first, so this one is
+// called ahead of the Go runtime's own handler (registered at process
+// start) and every earlier registration; returning FALSE hands the event
+// on to them and to the default handling untouched, which is exactly the
+// contract relayCtrlRestoreHandler implements.
+//
+// The returned func removes the handler again and is called by
+// runAsAccount's defers on every ordinary return. A failed removal is
+// ignored, in the same spirit as the other teardown calls this file
+// ignores: the run is over and the modes are already back.
+//
+// The limit, said plainly: TerminateProcess -- taskkill /F, a job kill --
+// runs no handler and no defer, and nothing outside the killing process
+// can intercept it; that gap is accepted and not chased.
+func startRelayKillRestore(restore func()) (func(), error) {
+	handler := syscall.NewCallback(func(event uint32) uintptr {
+		return relayCtrlRestoreHandler(event, restore)
+	})
+	if r, _, callErr := procSetConsoleCtrlHandler.Call(handler, consoleCtrlHandlerAdd); r == 0 {
+		return nil, fmt.Errorf("registering the relay's console restore handler: %w", callErr)
+	}
+	return func() {
+		procSetConsoleCtrlHandler.Call(handler, consoleCtrlHandlerRemove)
+	}, nil
 }
 
 // ctrlCByte is the byte a real terminal's keyboard sends when Ctrl-C is
@@ -947,11 +1032,26 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 		// The operator's own console serves the relay for the run's
 		// duration and comes back out of it on every ordinary return --
 		// success and error both, the defers being what carries the
-		// restore; a panic or a kill is the gap later work owes.
+		// restore -- and on every panic unwinding through this function
+		// too, Go running deferred calls while unwinding. The
+		// handler-catchable kills -- the console closing, logoff,
+		// shutdown -- are answered during the run by startRelayKillRestore,
+		// whose handler Windows still calls in the bounded window it
+		// grants before terminating the process.
 		restoreConsole, err := relayConsoleModes()
 		if err != nil {
 			return -1, err
 		}
+		stopKillRestore, err := startRelayKillRestore(restoreConsole)
+		if err != nil {
+			restoreConsole()
+			return -1, err
+		}
+		// Defers run in reverse: the modes are restored by the first
+		// deferred call and the handler is removed by the second, so a
+		// kill landing between the two finds the console already back and
+		// a handler that would only set the same values again.
+		defer stopKillRestore()
 		defer restoreConsole()
 	}
 	// Suspended, for the same reason Run starts its own child suspended:

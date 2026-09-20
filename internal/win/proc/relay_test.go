@@ -42,6 +42,94 @@ func TestTheRelayCarriesAForwardedCtrlCAsTheKeyboardByte(t *testing.T) {
 	}
 }
 
+// ctrlCEvent is CTRL_C_EVENT, event 0; its sibling ctrlBreakEvent lives in
+// driver_test.go, where the tests that generate the events run.
+const ctrlCEvent = 0
+
+// TestTheKillRestoreHandlerAnswersOnlyTheEventsThatEndTheProcess pins the
+// whole decision relayCtrlRestoreHandler makes, with no console and no
+// registered handler in sight: the three close-class events -- close,
+// logoff, shutdown -- are each answered FALSE with the restore called
+// exactly once, and the two interrupt events -- Ctrl-C, Ctrl-Break -- are
+// answered FALSE with the restore never called, which is what leaves
+// waitOrStop's first-press policy and the forwarding machinery alone.
+//
+// What this does not measure: that Windows calls the handler at all on a
+// console close, which is the documented contract reasoned over in
+// startRelayKillRestore's comment, and the restore's effect on real mode
+// words, which the probe test below measures on a real one.
+func TestTheKillRestoreHandlerAnswersOnlyTheEventsThatEndTheProcess(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		event     uint32
+		wantCalls int
+	}{
+		{"the console closing", ctrlCloseEvent, 1},
+		{"logoff", ctrlLogoffEvent, 1},
+		{"shutdown", ctrlShutdownEvent, 1},
+		{"Ctrl-C", ctrlCEvent, 0},
+		{"Ctrl-Break", ctrlBreakEvent, 0},
+	} {
+		calls := 0
+		got := relayCtrlRestoreHandler(tc.event, func() { calls++ })
+		if got != 0 {
+			t.Errorf("%s: handler returned %d, want 0 (FALSE) -- a TRUE return would swallow the event", tc.name, got)
+		}
+		if calls != tc.wantCalls {
+			t.Errorf("%s: restore called %d times, want %d", tc.name, calls, tc.wantCalls)
+		}
+	}
+}
+
+// TestTheRelayRegistersItsKillRestoreHandlerAndTakesItBack proves, live in
+// this process, that syscall.NewCallback accepts the closure
+// startRelayKillRestore builds and SetConsoleCtrlHandler accepts the
+// resulting pointer, and that the removal comes back without error -- the
+// three calls a relay run makes around its own registration, exercised
+// without a console or a kill anywhere near.
+//
+// What this does not measure: the handler firing, which needs Windows to
+// deliver a close-class event and nothing in this process can synthesize
+// one -- see TestTheKillRestoreHandlerPutsARealConsoleBack for what a
+// pseudo-console child can still reach.
+func TestTheRelayRegistersItsKillRestoreHandlerAndTakesItBack(t *testing.T) {
+	stop, err := startRelayKillRestore(func() {})
+	if err != nil {
+		t.Fatalf("registering the console restore handler: %v", err)
+	}
+	stop()
+}
+
+// TestTheKillRestoreHandlerPutsARealConsoleBack runs the selection the unit
+// test above pins against a real console: inside the pseudo-console child,
+// whose os.Stdin is a pty console for the same reason an interactive
+// prompt's is, the input mode is read, the relay shape is taken on and
+// confirmed to have changed it, the close-class event is handed to
+// relayCtrlRestoreHandler and the original mode word must come back
+// exactly, and both interrupt events must then leave a second relay shape
+// untouched.
+//
+// The honest limits: GenerateConsoleCtrlEvent can only synthesize
+// CTRL_C_EVENT and CTRL_BREAK_EVENT, so a real CTRL_CLOSE_EVENT delivery
+// cannot be produced in-process -- what is measured live is the selection,
+// the FALSE return, the exact restore values on a real console, and that
+// SetConsoleCtrlHandler accepts the handler; that Windows actually calls
+// the handler on a console close is the documented contract, reasoned not
+// measured here. The mode words are machine-specific, so only the ok
+// prefix and the "left the relay shape" phrase are pinned, the latter
+// being what catches a probe that ignored its mode and reported
+// something else.
+func TestTheKillRestoreHandlerPutsARealConsoleBack(t *testing.T) {
+	t.Setenv(EnvConsoleRelay, "1")
+	report, code := probeInsideAPseudoConsole(t, "relay-kill-restore")
+	if !strings.HasPrefix(report, "ok:") {
+		t.Fatalf("probe reported %q (exit code %d)", report, code)
+	}
+	if !strings.Contains(report, "left the relay shape") {
+		t.Errorf("probe reported %q, want it to contain the interrupt-events answer", report)
+	}
+}
+
 // TestTheRelayResizeWatcherMeasuresAPtyResize is the "synthetic resize
 // without a literal screen" the feature needs: ResizePseudoConsole is what
 // a real terminal calls to change its size, so resizing the pty through it

@@ -311,6 +311,7 @@ func stdinBridgeProbe(resultFile string, mode ...string) int {
 	relayStandDown := len(mode) > 0 && mode[0] == "relay-stand-down"
 	relayInputMode := len(mode) > 0 && mode[0] == "relay-input"
 	relayCtrlCMode := len(mode) > 0 && mode[0] == "relay-ctrlc"
+	relayKillRestoreMode := len(mode) > 0 && mode[0] == "relay-kill-restore"
 	relayResizeDetectMode := len(mode) > 0 && mode[0] == "relay-resize-detect"
 	report := func(ok bool, msg string) int {
 		prefix := "error: "
@@ -531,6 +532,58 @@ func stdinBridgeProbe(resultFile string, mode ...string) int {
 			return report(false, fmt.Sprintf("the relay's input pipe ended without a forwarded Ctrl-C byte, got: %x", all))
 		}
 		return report(true, fmt.Sprintf("the forwarded 0x03 arrived among %d byte(s): %x", len(all), all))
+	}
+
+	if relayKillRestoreMode {
+		if os.Getenv(EnvConsoleRelay) == "" {
+			return report(false, EnvConsoleRelay+" is not set inside the pseudo-console child, so the relay's modes had nothing to answer for and the check would prove nothing")
+		}
+		handle := syscall.Handle(os.Stdin.Fd())
+		var original uint32
+		if err := syscall.GetConsoleMode(handle, &original); err != nil {
+			return report(false, "reading the original console mode: "+err.Error())
+		}
+		restore, err := relayConsoleModes()
+		if err != nil {
+			return report(false, "relayConsoleModes: "+err.Error())
+		}
+		var relayed uint32
+		if err := syscall.GetConsoleMode(handle, &relayed); err != nil {
+			restore()
+			return report(false, "reading the relayed console mode back: "+err.Error())
+		}
+		if relayed == original {
+			restore()
+			return report(false, fmt.Sprintf("the relay shape left the mode at %d, unchanged, so there is nothing for a restore to put back", original))
+		}
+		// The close-class event, answered the way the registered handler
+		// would answer it: the exact original mode word must come back.
+		relayCtrlRestoreHandler(ctrlCloseEvent, restore)
+		var afterClose uint32
+		if err := syscall.GetConsoleMode(handle, &afterClose); err != nil {
+			return report(false, "reading the mode back after the close-class restore: "+err.Error())
+		}
+		if afterClose != original {
+			return report(false, fmt.Sprintf("the close event left %d, want the original %d back", afterClose, original))
+		}
+		// In the relay shape again, then the two interrupt events: the
+		// handler must not act on them -- acting would fight the forwarding
+		// machinery -- so the mode must still read as the relay shape.
+		restore2, err := relayConsoleModes()
+		if err != nil {
+			return report(false, "relayConsoleModes: "+err.Error())
+		}
+		defer restore2()
+		relayCtrlRestoreHandler(ctrlCEvent, restore2)
+		relayCtrlRestoreHandler(ctrlBreakEvent, restore2)
+		var afterInterrupts uint32
+		if err := syscall.GetConsoleMode(handle, &afterInterrupts); err != nil {
+			return report(false, "reading the mode back after the interrupt events: "+err.Error())
+		}
+		if afterInterrupts != relayed {
+			return report(false, fmt.Sprintf("the interrupt events left %d, want the relay shape %d untouched", afterInterrupts, relayed))
+		}
+		return report(true, fmt.Sprintf("the close event put %d back over %d, and both interrupt events left the relay shape %d alone", original, relayed, afterInterrupts))
 	}
 
 	if relayResizeDetectMode {
