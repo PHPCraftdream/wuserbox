@@ -155,6 +155,10 @@ ENVIRONMENT
     WUSERBOX_OWN_CONSOLE       set by --own-console and passed to the run's
                                stub, which gives the program a console of
                                its own instead of the caller's
+    WUSERBOX_CONSOLE_RELAY     set by --console-relay and passed to the
+                               run's stub, which gives the program a
+                               console with no window, relayed through
+                               the caller's own
 
   A program can tell it is inside a sandbox by WUSERBOX_DIR being set. What it
   may write is not in the environment and cannot be changed from there:

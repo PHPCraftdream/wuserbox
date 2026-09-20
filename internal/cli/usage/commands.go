@@ -58,6 +58,13 @@ there while the run waits for its exit code. What the program does not
 get is a share of the window wuserbox was started from: the sandbox's
 own account cannot attach to it, for input any more than for output.
 
+"--console-relay" is the other answer to the same problem: the
+program gets a console with no window at all, and what it draws is
+carried as bytes into the console the run was started from, with
+your keystrokes, the window's size and Ctrl-C carried the other
+way. It is one console for the program either way, so the two
+flags refuse each other.
+
 A run changes nothing about the sandbox. What may be written is decided
 by "--init", "--grant" and "--add-dir", and is the same whichever
 command line starts the program.`,
@@ -69,6 +76,7 @@ command line starts the program.`,
 			{"--quiet", "no progress messages, errors only"},
 			{"--non-interactive", "fail instead of asking for administrator rights"},
 			{"--own-console", "give the program a console of its own instead of sharing this one"},
+			{"--console-relay", "relay the program's console through this one instead of a window of its own"},
 		},
 		Exits: "Whatever the program inside returned, so the code you read is its own.",
 		Examples: []string{

@@ -146,6 +146,19 @@ func TestParseOptionsHandsTheProgramItsOwnConsole(t *testing.T) {
 	os.Unsetenv(proc.EnvOwnConsole)
 }
 
+// TestParseOptionsHandsTheProgramARelayedConsole keeps --console-relay on the
+// same path --own-console takes.
+func TestParseOptionsHandsTheProgramARelayedConsole(t *testing.T) {
+	os.Unsetenv(proc.EnvConsoleRelay)
+	if _, _, err := ParseOptions("run", []string{"--console-relay", "--", "cmd"}); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv(proc.EnvConsoleRelay) == "" {
+		t.Error("--console-relay did not reach the environment")
+	}
+	os.Unsetenv(proc.EnvConsoleRelay)
+}
+
 // TestInitRejectsOwnConsole keeps a run-only flag a run-only flag: init does
 // not register it, so asking init for it is answered as a mistyped flag.
 func TestInitRejectsOwnConsole(t *testing.T) {
@@ -156,6 +169,40 @@ func TestInitRejectsOwnConsole(t *testing.T) {
 	if !strings.Contains(err.Error(), "own-console") {
 		t.Errorf("the error does not name the flag: %v", err)
 	}
+}
+
+// TestInitRejectsConsoleRelay keeps a run-only flag a run-only flag.
+func TestInitRejectsConsoleRelay(t *testing.T) {
+	_, _, err := ParseOptions("init", []string{"--console-relay"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "console-relay") {
+		t.Errorf("the error does not name the flag: %v", err)
+	}
+}
+
+// TestParseOptionsRefusesTheTwoConsolesTogether covers the refusal the stub
+// would otherwise be the first to make: a run asking for both consoles is
+// turned down in terms of the flags themselves, and before either variable
+// is set, so nothing half-answered travels to the child.
+func TestParseOptionsRefusesTheTwoConsolesTogether(t *testing.T) {
+	os.Unsetenv(proc.EnvOwnConsole)
+	os.Unsetenv(proc.EnvConsoleRelay)
+	_, _, err := ParseOptions("run", []string{"--own-console", "--console-relay", "--", "cmd"})
+	if got := exit.Of(err); got != exit.Usage {
+		t.Fatalf("exit code is %v, want %v (error: %v)", got, exit.Usage, err)
+	}
+	for _, flag := range []string{"--own-console", "--console-relay"} {
+		if !strings.Contains(err.Error(), flag) {
+			t.Errorf("the message does not name %s: %v", flag, err)
+		}
+	}
+	if os.Getenv(proc.EnvOwnConsole) != "" || os.Getenv(proc.EnvConsoleRelay) != "" {
+		t.Error("the refusal set an environment variable on the way out")
+	}
+	os.Unsetenv(proc.EnvOwnConsole)
+	os.Unsetenv(proc.EnvConsoleRelay)
 }
 
 func TestRunNeedsACommand(t *testing.T) {

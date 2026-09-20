@@ -83,8 +83,20 @@ func ParseOptions(name string, args []string) (sandbox.Options, []string, error)
 	if o.allowLinks {
 		_ = os.Setenv(acl.EnvAllowLinks, "1")
 	}
+	// Two answers to one question -- a console in a window of its own, or a
+	// windowless one relayed through this one -- and the stub refuses the
+	// environment variables together. Answering here as well says so in the
+	// flags the operator actually typed, before a sandbox is built on a
+	// command line that was never going to run.
+	if o.ownConsole && o.consoleRelay {
+		return sandbox.Options{}, nil, exit.Errorf(exit.Usage,
+			"--own-console and --console-relay each give the program a different console; set only one")
+	}
 	if o.ownConsole {
 		_ = os.Setenv(proc.EnvOwnConsole, "1")
+	}
+	if o.consoleRelay {
+		_ = os.Setenv(proc.EnvConsoleRelay, "1")
 	}
 	options := sandbox.Options{
 		Dir: o.dir, RW: o.rw, RO: o.ro,
@@ -102,6 +114,7 @@ type shared struct {
 	nonInteractive, dryRun, asJSON bool
 	allowLinks                     bool
 	ownConsole                     bool
+	consoleRelay                   bool
 }
 
 // sharedFlags builds that set. It stands apart from the parsing so a test can
@@ -124,6 +137,8 @@ func sharedFlags(name string) (*flag.FlagSet, *shared) {
 	if name == "run" {
 		flags.BoolVar(&o.ownConsole, "own-console", false,
 			"give the program a console of its own instead of sharing this one")
+		flags.BoolVar(&o.consoleRelay, "console-relay", false,
+			"relay the program's console through this one instead of a window of its own")
 	}
 	return flags, o
 }
