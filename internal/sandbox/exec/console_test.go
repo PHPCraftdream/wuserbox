@@ -28,6 +28,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
@@ -35,8 +36,9 @@ import (
 )
 
 var (
-	procGetStdHandle = w32.Kernel32.NewProc("GetStdHandle")
-	procSetStdHandle = w32.Kernel32.NewProc("SetStdHandle")
+	procGetStdHandle         = w32.Kernel32.NewProc("GetStdHandle")
+	procSetStdHandle         = w32.Kernel32.NewProc("SetStdHandle")
+	procGetHandleInformation = w32.Kernel32.NewProc("GetHandleInformation")
 )
 
 // TestOpenConsoleStreamsRepointsTheStandardStreamsAtARealConsole covers the
@@ -163,6 +165,43 @@ func TestTheConsoleRelayCarriesTheChildsRenderedOutput(t *testing.T) {
 	}
 	if got := captured(); !strings.Contains(got, marker) {
 		t.Errorf("the relay's output never named the marker; captured:\n%s", got)
+	}
+}
+
+// TestTheRelayPipeEndsStayOutOfTheInheritancePath measures the handle
+// hygiene takeConsoleRelay's comment claims, the way the proc package
+// measures the same claim about its own bridge pipes: the relay's two kept
+// ends -- the input end keystrokes are written through and the output end
+// rendered bytes are read from -- stay in this process, and neither may
+// reach a child it was never meant for through ambient inheritance. What
+// makes the check worth its own test is that this package's noInherit is
+// its own copy of the hygiene, not internal/win/proc's, and no other test
+// here reads back what that copy did at this call site -- the same standard
+// docs/reviews/sandbox-security-review-2026-09-19.md's P2-1 set and
+// TestNoInheritStripsTheInheritFlag holds the proc package's copy to.
+func TestTheRelayPipeEndsStayOutOfTheInheritancePath(t *testing.T) {
+	if err := procCreatePseudoConsole.Find(); err != nil {
+		t.Skip("CreatePseudoConsole is not available on this Windows build (ConPTY needs Windows 10 1809+)")
+	}
+	relay, err := takeConsoleRelay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.close()
+	for _, end := range []struct {
+		name string
+		file *os.File
+	}{
+		{"the relay's input end", relay.input},
+		{"the relay's output end", relay.output},
+	} {
+		var flags uint32
+		if r, _, callErr := procGetHandleInformation.Call(end.file.Fd(), uintptr(unsafe.Pointer(&flags))); r == 0 {
+			t.Fatalf("GetHandleInformation on %s: %v", end.name, callErr)
+		}
+		if flags&handleFlagInherit != 0 {
+			t.Errorf("%s is still inheritable; the relay's pipe ends were meant to stop at this process", end.name)
+		}
 	}
 }
 
