@@ -151,7 +151,7 @@ func Shield() error {
 		daclSecurityInformation|protectedDaclSecurityInformation, 0, 0, dacl, 0); r != 0 {
 		return fmt.Errorf("shutting this process to %s: error %d", me, r)
 	}
-	return shutThreadsAlreadyRunning(dacl)
+	return shutThreadsAlreadyRunning(dacl, uint32(syscall.Getpid()))
 }
 
 // Shielded reports whether this process is carrying the list Shield installs,
@@ -200,16 +200,31 @@ func shutFutureThreads(dacl uintptr) error {
 		return fmt.Errorf("opening this process's own token: %w", err)
 	}
 	defer self.Close()
-	if r, _, callErr := procSetTokenInformation.Call(uintptr(self), classDefaultDacl,
-		uintptr(unsafe.Pointer(&dacl)), unsafe.Sizeof(dacl)); r == 0 {
-		return fmt.Errorf("shutting the threads this process has yet to make: %w", callErr)
+	if err := shutFutureThreadsOf(self, dacl); err != nil {
+		return fmt.Errorf("shutting the threads this process has yet to make: %w", err)
 	}
 	return nil
 }
 
-// shutThreadsAlreadyRunning puts the same list on every thread this process
-// already has. The runtime made them before any of this ran, so they carry
-// the list the account was given at logon and nothing else would reach them.
+// shutFutureThreadsOf puts the list on any token's default list, the one
+// thing Windows hands a thread created with no list of its own. Split out of
+// shutFutureThreads because ShieldConhost puts the identical list on a
+// console host's token, reached through the one handle it holds before the
+// list goes on -- a fresh open made afterwards would be refused by the very
+// list it exists to apply.
+func shutFutureThreadsOf(token syscall.Token, dacl uintptr) error {
+	if r, _, callErr := procSetTokenInformation.Call(uintptr(token), classDefaultDacl,
+		uintptr(unsafe.Pointer(&dacl)), unsafe.Sizeof(dacl)); r == 0 {
+		return fmt.Errorf("setting a token's default list: %w", callErr)
+	}
+	return nil
+}
+
+// shutThreadsAlreadyRunning puts the same list on every thread of the named
+// process it already has. Whichever process that is, its threads were made
+// before any of this ran -- by this process's runtime for Shield, by the
+// console host itself for ShieldConhost -- so they carry whatever list they
+// were given at birth and nothing else would reach them.
 //
 // One thread is passed over and only one: the one that ended between being
 // listed and being reached, which Windows answers with "invalid parameter"
@@ -222,14 +237,13 @@ func shutFutureThreads(dacl uintptr) error {
 // looked at. A thread that was alive and could not be shut was then
 // indistinguishable from one that had ended, and the program started anyway
 // -- under a shield with a hole in it, reported as a shield.
-func shutThreadsAlreadyRunning(dacl uintptr) error {
+func shutThreadsAlreadyRunning(dacl uintptr, pid uint32) error {
 	snapshot, _, callErr := procCreateToolhelp32Snapshot.Call(snapshotOfThreads, 0)
 	if snapshot == 0 || snapshot == invalidHandle {
-		return fmt.Errorf("listing this process's own threads: %w", callErr)
+		return fmt.Errorf("listing the threads of process %d: %w", pid, callErr)
 	}
 	defer syscall.CloseHandle(syscall.Handle(snapshot))
 
-	mine := uint32(syscall.Getpid())
 	entry := make([]byte, sizeOfThreadEntry32)
 	*(*uint32)(unsafe.Pointer(&entry[0])) = sizeOfThreadEntry32
 	shut := 0
@@ -239,9 +253,9 @@ func shutThreadsAlreadyRunning(dacl uintptr) error {
 			if errors.Is(listErr, syscall.Errno(errNoMoreItems)) {
 				break
 			}
-			return fmt.Errorf("walking this process's own threads: %w", listErr)
+			return fmt.Errorf("walking the threads of process %d: %w", pid, listErr)
 		}
-		if *(*uint32)(unsafe.Pointer(&entry[offsetOfOwnerProcess])) != mine {
+		if *(*uint32)(unsafe.Pointer(&entry[offsetOfOwnerProcess])) != pid {
 			continue
 		}
 		id := *(*uint32)(unsafe.Pointer(&entry[offsetOfThreadID]))
@@ -260,11 +274,12 @@ func shutThreadsAlreadyRunning(dacl uintptr) error {
 		}
 		shut++
 	}
-	// A walk that shut nothing found no thread of its own, which cannot be
-	// true of a running process and means the listing answered about somebody
-	// else. Better to refuse than to report a shield over an empty set.
+	// A walk that shut nothing found no thread of the process it was asked
+	// about, which cannot be true of a running process and means the listing
+	// answered about somebody else. Better to refuse than to report a shield
+	// over an empty set.
 	if shut == 0 {
-		return fmt.Errorf("no thread of this process was found to shut")
+		return fmt.Errorf("no thread of process %d was found to shut", pid)
 	}
 	return nil
 }

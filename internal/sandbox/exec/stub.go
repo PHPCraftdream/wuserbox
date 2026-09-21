@@ -80,6 +80,15 @@ const relayFlushGrace = 250 * time.Millisecond
 // relay's third pipe carries only the operator console's size as it changes,
 // and this process answers each message with ResizePseudoConsole on the
 // console itself.
+//
+// Before any of that, the stub settles its own birth console's host. The
+// stub is born with a console -- CREATE_NO_WINDOW is one, a console with no
+// window -- and that console's conhost is the third console host of a relay
+// run and the only one of a plain run: born before any of this code runs,
+// under the unrestricted token, shielded by nothing. shutBirthConsoleHost
+// shuts it here, at entry, before any console is taken and long before the
+// program exists -- the one who would make a door of it is not running yet,
+// and nothing that runs before it needs the host to stay open.
 func Stub(args []string) error {
 	if len(args) != 2 && len(args) != 3 {
 		return exit.Errorf(exit.Usage,
@@ -148,6 +157,19 @@ func Stub(args []string) error {
 		return exit.Errorf(exit.Usage,
 			"%s and %s name two different consoles for the program; set only one",
 			proc.EnvOwnConsole, proc.EnvConsoleRelay)
+	}
+	// The birth console's host is shut before the token is built and before
+	// any console is taken: the console exists already, and this is the
+	// earliest moment to close what hosts it. In own-console mode this
+	// shield is wasted -- FreeConsole below takes the birth console and its
+	// host with it -- and the waste is one small call, bought for not making
+	// the shield conditional on which console is about to be taken.
+	account, err := sid.CurrentUser()
+	if err != nil {
+		return err
+	}
+	if err := shutBirthConsoleHost(account); err != nil {
+		return err
 	}
 	restricted, err := token.AsSandbox(args[0], args[1])
 	if err != nil {

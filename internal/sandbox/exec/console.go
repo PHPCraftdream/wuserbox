@@ -26,21 +26,137 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
 var (
-	procFreeConsole          = w32.Kernel32.NewProc("FreeConsole")
-	procAllocConsole         = w32.Kernel32.NewProc("AllocConsole")
-	procCreatePseudoConsole  = w32.Kernel32.NewProc("CreatePseudoConsole")
-	procClosePseudoConsole   = w32.Kernel32.NewProc("ClosePseudoConsole")
-	procResizePseudoConsole  = w32.Kernel32.NewProc("ResizePseudoConsole")
-	procSetHandleInformation = w32.Kernel32.NewProc("SetHandleInformation")
+	procFreeConsole           = w32.Kernel32.NewProc("FreeConsole")
+	procAllocConsole          = w32.Kernel32.NewProc("AllocConsole")
+	procCreatePseudoConsole   = w32.Kernel32.NewProc("CreatePseudoConsole")
+	procClosePseudoConsole    = w32.Kernel32.NewProc("ClosePseudoConsole")
+	procResizePseudoConsole   = w32.Kernel32.NewProc("ResizePseudoConsole")
+	procSetHandleInformation  = w32.Kernel32.NewProc("SetHandleInformation")
+	procGetConsoleProcessList = w32.Kernel32.NewProc("GetConsoleProcessList")
 )
+
+// The birth console's host shows up in the walk late -- measured about
+// 150 ms after the process it hosts -- so shutBirthConsoleHost polls this
+// often, for at most this long, before refusing.
+const (
+	birthHostPollStep = 25 * time.Millisecond
+	birthHostPollWant = 3 * time.Second
+	// GetConsoleProcessList is asked for this many slots: the answer is the
+	// processes attached to one console, and a console is crowded long
+	// before it takes 64 to hold them.
+	consoleListSlots = 64
+)
+
+// shutNewConsoleHost shuts the one console host this process has gained
+// since before was taken, shutting it out of shutOut -- the account SID the
+// run refuses, the same who proc.Shield shuts this process to.
+//
+// Why the diff and not the walk alone: an HPCON is not a pid, and
+// AllocConsole names no process either -- the only identity a console host
+// has is parentage. Parentage alone is not enough, either, because in relay
+// mode the stub's own birth console means there can be a host of this
+// process's beside the new one, and filtering the walk by parent and name
+// would find both and answer nothing. Only the set difference against the
+// list taken before the creating call is the host that call created.
+//
+// Why exactly one, refused rather than guessed: a diff of zero or of several
+// has no answer this code is entitled to pick. Guessing one pid among
+// several would shut an innocent process and leave the real host wide open,
+// and the console would be handed out all the same. So anything but exactly
+// one fails the call closed: the error says the console is refused rather
+// than handed out with a host left open, and whatever the creating call
+// made is the caller's to close -- takeConsoleRelay closes the relay, and
+// takeOwnConsole's caller ends a process whose console goes with it.
+func shutNewConsoleHost(before []uint32, shutOut string) error {
+	now, err := proc.ConsoleHostChildren(uint32(syscall.Getpid()))
+	if err != nil {
+		return fmt.Errorf("listing this process's console hosts to tell the new one: %w", err)
+	}
+	var fresh []uint32
+	for _, pid := range now {
+		if !slices.Contains(before, pid) {
+			fresh = append(fresh, pid)
+		}
+	}
+	if len(fresh) != 1 {
+		return fmt.Errorf("want exactly one new console host of this process, see %d (before %v, now %v); "+
+			"the console is refused rather than handed out with a host left open", len(fresh), before, now)
+	}
+	if err := proc.ShieldConhost(shutOut, fresh[0]); err != nil {
+		return fmt.Errorf("shutting the new console host %d: %w", fresh[0], err)
+	}
+	return nil
+}
+
+// shutBirthConsoleHost shuts the host of the console this process was born
+// with, shutting it out of shutOut. The stub arrives as
+// CreateProcessWithLogonW made it, and CREATE_NO_WINDOW is a console with no
+// window: hosted by a conhost started for this process before any of this
+// code ran, under the unrestricted token, shielded by nothing -- the third
+// console host of a relay run and the only one of a plain run.
+//
+// GetConsoleProcessList guards the poll, because it is the one call that
+// knows whether a host of this process's own is coming at all: it counts the
+// processes attached to the CURRENT console. Zero says this process has no
+// console, and more than one says the console was inherited from somebody
+// else. A console that is not this process's own has no host of this
+// process's, so in either case there is nothing to shut and nothing will
+// appear, and the helper returns nil without polling. That is not a hole:
+// the callers that hit this path are processes that did not arrive the way
+// CreateProcessWithLogonW's stub arrives -- the tests' subprocesses among
+// them, attached to their harness's console.
+//
+// Why a poll and not one snapshot: the host is born before this code runs
+// but shows up in the walk late, and a snapshot taken at entry would answer
+// "none" about a host that exists a moment later. So the walk is taken
+// again every 25 ms for up to 3 s. Exactly one host is shut; more than one
+// is an error; the deadline passing with none is an error too -- the run is
+// refused rather than left with an unshut host.
+func shutBirthConsoleHost(shutOut string) error {
+	var attached [consoleListSlots]uint32
+	// One attached process -- this one alone -- is the only shape a console
+	// of this process's own can have. A zero answer is also what a failed
+	// call leaves behind, and both it and "more than one" mean the same
+	// thing here: no console of this process's own, so no host of this
+	// process's to shut and none coming.
+	if n, _, _ := procGetConsoleProcessList.Call(uintptr(unsafe.Pointer(&attached[0])),
+		uintptr(len(attached))); n != 1 {
+		return nil
+	}
+	deadline := time.Now().Add(birthHostPollWant)
+	for {
+		hosts, err := proc.ConsoleHostChildren(uint32(syscall.Getpid()))
+		if err != nil {
+			return fmt.Errorf("walking for the birth console's host: %w", err)
+		}
+		if len(hosts) == 1 {
+			if err := proc.ShieldConhost(shutOut, hosts[0]); err != nil {
+				return fmt.Errorf("shutting the birth console's host %d: %w", hosts[0], err)
+			}
+			return nil
+		}
+		if len(hosts) > 1 {
+			return fmt.Errorf("this process has %d console hosts (%v) where its own birth console can have one; "+
+				"the run is refused rather than left with one unshut", len(hosts), hosts)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the birth console's host never appeared within %s; "+
+				"the run is refused rather than left with an unshut host", birthHostPollWant)
+		}
+		time.Sleep(birthHostPollStep)
+	}
+}
 
 // takeOwnConsole gives this process a console of its own and points its
 // standard streams at it, so the program started next inherits real console
@@ -62,10 +178,34 @@ var (
 // calls, so on the success path it never runs; on the error path it hands
 // the streams back to the bridge pipes that reach the caller's terminal,
 // where an error can actually be read.
+//
+// The new console's host is shut before the streams are opened, the same
+// pre-Shield shut takeConsoleRelay applies to the relay's host: the host is
+// born inside this function, under the unrestricted token, with Windows'
+// default DACL -- the open door the review's P0-1 measured -- and
+// shutNewConsoleHost is what closes it before anything else can look
+// through. A failure refuses the console: the error goes back up, the stub
+// stops, the process exits, and the console it had just taken goes with it
+// rather than staying on with a host left open.
 func takeOwnConsole() (func(), error) {
 	procFreeConsole.Call()
+	// The before-list is taken here, after FreeConsole and before
+	// AllocConsole, on purpose: the console just left may have a host on its
+	// way out, and the diff shutNewConsoleHost takes must count only what
+	// AllocConsole adds, not what FreeConsole is still owed.
+	before, err := proc.ConsoleHostChildren(uint32(syscall.Getpid()))
+	if err != nil {
+		return nil, fmt.Errorf("listing this process's console hosts: %w", err)
+	}
 	if r, _, callErr := procAllocConsole.Call(); r == 0 {
 		return nil, fmt.Errorf("allocating a console of its own: %w", callErr)
+	}
+	account, err := sid.CurrentUser()
+	if err != nil {
+		return nil, err
+	}
+	if err := shutNewConsoleHost(before, account); err != nil {
+		return nil, err
 	}
 	oldStdin, oldStdout, oldStderr := os.Stdin, os.Stdout, os.Stderr
 	if err := openConsoleStreams(); err != nil {
@@ -171,7 +311,28 @@ type consoleRelay struct {
 // pumpRelayResizes answering it with ResizePseudoConsole. The relay across
 // the operator bridge and the interrupt forwarding live on the run side, in
 // internal/win/proc: relayInput, relayWatchInterrupts, startRelayResize.
+//
+// The host CreatePseudoConsole starts is shut before the relay is handed
+// back. It is born in this same pre-Shield window, under the account's
+// unrestricted token with Windows' default DACL -- the open door the
+// review's P0-1 measured a restricted program walking through -- and the
+// shut is what closes it. The shut failing refuses the whole relay: nil
+// relay, error, the run goes on without a console rather than with one
+// whose host is open. That is the fail-closed shape P0-1 asks for, and it
+// is why the account and the before-list of hosts are taken at the top,
+// before anything is created: the account is the who the host is shut out
+// of, and the before-list is what shutNewConsoleHost tells the new host
+// apart from -- in relay mode this process already has its birth console's
+// host beside the one about to appear.
 func takeConsoleRelay() (*consoleRelay, error) {
+	account, err := sid.CurrentUser()
+	if err != nil {
+		return nil, err
+	}
+	before, err := proc.ConsoleHostChildren(uint32(syscall.Getpid()))
+	if err != nil {
+		return nil, fmt.Errorf("listing this process's console hosts: %w", err)
+	}
 	inRead, inWrite, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("creating the relay's input pipe: %w", err)
@@ -207,6 +368,14 @@ func takeConsoleRelay() (*consoleRelay, error) {
 	if err := noInherit(relay.output); err != nil {
 		relay.close()
 		return nil, fmt.Errorf("excluding the relay's output end from inheritance: %w", err)
+	}
+	// The shut before the relay is handed back. A failure closes the relay
+	// -- which ends the host with the console -- and refuses it: nil relay,
+	// error, the run goes on without a console rather than with one whose
+	// host is open.
+	if err := shutNewConsoleHost(before, account); err != nil {
+		relay.close()
+		return nil, err
 	}
 	return relay, nil
 }
