@@ -42,6 +42,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
@@ -135,6 +136,7 @@ func markFor(mark uintptr) explicitAccess {
 // identifier is the whole answer. Where it names a plain account, the group
 // lookup answers that there is no such group and the answer is the same.
 func sandboxIdentities(account string) ([]uintptr, error) {
+	identityResolutions.Add(1)
 	value, err := sid.Parse(account)
 	if err != nil {
 		return nil, err
@@ -193,6 +195,16 @@ func pin(value sid.Value) {
 	pinned = append(pinned, value)
 }
 
+// Two counters, for the close test of a stripping pass and anyone diagnosing
+// one: how often the identities of a sandbox were resolved, and how often
+// the group behind a resolved identifier was asked for its members. The ask
+// is a call into SAM, and the difference between once per pass and once per
+// object is what resolving once per pass is for.
+var (
+	identityResolutions atomic.Int64
+	memberLookups       atomic.Int64
+)
+
 var (
 	procGroupMembers = w32.Netapi32.NewProc("NetLocalGroupGetMembers")
 	procFreeBuffer   = w32.Netapi32.NewProc("NetApiBufferFree")
@@ -221,6 +233,7 @@ var (
 // Any other answer is an enumeration that failed for a group that may well
 // exist, and must not come back as an empty list.
 func localGroupMembers(name string) ([]string, error) {
+	memberLookups.Add(1)
 	type memberInfo3 struct{ domainAndName *uint16 }
 	var members *memberInfo3
 	var read, total uint32

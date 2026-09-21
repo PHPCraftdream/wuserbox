@@ -19,6 +19,7 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
@@ -511,6 +512,86 @@ func narrowOwn(path string, everyone, users, authenticated, holder, owner uintpt
 // sweep wrote moments ago in the same update -- an owned object's own entry
 // is no longer only ever an orphaned copy the way an inherited one would be.
 func StripOwn(path, account string) error {
+	pass, err := BeginStripOwn(account)
+	if err != nil {
+		return err
+	}
+	defer pass.End()
+	return pass.Strip(path)
+}
+
+// A StripOwnPass is one account's identities, resolved once for a pass over
+// a tree, and the memory that keeps them answerable for exactly that long.
+//
+// Who the account goes by -- the identifier itself and every member of the
+// local group it names -- is an invariant of the pass rather than a property
+// of any one object, but resolving it costs a parse, a name lookup and a
+// group enumeration in SAM, so a resolve per object made a revoke over N
+// files O(N) SAM calls for the same answer every time. The pass owns what
+// its answer stands on: the member identifiers are Go values the pass
+// itself holds, with the process-global pin that used to keep them alive
+// gone from this path, and the parsed account identifier -- system memory,
+// which the collector does not manage -- is freed when the pass ends.
+// Nothing outlives End, and nothing is carried across passes: group
+// membership decides a revoke, so membership that changed since the last
+// pass must be asked again, which is why this is a context with a lifetime
+// and not a cache.
+type StripOwnPass struct {
+	values []uintptr   // the identities, as SID pointers
+	kept   []sid.Value // the member identifiers, Go memory held by the pass
+	parsed uintptr     // the account identifier, system memory, freed by End
+}
+
+// BeginStripOwn resolves, once, everything a pass needs to know about
+// account: the identifier itself, and -- because entries go out under a
+// group's name while files a sandbox makes are owned by its account -- every
+// member of the local group the identifier names. Where the identifier names
+// no account at all -- a synthetic identifier in tests -- there is no group
+// to ask, and the one identifier is the whole answer.
+func BeginStripOwn(account string) (*StripOwnPass, error) {
+	identityResolutions.Add(1)
+	parsed, err := sid.Parse(account)
+	if err != nil {
+		return nil, err
+	}
+	pass := &StripOwnPass{values: []uintptr{parsed}, parsed: parsed}
+	name, named := accountNameOf(parsed)
+	if !named {
+		return pass, nil
+	}
+	members, err := localGroupMembers(name)
+	if err != nil {
+		pass.End()
+		return nil, err
+	}
+	for _, member := range members {
+		resolved, err := sid.Lookup(member)
+		if err != nil {
+			pass.End()
+			return nil, fmt.Errorf("resolving %s, a member of %s: %w", member, name, err)
+		}
+		pass.kept = append(pass.kept, resolved)
+		pass.values = append(pass.values, uintptr(unsafe.Pointer(&resolved[0])))
+	}
+	return pass, nil
+}
+
+// End releases the pass: the system-heap identifier goes back to Windows and
+// the Go-held member identifiers fall out of reach with it. A pass is
+// finished with once End has been called.
+func (p *StripOwnPass) End() {
+	if p.parsed != 0 {
+		sid.Free(p.parsed)
+		p.parsed = 0
+	}
+	p.values = nil
+	p.kept = nil
+}
+
+// Strip takes the account's entries off one object, the same decision
+// StripOwn makes, asked of the identities the pass resolved once at its
+// start rather than of a fresh resolution.
+func (p *StripOwnPass) Strip(path string) error {
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
@@ -520,11 +601,7 @@ func StripOwn(path, account string) error {
 	}
 	defer w32.Free(descriptor)
 
-	sandbox, err := sandboxIdentities(account)
-	if err != nil {
-		return err
-	}
-	if ownedByTheSandbox(ownerOf(descriptor), sandbox) {
+	if ownedByTheSandbox(ownerOf(descriptor), p.values) {
 		return nil
 	}
 
@@ -534,7 +611,7 @@ func StripOwn(path, account string) error {
 	}
 	var clear []explicitAccess
 	for _, one := range held {
-		if one.inherited || !matchesSandboxIdentity(one.access.trustee.name, sandbox) {
+		if one.inherited || !matchesSandboxIdentity(one.access.trustee.name, p.values) {
 			continue
 		}
 		// Only what the object holds itself is cleared. What it is handed from

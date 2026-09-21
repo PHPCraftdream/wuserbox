@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
@@ -37,20 +38,38 @@ import (
 // harmless: everything left for it to find is what neither reached, another
 // sandbox's nested grant holding a stale copy of this account's entry.
 func Prune(account, path string, held []string) error {
-	keep := make(map[string]bool, len(held))
-	for _, one := range held {
-		if pathKey(one) != pathKey(path) {
-			keep[pathKey(one)] = true
-		}
-	}
 	return lock.HoldTree(path, func() error {
+		// The root key, the keep keys and the account's identities are
+		// facts about the whole pass rather than about any object on it,
+		// so each is worked out once, here under the lock, and handed to
+		// the walk. Working a key out opens the path and asks Windows for
+		// the directory entry it names; paying that per object, three
+		// times over, was the price of deciding per object what does not
+		// change per object.
+		rootKeyCalls.Add(1)
+		root := pathKey(path)
+		keep := make(map[string]bool, len(held))
+		for _, one := range held {
+			keepKeyCalls.Add(1)
+			if key := pathKey(one); key != root {
+				keep[key] = true
+			}
+		}
+		pass, err := acl.BeginStripOwn(account)
+		if err != nil {
+			return err
+		}
+		defer pass.End()
 		return filepath.WalkDir(path, func(name string, entry fs.DirEntry, err error) error {
-			switch {
-			case err != nil:
+			if err != nil {
 				return fmt.Errorf("looking through %s: %w", name, err)
-			case pathKey(name) == pathKey(path):
+			}
+			leafKeyCalls.Add(1)
+			key := pathKey(name)
+			switch {
+			case key == root:
 				return nil // the grant on it has already been dealt with
-			case keep[pathKey(name)]:
+			case keep[key]:
 				if entry.IsDir() {
 					return filepath.SkipDir
 				}
@@ -58,10 +77,21 @@ func Prune(account, path string, held []string) error {
 			case entry.Type()&os.ModeSymlink != 0:
 				return nil
 			}
-			return acl.StripOwn(name, account)
+			return pass.Strip(name)
 		})
 	})
 }
+
+// Three counters the close test of Prune reads: how often the root key, the
+// keep keys and the key of a walked object were resolved. The first is once
+// per call and the second once per held path; the third is once per object
+// the walk reaches, against the three resolutions per object, root
+// included, that deciding per object used to cost.
+var (
+	rootKeyCalls atomic.Int64
+	keepKeyCalls atomic.Int64
+	leafKeyCalls atomic.Int64
+)
 
 func pathKey(path string) string {
 	if key, err := pathid.Key(path); err == nil {
