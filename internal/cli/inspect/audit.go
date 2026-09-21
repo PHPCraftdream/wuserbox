@@ -13,10 +13,10 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 )
 
-// writableIdentities are the identities a sandbox carries through both of the
-// access checks its token faces. A directory either of them may change is a
-// directory every sandbox may change, however it was meant to be handed out,
-// which is what makes this list worth printing.
+// The identities the walk asks about are the ones a sandbox carries through
+// both of the access checks its token faces. A directory either of them may
+// change is a directory every sandbox may change, however it was meant to be
+// handed out, which is what makes this list worth printing.
 //
 // Authenticated Users was on it for as long as the account was the whole of a
 // sandbox: an account that logged on carries it, so a directory naming it was
@@ -24,14 +24,7 @@ import (
 // account and puts it out of reach again -- the second check names a short
 // list, and Authenticated Users is not on it -- so listing it now would report
 // places the boundary does reach.
-var writableIdentities = []struct {
-	name     string
-	writable func(string) bool
-}{
-	{"Everyone", acl.EveryoneWritable},
-	{"Users", acl.UsersWritable},
-}
-
+//
 // Audit lists directories the identities above may write to. The sandbox can
 // write there too: it carries both, and has to, or no program starts in it
 // and nothing under System32 can be read.
@@ -57,23 +50,31 @@ func Audit(args []string) error {
 		return exit.Errorf(exit.Usage, "usage: wuserbox --audit [depth]")
 	}
 	found, unreadable := 0, 0
+	pass, err := acl.BeginWritable()
+	if err != nil {
+		return err
+	}
+	defer pass.End()
 	var walk func(dir string, left int)
 	walk = func(dir string, left int) {
-		// Which of them, and not merely that one of them did: a directory
-		// open to Everyone and one open to Users are different problems with
-		// different fixes, and the list exists to be acted on.
-		var by []string
-		for _, who := range writableIdentities {
-			if who.writable(dir) {
-				by = append(by, who.name)
-			}
-		}
+		// One read of the directory's permission list answers for both
+		// identities at once, and says whether the list could be read at
+		// all -- the walk used to pay a read per identity and a third for
+		// the second answer.
+		everyone, users, err := pass.Writable(dir)
 		switch {
-		case len(by) == 0:
-		case acl.Unreadable(dir):
+		case err != nil:
 			fmt.Println(finding(dir, nil))
 			unreadable++
+		case !everyone && !users:
 		default:
+			var by []string
+			if everyone {
+				by = append(by, "Everyone")
+			}
+			if users {
+				by = append(by, "Users")
+			}
 			fmt.Println(finding(dir, by))
 			found++
 		}

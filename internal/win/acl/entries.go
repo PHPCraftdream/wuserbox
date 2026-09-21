@@ -11,11 +11,19 @@ package acl
 
 import (
 	"fmt"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
+
+// descriptorReads counts the permission lists this package has asked
+// Windows for through the question calls below -- heldBy and the audit
+// pass. It is for the close test of asking once per object, and for anyone
+// diagnosing a walk: the difference between once per object and once per
+// identity asked about is what reading once is for.
+var descriptorReads atomic.Int64
 
 var procGetAce = w32.Advapi32.NewProc("GetAce")
 
@@ -211,45 +219,37 @@ func Unreadable(path string) bool {
 	return err != nil
 }
 
-// heldBy reports whether account holds any of the wanted rights on path.
-//
-// Every entry counts, including the ones a directory above handed down. Asking
-// only about an object's own entries -- which is all GetExplicitEntriesFromAcl
-// answers with -- made --audit quiet about the ordinary case: one directory
-// left open to Everyone, and everything under it open by inheritance with not
-// one entry of its own to show for it. Measured: a subdirectory of a
-// world-writable directory was reported as not writable by Everyone.
-//
-// A refusal settles it wherever one matches, because that is how Windows
-// settles it: for a single token a matching refusal beats a matching
-// permission whatever order the list is in.
-func heldBy(path, account string, wanted uint32) (bool, error) {
-	value, err := sid.Parse(account)
-	if err != nil {
-		return false, err
-	}
+// readDACL asks Windows for path's permission list and nothing else about
+// it.
+func readDACL(path string) (*aclHeader, uintptr, error) {
+	descriptorReads.Add(1)
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
 		seFileObject, daclInfo, 0, 0, uintptr(unsafe.Pointer(&dacl)), 0,
 		uintptr(unsafe.Pointer(&descriptor))); r != 0 {
-		return false, callFailed("reading the permissions of", path, r)
+		return nil, 0, callFailed("reading the permissions of", path, r)
 	}
-	defer w32.Free(descriptor)
-	if dacl == nil {
-		return true, nil // no permission list at all means everybody has everything
-	}
-	held, err := entriesOf(dacl)
-	if err != nil {
-		return false, fmt.Errorf("reading the permissions of %s: %w", path, err)
-	}
+	return dacl, descriptor, nil
+}
+
+// holdsAny answers, from a list already read, whether account holds any
+// of the wanted rights on the object the list belongs to.
+//
+// An inherit-only entry does not apply to the object this list sits on,
+// only to what it hands down to; the copies the object received from
+// above arrive without the mark and keep counting.
+func holdsAny(held []heldEntry, account uintptr, wanted uint32) bool {
+	const trusteeIsSID = 0
 	var granted, refused uint32
 	for _, one := range held {
-		const trusteeIsSID = 0
 		if one.access.trustee.form != trusteeIsSID || one.access.permissions&wanted == 0 {
 			continue
 		}
-		if !sameSID(one.access.trustee.name, value) {
+		if one.access.inheritance&InheritOnly != 0 {
+			continue
+		}
+		if !sameSID(one.access.trustee.name, account) {
 			continue
 		}
 		if one.access.mode == denyAccess {
@@ -259,5 +259,112 @@ func heldBy(path, account string, wanted uint32) (bool, error) {
 			granted |= one.access.permissions & wanted
 		}
 	}
-	return granted&^refused != 0, nil
+	return granted&^refused != 0
+}
+
+// heldBy reports whether account holds any of the wanted rights on path.
+//
+// Every entry counts, including the ones a directory above handed down. Asking
+// only about an object's own entries -- which is all GetExplicitEntriesFromAcl
+// answers with -- made --audit quiet about the ordinary case: one directory
+// left open to Everyone, and everything under it open by inheritance with not
+// one entry of its own to show for it. Measured: a subdirectory of a
+// world-writable directory was reported as not writable by Everyone.
+//
+// An entry marked inherit-only is the one exception: it does not apply to the
+// object it sits on, only to what it propagates down to, which is what
+// InheritOnly says and what Windows' own entry inheritance rules say with it.
+// Counting one made --audit answer both ways wrong: an inherit-only permission
+// for Everyone reported the directory itself writable when the permission
+// reaches only what is created under it, and an inherit-only refusal hiding
+// beside a real permission reported it read-only when the refusal goes down
+// and not inward. The copies an object receives from above keep counting,
+// because they arrive effective, with the mark already taken off -- that is
+// the fix that made --audit see inherited openness at all, and it must
+// survive this one.
+//
+// A refusal settles it wherever one matches, because that is how Windows
+// settles it: for a single token a matching refusal beats a matching
+// permission whatever order the list is in.
+func heldBy(path, account string, wanted uint32) (bool, error) {
+	value, err := sid.Parse(account)
+	if err != nil {
+		return false, err
+	}
+	defer sid.Free(value)
+	dacl, descriptor, err := readDACL(path)
+	if err != nil {
+		return false, err
+	}
+	defer w32.Free(descriptor)
+	if dacl == nil {
+		return true, nil // no permission list at all means everybody has everything
+	}
+	held, err := entriesOf(dacl)
+	if err != nil {
+		return false, fmt.Errorf("reading the permissions of %s: %w", path, err)
+	}
+	return holdsAny(held, value, wanted), nil
+}
+
+// A WritablePass is the two identities --audit asks about, resolved once
+// for a pass over a tree, and the memory that keeps them answerable for
+// exactly that long. Both identifiers are parsed from fixed text -- the
+// same answer for every object on the walk -- so a parse per object bought
+// nothing and left each of them on the system heap, which the collector
+// does not manage, until the process ended.
+type WritablePass struct {
+	everyone uintptr // parsed at Begin, freed by End
+	users    uintptr
+}
+
+// BeginWritable resolves, once, the two identities every sandbox carries
+// through both of the access checks its token faces -- the list the audit
+// walk exists to print.
+func BeginWritable() (*WritablePass, error) {
+	everyone, err := sid.Parse(sid.Everyone)
+	if err != nil {
+		return nil, err
+	}
+	users, err := sid.Parse(sid.Users)
+	if err != nil {
+		sid.Free(everyone)
+		return nil, err
+	}
+	return &WritablePass{everyone: everyone, users: users}, nil
+}
+
+// End releases the pass: both identifiers go back to Windows. A pass is
+// finished with once End has been called.
+func (p *WritablePass) End() {
+	sid.Free(p.everyone)
+	sid.Free(p.users)
+	p.everyone, p.users = 0, 0
+}
+
+// Writable answers, from one read of path's permission list, whether
+// Everyone and BUILTIN\Users may change it -- the question the audit walk
+// used to ask as two, plus a third for whether the list could be read at
+// all. A list that cannot be read comes back as the error, not as an
+// answer: what --audit prints for one is a different line, and a failure
+// folded into an allow would claim definitively what nobody knows.
+//
+// The object itself is what this answers about: entries marked
+// inherit-only pass it by (see holdsAny), and the copies it received from
+// above count, which is what keeps an open directory above from looking
+// closed.
+func (p *WritablePass) Writable(path string) (everyone, users bool, err error) {
+	dacl, descriptor, err := readDACL(path)
+	if err != nil {
+		return false, false, err
+	}
+	defer w32.Free(descriptor)
+	if dacl == nil {
+		return true, true, nil // no permission list at all means everybody has everything
+	}
+	held, err := entriesOf(dacl)
+	if err != nil {
+		return false, false, fmt.Errorf("reading the permissions of %s: %w", path, err)
+	}
+	return holdsAny(held, p.everyone, changing), holdsAny(held, p.users, changing), nil
 }
