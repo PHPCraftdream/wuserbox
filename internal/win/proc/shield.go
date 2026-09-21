@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
@@ -58,6 +59,24 @@ const (
 	// THREADENTRY32: dwSize, cntUsage, th32ThreadID, th32OwnerProcessID, ...
 	offsetOfThreadID     = 8
 	offsetOfOwnerProcess = 12
+)
+
+// threadListPollStep and threadListPollWant bound the retry
+// shutThreadsAlreadyRunning gives a walk that finds no thread of the named
+// process. CreateToolhelp32Snapshot's own documentation warns that a
+// process or thread started shortly before the snapshot is taken is not
+// guaranteed to appear in it -- the same lag shutBirthConsoleHost's poll in
+// console.go already accounts for on the process list, measured there at
+// about 150ms for a console host to show up. A console host's threads were
+// measured to lag the same snapshot further still: ShieldConhost calls this
+// function the instant the host's pid is known, sometimes before the
+// host's own thread has caught up to a fresh thread snapshot, and a single
+// walk taken then can find none -- not because the process has none, but
+// because the snapshot has not caught up. So the walk is retried, the same
+// shape as the process-list poll, before shut == 0 is believed.
+const (
+	threadListPollStep = 25 * time.Millisecond
+	threadListPollWant = 1 * time.Second
 )
 
 // selfLockingDacl builds the list Shield hands to SetSecurityInfo, and
@@ -231,16 +250,52 @@ func shutFutureThreadsOf(token syscall.Token, dacl uintptr) error {
 // because the identifier now names nothing. Everything else is a failure and
 // stops the run.
 //
-// That distinction is the whole of this function's care. It did not draw it
-// once: any failure to list ended the walk as though the list were finished,
-// any failure to open was skipped, and the result of the setting was not
-// looked at. A thread that was alive and could not be shut was then
-// indistinguishable from one that had ended, and the program started anyway
-// -- under a shield with a hole in it, reported as a shield.
+// That distinction is the whole of shutThreadsAlreadyRunningOnce's care. It
+// did not draw it once: any failure to list ended the walk as though the
+// list were finished, any failure to open was skipped, and the result of the
+// setting was not looked at. A thread that was alive and could not be shut
+// was then indistinguishable from one that had ended, and the program
+// started anyway -- under a shield with a hole in it, reported as a shield.
+//
+// A walk that shuts nothing is retried, up to threadListPollWant, rather
+// than believed on the spot: measured against ShieldConhost, calling this
+// the instant a console host's pid is known can outrun the host's own
+// thread catching up to a fresh Toolhelp32Snapshot, and a single walk then
+// answers zero about a process that has one -- the same lag
+// shutBirthConsoleHost already polls for on the process list, one level
+// down. Giving up only after the ceiling keeps the "no thread found" refusal
+// for what it is meant to catch: a listing that answered about somebody
+// else, not a snapshot that has not caught up yet.
 func shutThreadsAlreadyRunning(dacl uintptr, pid uint32) error {
+	deadline := time.Now().Add(threadListPollWant)
+	for {
+		shut, err := shutThreadsAlreadyRunningOnce(dacl, pid)
+		if err != nil {
+			return err
+		}
+		if shut > 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			// A walk that shut nothing found no thread of the process it was
+			// asked about, which cannot be true of a running process and
+			// means the listing answered about somebody else. Better to
+			// refuse than to report a shield over an empty set.
+			return fmt.Errorf("no thread of process %d was found to shut", pid)
+		}
+		time.Sleep(threadListPollStep)
+	}
+}
+
+// shutThreadsAlreadyRunningOnce is one snapshot and one walk of it -- see
+// shutThreadsAlreadyRunning for why a walk that shuts nothing is retried
+// rather than trusted. It reports how many threads it shut, so its caller
+// can tell "none because the snapshot lagged" from "a real failure," which
+// this function reports as an error instead.
+func shutThreadsAlreadyRunningOnce(dacl uintptr, pid uint32) (int, error) {
 	snapshot, _, callErr := procCreateToolhelp32Snapshot.Call(snapshotOfThreads, 0)
 	if snapshot == 0 || snapshot == invalidHandle {
-		return fmt.Errorf("listing the threads of process %d: %w", pid, callErr)
+		return 0, fmt.Errorf("listing the threads of process %d: %w", pid, callErr)
 	}
 	defer syscall.CloseHandle(syscall.Handle(snapshot))
 
@@ -253,7 +308,7 @@ func shutThreadsAlreadyRunning(dacl uintptr, pid uint32) error {
 			if errors.Is(listErr, syscall.Errno(errNoMoreItems)) {
 				break
 			}
-			return fmt.Errorf("walking the threads of process %d: %w", pid, listErr)
+			return 0, fmt.Errorf("walking the threads of process %d: %w", pid, listErr)
 		}
 		if *(*uint32)(unsafe.Pointer(&entry[offsetOfOwnerProcess])) != pid {
 			continue
@@ -261,25 +316,38 @@ func shutThreadsAlreadyRunning(dacl uintptr, pid uint32) error {
 		id := *(*uint32)(unsafe.Pointer(&entry[offsetOfThreadID]))
 		handle, _, openErr := procOpenThread.Call(writeDac, 0, uintptr(id))
 		if handle == 0 {
-			if errors.Is(openErr, syscall.Errno(errInvalidParameter)) {
+			switch {
+			case errors.Is(openErr, syscall.Errno(errInvalidParameter)):
 				continue // ended while this was being written down
+			case errors.Is(openErr, syscall.ERROR_ACCESS_DENIED):
+				// Born shut, not missed: shutFutureThreadsOf runs before this
+				// walk and puts the list on the token's default, and a
+				// thread can start between that call and this one -- this
+				// process's own runtime can start one of its own at any
+				// point, the same reason Shield orders the token first, and
+				// a console host's own startup can start one of its. Such a
+				// thread already carries the list, and the refusal is the
+				// proof of it rather than a guess: this account owns the
+				// thread, since it owns the process it belongs to, and an
+				// owner keeps implicit WRITE_DAC on Windows unless an
+				// explicit list says otherwise. Nothing in this codebase
+				// writes a thread's list except this walk and the
+				// token-default fix that runs ahead of it, so a WRITE_DAC
+				// refusal to the owner can only mean one of those two
+				// already ran.
+				shut++
+				continue
+			default:
+				return 0, fmt.Errorf("opening thread %d to shut it: %w", id, openErr)
 			}
-			return fmt.Errorf("opening thread %d to shut it: %w", id, openErr)
 		}
 		r, _, _ = procSetSecurityInfo.Call(handle, seKernelObject,
 			daclSecurityInformation|protectedDaclSecurityInformation, 0, 0, dacl, 0)
 		syscall.CloseHandle(syscall.Handle(handle))
 		if r != 0 {
-			return fmt.Errorf("shutting thread %d: error %d", id, r)
+			return 0, fmt.Errorf("shutting thread %d: error %d", id, r)
 		}
 		shut++
 	}
-	// A walk that shut nothing found no thread of the process it was asked
-	// about, which cannot be true of a running process and means the listing
-	// answered about somebody else. Better to refuse than to report a shield
-	// over an empty set.
-	if shut == 0 {
-		return fmt.Errorf("no thread of process %d was found to shut", pid)
-	}
-	return nil
+	return shut, nil
 }
