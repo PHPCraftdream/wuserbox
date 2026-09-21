@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -65,6 +66,20 @@ func TestMain(m *testing.M) {
 	}
 	if len(os.Args) > 2 && os.Args[1] == raceVictimFlag {
 		os.Exit(raceVictim(os.Args[2]))
+	}
+	if len(os.Args) > 2 && os.Args[1] == threadSpawnerFlag {
+		os.Exit(threadSpawner(os.Args[2]))
+	}
+	if len(os.Args) > 2 && os.Args[1] == threadProberFlag {
+		var ids []uint32
+		for _, arg := range os.Args[3:] {
+			id, err := strconv.ParseUint(arg, 10, 32)
+			if err != nil {
+				os.Exit(2)
+			}
+			ids = append(ids, uint32(id))
+		}
+		os.Exit(threadProber(os.Args[2], ids))
 	}
 	if len(os.Args) > 2 && os.Args[1] == stdinBridgeProbeFlag {
 		os.Exit(stdinBridgeProbe(os.Args[2]))

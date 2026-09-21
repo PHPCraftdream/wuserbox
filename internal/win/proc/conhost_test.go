@@ -183,6 +183,11 @@ func prowlTheHost(t *testing.T, pid uint32) int {
 // actually hands each host it takes to ShieldConhost, which is
 // internal/sandbox/exec's wiring test to hold. A pass here says the shut
 // holds when it is applied; nothing here says it is always applied.
+//
+// The prowler now asks every thread the walk lists, not the first one the
+// snapshot happens to name, and it refuses to report a held shield over an
+// unanswerable probe: a door it could not ask sets its own bit, and a run
+// carrying that bit fails this test before any refusal is believed.
 func TestAConsoleHostShutToItsAccountIsClosedToARestrictedToken(t *testing.T) {
 	if err := procCreatePseudoConsole.Find(); err != nil {
 		t.Skip("CreatePseudoConsole is not available on this Windows build (ConPTY needs Windows 10 1809+)")
@@ -248,6 +253,11 @@ func TestAConsoleHostShutToItsAccountIsClosedToARestrictedToken(t *testing.T) {
 	// would be the prowler opening nothing at all, not the host holding.
 	if code2&openedItself == 0 {
 		t.Fatalf("the prowler could not even open itself, so every refusal it reported means nothing")
+	}
+	// A thread door the prowler could not ask is not evidence of anything
+	// but the probe: an unanswerable door must not pass for a held one.
+	if code2&threadProbeBroke != 0 {
+		t.Fatalf("the prowler could not answer the console host's thread doors, so the refusals it reported are not evidence the shield holds")
 	}
 	if leaked := code2 &^ openedItself; leaked != 0 {
 		t.Errorf("a console host shut to its own account was still open to a restricted token of that account: %s",

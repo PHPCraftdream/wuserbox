@@ -7,6 +7,7 @@
 package proc
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -89,6 +90,14 @@ const (
 	// through 97 are reachable as sums of the doors, and a stub that failed
 	// would have been read as a program that got in.
 	middleBroke = 1 << 20
+	// Set when a thread door could not be answered at all: an OpenThread error
+	// that is neither a refusal nor a thread that ended, or threads listed of
+	// which none answered before they all vanished. One bit higher than
+	// middleBroke for the same reason middleBroke is where it is -- that bit is
+	// taken, and a small ordinal here would collide with the sums of the door
+	// bits above -- and out of doorsReached on purpose, because a probe that
+	// reports nothing must not be readable as a shut door.
+	threadProbeBroke = 1 << 21
 )
 
 // The other door into a process, and the reason shutting the process alone
@@ -100,25 +109,36 @@ const (
 	threadSuspendResume = 0x0002
 )
 
-// aThreadOf finds one thread belonging to pid, so the prowler has something
-// to try the other door on. It borrows Shield's own way of listing them,
-// which is the point: the prowler looks for exactly what Shield claims to
-// have shut.
-func aThreadOf(pid int) (uint32, bool) {
+// threadsOfOwner lists every thread belonging to pid, walking the same
+// snapshot Shield's own walk walks -- which is the point: the prowler looks
+// for exactly what Shield claims to have shut, all of it and not the first
+// thread the snapshot happens to name. A second thread left open while the
+// first was shut is exactly the hole one-thread probing cannot see
+// (docs/reviews/security-performance-review-2026-09-22-round2.md, P2-2).
+//
+// The bool is the walk itself: true when it ran to its errno-18 end, false
+// when the snapshot could not be taken or the walk broke part way -- in both
+// of which the ids are not every thread the process owns and say so.
+func threadsOfOwner(pid int) ([]uint32, bool) {
 	snapshot, _, _ := procCreateToolhelp32Snapshot.Call(snapshotOfThreads, 0)
 	if snapshot == 0 || snapshot == invalidHandle {
-		return 0, false
+		return nil, false
 	}
 	defer syscall.CloseHandle(syscall.Handle(snapshot))
 
 	entry := make([]byte, sizeOfThreadEntry32)
 	*(*uint32)(unsafe.Pointer(&entry[0])) = sizeOfThreadEntry32
+	var ids []uint32
 	for step := procThread32First; ; step = procThread32Next {
-		if r, _, _ := step.Call(snapshot, uintptr(unsafe.Pointer(&entry[0]))); r == 0 {
-			return 0, false
+		r, _, listErr := step.Call(snapshot, uintptr(unsafe.Pointer(&entry[0])))
+		if r == 0 {
+			if errors.Is(listErr, syscall.Errno(errNoMoreItems)) {
+				return ids, true
+			}
+			return nil, false
 		}
 		if *(*uint32)(unsafe.Pointer(&entry[offsetOfOwnerProcess])) == uint32(pid) {
-			return *(*uint32)(unsafe.Pointer(&entry[offsetOfThreadID])), true
+			ids = append(ids, *(*uint32)(unsafe.Pointer(&entry[offsetOfThreadID])))
 		}
 	}
 }
@@ -290,9 +310,18 @@ func prowl(parentPid string) int {
 		syscall.CloseHandle(h)
 	}
 	reached |= rewriteAndWearItsToken(pid)
-	// And the other door: one of its threads, which is a separate object with
-	// a list of its own and is not shut by shutting the process.
-	if tid, found := aThreadOf(pid); found {
+	// And the other door: its threads, each of them an object of its own with
+	// a list of its own, none shut by shutting the process. Every thread the
+	// walk lists is tried, and every door on it comes back answered: a handle
+	// means the door opened, a refusal means the door held, a thread that
+	// ended between the listing and the open answers nothing and is nobody,
+	// and anything else means the probe itself broke -- its own bit, far from
+	// the doors, because a probe that reports nothing must not be readable as
+	// a shield that holds.
+	ids, listed := threadsOfOwner(pid)
+	examined := 0
+	for _, tid := range ids {
+		answered := false
 		for _, door := range []struct {
 			bit    int
 			access uintptr
@@ -300,11 +329,32 @@ func prowl(parentPid string) int {
 			{reachedThread, threadSetContext | threadSuspendResume},
 			{reachedThreadList, writeDac},
 		} {
-			if h, _, _ := procOpenThread.Call(door.access, 0, uintptr(tid)); h != 0 {
+			h, _, callErr := procOpenThread.Call(door.access, 0, uintptr(tid))
+			switch {
+			case h != 0:
 				reached |= door.bit
 				syscall.CloseHandle(syscall.Handle(h))
+				answered = true
+			case errors.Is(callErr, syscall.Errno(errInvalidParameter)):
+				// The thread ended while this was being asked; it names
+				// nothing now and is held against neither the door nor
+				// the probe.
+			case errors.Is(callErr, syscall.ERROR_ACCESS_DENIED):
+				// A refusal is an answer: the door held.
+				answered = true
+			default:
+				// The probe could not ask, which is not the same as the
+				// door holding.
+				reached |= threadProbeBroke
+				answered = true
 			}
 		}
+		if answered {
+			examined++
+		}
+	}
+	if !listed || (len(ids) > 0 && examined == 0) {
+		reached |= threadProbeBroke
 	}
 	// Itself, by name and not through the handle every process has to itself,
 	// which is never checked against a list.

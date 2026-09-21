@@ -36,8 +36,8 @@ const conhostProwlFlag = "-wuserbox-conhost-prowl"
 // diagnosis, read by the test only when the code says something went wrong.
 const (
 	// conhostProwlBroken: the probe could not read what it was meant to
-	// measure -- the walk of the stub's console hosts or of their threads
-	// failed -- so there is nothing to write and nothing to pass on.
+	// measure -- the walk of the stub's console hosts failed -- so there is
+	// nothing to write and nothing to pass on.
 	conhostProwlBroken = 45
 	// conhostProwlEmpty: the stub had no console host at all. A run whose
 	// console hosts were all shut could answer this way, but so could one
@@ -49,6 +49,11 @@ const (
 	// conhostProwlOpen: at least one door on a host that was still there to
 	// be measured again was open to the restricted token.
 	conhostProwlOpen = 42
+	// conhostProwlUnmeasured: hosts were measured, at least one of them
+	// alive and answering its process doors, but not one thread of that
+	// host could be had -- reporting that as a closed boundary would be the
+	// empty measurement the review calls false confidence.
+	conhostProwlUnmeasured = 46
 )
 
 // The doors an escape through a console host goes by, one mask each and named
@@ -101,9 +106,23 @@ const (
 	prowlOwnerProcessIDOffset = 12
 )
 
+// prowlThreadPollStep and prowlThreadPollWant are the prowl's own copies of
+// production's threadListPollStep and threadListPollWant (shield.go), which
+// are unexported in another package and cannot be reached from here: the
+// same step and the same ceiling production gives a thread walk that found
+// nothing, because the lag the prowl has to out-wait is the one production
+// already measured -- a host that is alive has threads, so a walk that
+// keeps listing none is a snapshot that has not caught up yet, not an
+// answer about the host.
+const (
+	prowlThreadPollStep = 25 * time.Millisecond
+	prowlThreadPollWant = time.Second
+)
+
 var (
-	prowlAccessDenied = syscall.Errno(5)  // ERROR_ACCESS_DENIED: a door refused
-	prowlNoMoreFiles  = syscall.Errno(18) // ERROR_NO_MORE_FILES: the walk's end
+	prowlAccessDenied     = syscall.Errno(5)  // ERROR_ACCESS_DENIED: a door refused
+	prowlInvalidParameter = syscall.Errno(87) // ERROR_INVALID_PARAMETER: the id names a thread that has ended
+	prowlNoMoreFiles      = syscall.Errno(18) // ERROR_NO_MORE_FILES: the walk's end
 )
 
 // prowlProcessDoors is what gets tried against every host, in the order the
@@ -142,30 +161,31 @@ func conhostProwl(resultFile string) int {
 		return conhostProwlEmpty
 	}
 
-	// One thread snapshot for the whole probe: each host's thread doors are
-	// tried on a thread it already owns, which is what Shield's own walk
-	// would reach.
-	threads, ok := prowlOneThreadPerOwner()
-	if !ok {
-		return conhostProwlBroken
-	}
-
 	verdicts := make([]prowlVerdict, 0, len(hosts))
-	anyOpen := false
+	anyOpen, anyUnmeasured := false, false
 	for _, pid := range hosts {
-		v := prowlMeasureHost(pid, threads)
+		// Each host fetches its own threads, fresh when it is measured: a
+		// snapshot taken once for the whole probe would be stale by the time
+		// the later hosts came up, and a stale snapshot can only list the
+		// threads that were already dead when it was taken.
+		v := prowlMeasureHost(pid)
 		anyOpen = anyOpen || len(v.open) > 0
+		anyUnmeasured = anyUnmeasured || v.unmeasured
 		verdicts = append(verdicts, v)
 	}
 
-	// The dying-host refinement: doors found open are only believed while
-	// the host is still there to be measured again. A console whose host
-	// died between the walk and the probe -- expected for a console freed
-	// mid-run -- leaves doors nobody can re-check, and reporting those as an
-	// escape would make every run with a dying console look guilty. Re-list
-	// once after a second; a host no longer listed is recorded as gone and
-	// its doors are not counted, and one still listed counts.
-	if anyOpen {
+	// The dying-host refinement: doors found open -- and hosts whose threads
+	// could not be examined -- are only believed while the host is still
+	// there to be measured again. A console whose host died between the walk
+	// and the probe -- expected for a console freed mid-run -- leaves doors
+	// nobody can re-check, and reporting those as an escape would make every
+	// run with a dying console look guilty. The same mercy is owed to a host
+	// whose threads could not be examined: a host that died cannot be asked
+	// about its threads at all, and that is the honest gone case, not a
+	// hole. Re-list once after a second; a host no longer listed is recorded
+	// as gone, its doors are not counted and its unmeasured flag is
+	// cleared, and one still listed counts.
+	if anyOpen || anyUnmeasured {
 		time.Sleep(time.Second)
 		again, walkErr := proc.ConsoleHostChildren(uint32(os.Getppid()))
 		if walkErr != nil {
@@ -176,21 +196,30 @@ func conhostProwl(resultFile string) int {
 			still[pid] = true
 		}
 		for i, v := range verdicts {
-			if len(v.open) > 0 && !still[v.pid] {
+			if (len(v.open) > 0 || v.unmeasured) && !still[v.pid] {
 				v.line = fmt.Sprintf("host %d: gone before it could be measured again", v.pid)
 				v.open = nil
 				v.measured = false
+				v.unmeasured = false
 				verdicts[i] = v
 			}
 		}
 	}
 
-	measured, openDoors := 0, 0
+	measured, openDoors, unmeasuredAlive := 0, 0, 0
 	lines := make([]string, 0, len(verdicts)+1)
 	for _, v := range verdicts {
 		lines = append(lines, v.line)
 		if v.measured {
 			measured++
+		}
+		if v.unmeasured {
+			// A host that answered its process doors but not a single thread
+			// of which could be examined is a measurement failure, and it
+			// fails closed: it is counted apart here, and the probe ends
+			// nonzero on it below, so an unmeasured boundary cannot pass
+			// for a held one.
+			unmeasuredAlive++
 		}
 		openDoors += len(v.open)
 	}
@@ -200,6 +229,8 @@ func conhostProwl(resultFile string) int {
 	switch {
 	case openDoors > 0:
 		return conhostProwlOpen
+	case unmeasuredAlive > 0:
+		return conhostProwlUnmeasured
 	case measured == 0:
 		return conhostProwlNothingMeasured
 	default:
@@ -208,17 +239,23 @@ func conhostProwl(resultFile string) int {
 }
 
 // prowlVerdict is what the probe decided about one host: the line it will be
-// reported by, the doors that opened on it, and whether it was measured at
-// all -- unreachable and gone hosts are reported and counted as neither.
+// reported by, the doors that opened on it, whether it was measured at all
+// -- unreachable and gone hosts are reported and counted as neither -- and
+// whether the host answered its process doors while not one thread of it
+// could be examined. That last state is a measurement failure and not a
+// shut boundary, which is what unmeasured exists to say.
 type prowlVerdict struct {
-	pid      uint32
-	line     string
-	open     []string
-	measured bool
+	pid        uint32
+	line       string
+	open       []string
+	measured   bool
+	unmeasured bool
 }
 
-// prowlMeasureHost tries every door on one console host and says what opened.
-func prowlMeasureHost(pid uint32, threads map[uint32]uint32) prowlVerdict {
+// prowlMeasureHost tries every door on one console host and says what
+// opened. It fetches the host's threads itself, fresh when it is measured --
+// see prowlThreadsOfOwner for why the snapshot is not shared between hosts.
+func prowlMeasureHost(pid uint32) prowlVerdict {
 	var open []string
 	var notes []string
 	attempts, otherErrno := 0, 0
@@ -276,47 +313,160 @@ func prowlMeasureHost(pid uint32, threads map[uint32]uint32) prowlVerdict {
 		}
 	}
 
-	// The thread doors, on a thread the host already owns. A host with no
-	// thread in the snapshot has none to try them on; its process doors
-	// above still carry its verdict.
-	if tid, hasThread := threads[pid]; hasThread {
-		for _, door := range []struct {
-			name   string
-			access uintptr
-		}{
-			{"THREAD_SET_CONTEXT|THREAD_SUSPEND_RESUME", prowlThreadSetContextResume},
-			{"THREAD_WRITE_DAC", prowlWriteDac},
-		} {
-			if h, _, _ := prowlOpenThread.Call(door.access, 0, uintptr(tid)); h != 0 {
-				open = append(open, door.name)
+	// The thread doors, on threads the walk lists -- every one of them, not
+	// the first a single pass remembered: a shield with a hole in thread two
+	// passes for a shield when only thread one is asked (review round 2,
+	// P2-2). The doors go dangerous-first, because THREAD_SET_CONTEXT with
+	// SUSPEND_RESUME is the escape the shield exists to close -- redirect a
+	// thread the host already has and the host does the attacker's next step
+	// for it -- and WRITE_DAC is the narrower question of whether the
+	// thread's own permission list can be rewritten once the dangerous
+	// rights are refused.
+	//
+	// The walk is retried the way production's shutThreadsAlreadyRunning is
+	// (its threadListPollStep and threadListPollWant, unexported in another
+	// package, are mirrored in the prowl consts above): a thread a snapshot
+	// taken an instant earlier listed can be gone by the time it is opened,
+	// and a host that is alive has threads -- a walk that keeps finding none
+	// is a lagging snapshot, the lesson a0b4722 teaches production, not an
+	// answer about the host. So an empty examined set is never believed on
+	// its first walk, and after the ceiling it ends as "not measured", never
+	// as "closed": an alive host none of whose threads could be examined is
+	// a measurement failure, and unmeasured says so.
+	examined, walkFailed := 0, false
+	deadline := time.Now().Add(prowlThreadPollWant)
+	for {
+		threads, walkOK := prowlThreadsOfOwner(pid)
+		if !walkOK {
+			// The walk itself broke -- the snapshot could not be taken, or
+			// ended in something other than its normal 18. Nothing was
+			// examined and nothing can be: note it and stop, rather than
+			// retry a machine that has stopped answering.
+			walkFailed = true
+			examined = 0
+			break
+		}
+		for _, tid := range threads {
+			// Door A first, the dangerous one. A handle here makes the host
+			// guilty regardless of anything else -- the door IS the escape
+			// -- so the thread counts as examined and door B is never
+			// asked: there is no point asking more of a thread already
+			// proven open.
+			h, _, openErr := prowlOpenThread.Call(prowlThreadSetContextResume, 0, uintptr(tid))
+			if h != 0 {
+				open = append(open, "THREAD_SET_CONTEXT|THREAD_SUSPEND_RESUME")
 				syscall.CloseHandle(syscall.Handle(h))
+				examined++
+				continue
+			}
+			refusedA, goneA, errnoA := prowlThreadErrno(openErr)
+			switch {
+			case refusedA:
+				// Refused the dangerous rights, so now ask the narrower
+				// door on the SAME thread: a thread denied
+				// SET_CONTEXT|SUSPEND_RESUME but writable-DAC is exactly
+				// the one-sided refusal the review says must not pass for
+				// a shield -- whoever cannot redirect the thread can still
+				// rewrite the list that would keep the next attacker out.
+				if hB, _, openErrB := prowlOpenThread.Call(prowlWriteDac, 0, uintptr(tid)); hB != 0 {
+					open = append(open, "THREAD_WRITE_DAC")
+					syscall.CloseHandle(syscall.Handle(hB))
+					examined++
+				} else if refusedB, goneB, errnoB := prowlThreadErrno(openErrB); refusedB {
+					// Refused twice, dangerous and narrow alike: the only
+					// shape counted as a shut thread, an answer the
+					// thread's own list gave about both doors.
+					examined++
+				} else if goneB {
+					// The thread ended between the two doors. The
+					// dangerous door already answered shut before it
+					// vanished, so the thread still counts as examined
+					// -- but the vanish is noted, because a thread dying
+					// under the probe is worth a word in the diagnosis.
+					examined++
+					notes = append(notes, fmt.Sprintf("thread %d ended between the doors", tid))
+				} else {
+					// Not a refusal and not a vanish: the machine is not
+					// answering the question that was asked, and that
+					// must never count as a door closed -- the thread
+					// stays unexamined and the errno is written down.
+					notes = append(notes, fmt.Sprintf("THREAD_WRITE_DAC of thread %d (errno %d)", tid, errnoB))
+				}
+			case goneA:
+				// The thread ended between the snapshot and the open --
+				// the expected vanish every walk tolerates, Windows
+				// answering 87 because the id now names nothing. The
+				// thread is skipped entirely: not examined, not guilty,
+				// not noted.
+			default:
+				// Neither a refusal nor a vanish, and no handle: the same
+				// rule the process doors keep, an error the probe does not
+				// understand is noted and the thread stays unexamined --
+				// never a door closed by accident.
+				notes = append(notes, fmt.Sprintf("THREAD_SET_CONTEXT|THREAD_SUSPEND_RESUME of thread %d (errno %d)", tid, errnoA))
 			}
 		}
+		if examined > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(prowlThreadPollStep)
+	}
+	if walkFailed {
+		notes = append(notes, "the thread walk itself failed")
 	}
 
+	// The count of threads actually examined goes on the line when there
+	// was one; when there was none, the line says so instead of leaving a
+	// "closed" that only means nobody could ask.
 	line := fmt.Sprintf("host %d: closed", pid)
 	if len(open) > 0 {
 		line = fmt.Sprintf("host %d: open doors %s", pid, strings.Join(open, ", "))
 	}
+	if examined > 0 {
+		line += fmt.Sprintf(" (%d threads tried)", examined)
+	} else {
+		line += " (no thread of it would answer)"
+	}
 	if len(notes) > 0 {
 		line += " (" + strings.Join(notes, ", ") + ")"
 	}
-	return prowlVerdict{pid: pid, line: line, open: open, measured: true}
+	return prowlVerdict{
+		pid:        pid,
+		line:       line,
+		open:       open,
+		measured:   examined > 0,
+		unmeasured: examined == 0,
+	}
 }
 
-// prowlOneThreadPerOwner walks the thread snapshot once and answers one
-// thread id per owning pid -- what the thread doors need -- and whether the
-// walk completed. A walk that ended in anything but its normal 18 leaves the
-// doors untried, and a measurement missing its thread doors must not be
-// mistaken for one that tried them.
-func prowlOneThreadPerOwner() (map[uint32]uint32, bool) {
+// prowlThreadsOfOwner lists EVERY thread id the walk assigns to pid, and
+// whether the walk completed. Every thread, not the first one a walk meets:
+// the thread doors are the prowl's evidence about the threads a host already
+// carries, and a shield with a hole in thread two passes for a shield when
+// only thread one is asked (review round 2, P2-2) -- the one thread per
+// owner the prowl kept before was exactly that one-thread shield.
+//
+// The snapshot is taken fresh on every call, never once for the probe: the
+// caller re-walks whenever a pass examines nothing, and a snapshot kept from
+// an earlier pass can only list the same dead threads again -- it cannot
+// catch up with the threads a still-alive host actually has, which is the
+// whole point of walking again.
+//
+// A walk that ended in anything but its normal 18 is answered as not
+// completed, with whatever was listed so far, and a snapshot that could not
+// be taken at all as not completed and nothing -- a measurement missing its
+// threads must not be mistaken for one that tried them.
+func prowlThreadsOfOwner(pid uint32) ([]uint32, bool) {
 	snapshot, _, _ := prowlCreateToolhelp32Snapshot.Call(prowlSnapThreads, 0)
 	if snapshot == 0 || snapshot == ^uintptr(0) {
 		return nil, false
 	}
 	defer syscall.CloseHandle(syscall.Handle(snapshot))
 
-	owned := make(map[uint32]uint32)
+	var owned []uint32
 	entry := make([]byte, prowlThreadEntry32Size)
 	*(*uint32)(unsafe.Pointer(&entry[0])) = prowlThreadEntry32Size
 	for step := prowlThread32First; ; step = prowlThread32Next {
@@ -327,10 +477,10 @@ func prowlOneThreadPerOwner() (map[uint32]uint32, bool) {
 			}
 			return owned, false
 		}
-		owner := *(*uint32)(unsafe.Pointer(&entry[prowlOwnerProcessIDOffset]))
-		if _, seen := owned[owner]; !seen {
-			owned[owner] = *(*uint32)(unsafe.Pointer(&entry[prowlThreadIDOffset]))
+		if *(*uint32)(unsafe.Pointer(&entry[prowlOwnerProcessIDOffset])) != pid {
+			continue
 		}
+		owned = append(owned, *(*uint32)(unsafe.Pointer(&entry[prowlThreadIDOffset])))
 	}
 }
 
@@ -346,6 +496,29 @@ func prowlErrno(err error) (refused bool, errno int) {
 		return true, 0
 	}
 	return false, int(code)
+}
+
+// prowlThreadErrno is prowlErrno's thread-side sibling, and it sorts into
+// three because a thread can end where a process door never has to consider
+// it: refused, the object's own list answering (error 5) -- a measurement,
+// of a shut door or an open one; gone, the thread having ended between the
+// walk and the open (error 87, the id naming nothing any more, the same
+// answer production's walk skips) -- a non-answer the walk tolerates; and
+// anything else, the probe not understanding the machine it runs on, which
+// must never be read as a shut door. The number of the third kind comes
+// back so a note can carry it.
+func prowlThreadErrno(err error) (refused, gone bool, errno int) {
+	var code syscall.Errno
+	if !errors.As(err, &code) {
+		return false, false, 0
+	}
+	switch code {
+	case prowlAccessDenied:
+		return true, false, 0
+	case prowlInvalidParameter:
+		return false, true, int(code)
+	}
+	return false, false, int(code)
 }
 
 // TestEveryConsoleHostOfARunIsClosedToTheSandboxedProgram is the review's
@@ -377,6 +550,14 @@ func prowlErrno(err error) (refused bool, errno int) {
 // rendered bytes, keystrokes, resize -- is what
 // TestAProgramThroughTheConsoleRelaySeesARealTerminalAndRelaysItsBytes
 // measures; this test measures only that the hosts are shut.
+//
+// Since review round 2 (P2-2) the prowl's thread half asks every thread the
+// walk lists, not the first one it happens to remember, and sorts the three
+// answers OpenThread can give: a refusal is an answer, a vanished thread is
+// one that ended, and anything else is the probe itself broken. When a
+// living host's threads could not be examined at all the prowl ends nonzero
+// (exit code 46), so an unmeasured boundary can no longer pass for a held
+// one.
 //
 // Two things it cannot measure on a desk: without administrator rights no
 // real sandbox account can be built here, so neither the door measurement nor
