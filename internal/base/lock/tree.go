@@ -27,6 +27,12 @@ import (
 // That is the difference from one machine-wide lock, which would close the
 // same hole by making every grant wait for every other.
 //
+// A tree is held under what the directory is, not under how it was named.
+// A root reached through a SUBST drive or a mapped drive is resolved to
+// the real tree first, so two commands naming one tree hold one chain of
+// locks rather than two; a root that exists but cannot be identified
+// refuses the hold instead of standing on a lock of its own.
+//
 // The order is fixed — from the volume root downwards, always — so two
 // operations can never hold what the other is waiting for: each waits only on
 // a directory deeper than everything it holds already.
@@ -44,7 +50,16 @@ func HoldTree(root string, work func() error) error {
 // takeTree claims the whole chain and returns how to let all of it go. A name
 // that cannot be taken lets go of what was taken before it, so a failure
 // halfway leaves nothing held.
+// The root is resolved to the real tree's own spelling before anything is
+// taken -- once, and while nothing is held -- so every alias of a tree
+// claims one chain, the refusal of an unidentifiable root happens before
+// any lock exists to release, and the order below stays the order that
+// cannot cross.
 func takeTree(root string) (func(), error) {
+	under, err := identity(root)
+	if err != nil {
+		return nil, err
+	}
 	var taken []func()
 	release := func() {
 		for i := len(taken) - 1; i >= 0; i-- {
@@ -52,7 +67,7 @@ func takeTree(root string) (func(), error) {
 		}
 		taken = nil
 	}
-	above := containing(root)
+	above := containing(under)
 	for _, directory := range above {
 		got, err := takeAs(ForPath(directory), shared)
 		if err != nil {
@@ -61,7 +76,7 @@ func takeTree(root string) (func(), error) {
 		}
 		taken = append(taken, got)
 	}
-	got, err := takeAs(ForPath(root), exclusive)
+	got, err := takeAs(ForPath(under), exclusive)
 	if err != nil {
 		release()
 		return nil, err
