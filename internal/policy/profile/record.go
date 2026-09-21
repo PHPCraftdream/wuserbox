@@ -16,6 +16,16 @@ import (
 // absent, retain it unless its cleaned spelling is exactly the same: dropping
 // an absent entry would lose the only record that can take back a copy once it
 // returns.
+//
+// The volume is asked through one placeResolver for the whole call, and each
+// entry's answer is indexed the moment it exists: a cleaned spelling seen
+// before is dropped by it, a canonical place seen before by that, and an
+// entry whose place cannot be witnessed joins neither index -- retained,
+// unless its cleaned spelling repeats, which is the pairwise loop's answer
+// for absent places too. What changed against that loop is the number of
+// questions, not any answer: each entry is resolved once and compared by
+// index, where the loop resolved every prior again for every entry compared,
+// re-opening and re-reading the same directories once per comparison (P2-5).
 func DedupeEntries(dest string, entries []config.Entry) []config.Entry {
 	if len(entries) < 2 {
 		return append([]config.Entry(nil), entries...)
@@ -26,19 +36,24 @@ func DedupeEntries(dest string, entries []config.Entry) []config.Entry {
 	}
 	defer func() { _ = root.Close() }()
 
+	resolver := newPlaceResolver(root)
+	spellings := make(map[string]bool, len(entries))
+	places := make(map[string]bool, len(entries))
 	kept := make([]config.Entry, 0, len(entries))
 	for _, entry := range entries {
-		duplicate := false
-		for _, prior := range kept {
-			if cleanEntryPath(prior.Path) == cleanEntryPath(entry.Path) ||
-				sameEntryPlace(root, prior.Path, entry.Path) {
-				duplicate = true
-				break
+		spelling := cleanEntryPath(entry.Path)
+		if spellings[spelling] {
+			continue
+		}
+		canonical, ok := resolver.place(entry.Path)
+		if ok {
+			if places[canonical] {
+				continue
 			}
+			places[canonical] = true
 		}
-		if !duplicate {
-			kept = append(kept, entry)
-		}
+		spellings[spelling] = true
+		kept = append(kept, entry)
 	}
 	return kept
 }
