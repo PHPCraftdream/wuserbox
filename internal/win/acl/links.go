@@ -9,16 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
-	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
-)
-
-var (
-	procFindFirstFileName = w32.Kernel32.NewProc("FindFirstFileNameW")
-	procFindNextFileName  = w32.Kernel32.NewProc("FindNextFileNameW")
-	procFindClose         = w32.Kernel32.NewProc("FindClose")
 )
 
 // EnvAllowLinks hands the tree over even where a file in it answers to another
@@ -102,7 +95,7 @@ func insideOnly(root, path string, isDir bool) error {
 	if names == 1 {
 		return nil
 	}
-	others, err := otherNames(path)
+	others, err := pathid.Names(path)
 	if err != nil {
 		// The count says there is another name and asking which went wrong,
 		// so nothing here can say where it is. That is the one case where the
@@ -146,40 +139,6 @@ func within(root, path string) (bool, error) {
 // here goes through this first.
 func finalName(path string) (string, error) {
 	return pathid.Canonical(path)
-}
-
-// otherNames lists every name the file at path answers to, as full paths.
-//
-// Windows gives them relative to the volume root, and a hard link cannot cross
-// volumes, so the volume of the path that was asked about is the volume of
-// them all. That path is spelled out first, or a substituted drive would put
-// the wrong letter in front of all of them.
-func otherNames(path string) ([]string, error) {
-	absolute, err := finalName(path)
-	if err != nil {
-		return nil, err
-	}
-	volume := filepath.VolumeName(absolute)
-
-	buffer := make([]uint16, syscall.MAX_LONG_PATH)
-	length := uint32(len(buffer))
-	handle, _, callErr := procFindFirstFileName.Call(
-		uintptr(unsafe.Pointer(w32.UTF16(absolute))), 0,
-		uintptr(unsafe.Pointer(&length)), uintptr(unsafe.Pointer(&buffer[0])))
-	if handle == uintptr(syscall.InvalidHandle) {
-		return nil, fmt.Errorf("listing the names of %s: %w", absolute, callErr)
-	}
-	defer procFindClose.Call(handle)
-
-	var found []string
-	for {
-		found = append(found, volume+syscall.UTF16ToString(buffer))
-		length = uint32(len(buffer))
-		if r, _, _ := procFindNextFileName.Call(handle,
-			uintptr(unsafe.Pointer(&length)), uintptr(unsafe.Pointer(&buffer[0]))); r == 0 {
-			return found, nil
-		}
-	}
 }
 
 // namesOf is how many names the file at path answers to.

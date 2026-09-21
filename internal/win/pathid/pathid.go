@@ -2,6 +2,7 @@
 package pathid
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,10 +15,39 @@ import (
 
 var procGetFinalPathName = w32.Kernel32.NewProc("GetFinalPathNameByHandleW")
 
+// The FindFirstFileNameW family behind variables, so a test can interrupt an
+// enumeration partway the way a disk error would and hold the callers to
+// what they owe an answer that is not the whole list. The conversions into
+// the calls' own spelling live here, so everything on either side of them
+// works in Go's types.
+var (
+	findFirstFileName = func(name string, length *uint32, buffer []uint16) (uintptr, error) {
+		handle, _, callErr := procFindFirstFileName.Call(uintptr(unsafe.Pointer(w32.UTF16(name))), 0,
+			uintptr(unsafe.Pointer(length)), uintptr(unsafe.Pointer(&buffer[0])))
+		return handle, callErr
+	}
+	findNextFileName = func(handle uintptr, length *uint32, buffer []uint16) (uintptr, error) {
+		r, _, callErr := procFindNextFileName.Call(handle,
+			uintptr(unsafe.Pointer(length)), uintptr(unsafe.Pointer(&buffer[0])))
+		return r, callErr
+	}
+	findCloseFileName = func(handle uintptr) {
+		_, _, _ = procFindClose.Call(handle)
+	}
+)
+
 var (
 	procFindFirstFileName = w32.Kernel32.NewProc("FindFirstFileNameW")
 	procFindNextFileName  = w32.Kernel32.NewProc("FindNextFileNameW")
 	procFindClose         = w32.Kernel32.NewProc("FindClose")
+)
+
+// The two answers of the family that say "go on" rather than "stop for
+// good": the documented end of the list, and a name that did not fit the
+// buffer it was offered.
+const (
+	errHandleEOF = syscall.Errno(38)  // ERROR_HANDLE_EOF
+	errMoreData  = syscall.Errno(234) // ERROR_MORE_DATA
 )
 
 // fileID is the identity Windows assigns to a directory entry. The volume is
@@ -131,30 +161,71 @@ func Same(first, second string) (bool, error) {
 // Names returns every directory entry Windows has for the file at path.
 // Hard links are names for one file object, so checking only the name being
 // copied to is not enough before opening it for write.
+//
+// The names come back spelled from the volume the file lives on -- a hard
+// link cannot cross volumes, so the volume of the path that was asked about
+// is the volume of them all -- and that path is asked for in the spelling
+// Windows itself resolves, or a substituted drive would put the wrong letter
+// in front of all of them.
+//
+// Only the documented end of the enumeration ends it successfully. Any other
+// answer -- an access failure, a name that did not fit -- comes back as an
+// error: an enumeration that stops there has said nothing about the names it
+// never reached, and a caller checking whether a file answers to a name
+// outside a boundary must not take a partial answer for all of them. A name
+// that did not fit is asked for again with the room it needs, which is the
+// API's own way to go on.
 func Names(path string) ([]string, error) {
 	absolute, err := Canonical(path)
 	if err != nil {
 		return nil, err
 	}
+	return enumerateNames(absolute)
+}
+
+// maxNamesBuffer is a ceiling on the room a "did not fit" answer can ask
+// for, far past any path Windows can spell. A demanded size past it, or one
+// no bigger than the buffer that has just failed, is not a name waiting for
+// space: it is a number the enumeration will never converge on, and the
+// answer to that is a refusal rather than an allocation or a loop.
+const maxNamesBuffer = 1 << 20
+
+func enumerateNames(absolute string) ([]string, error) {
 	volume := filepath.VolumeName(absolute)
 	buffer := make([]uint16, syscall.MAX_LONG_PATH)
 	length := uint32(len(buffer))
-	handle, _, callErr := procFindFirstFileName.Call(
-		uintptr(unsafe.Pointer(w32.UTF16(absolute))), 0,
-		uintptr(unsafe.Pointer(&length)), uintptr(unsafe.Pointer(&buffer[0])))
+	handle, callErr := findFirstFileName(absolute, &length, buffer)
 	if handle == uintptr(syscall.InvalidHandle) {
 		return nil, fmt.Errorf("listing the names of %s: %w", absolute, callErr)
 	}
-	defer func() { _, _, _ = procFindClose.Call(handle) }()
+	defer findCloseFileName(handle)
 
 	var names []string
 	for {
 		names = append(names, volume+syscall.UTF16ToString(buffer[:length]))
 		length = uint32(len(buffer))
-		if r, _, _ := procFindNextFileName.Call(
-			handle, uintptr(unsafe.Pointer(&length)), uintptr(unsafe.Pointer(&buffer[0]))); r == 0 {
+		r, callErr := findNextFileName(handle, &length, buffer)
+		// A name that did not fit is the one failure that says "ask
+		// again": the length now holds the room it needs, terminating null
+		// included, and the same call is made with a buffer of that much.
+		// The name just appended came from the call before, so nothing
+		// truncated is ever taken as read, and nothing is appended twice.
+		for r == 0 && errors.Is(callErr, errMoreData) {
+			if length == 0 || length <= uint32(len(buffer)) || length > maxNamesBuffer {
+				return nil, fmt.Errorf("listing the names of %s: the next name asks for %d characters and the buffer of %d cannot grow to hold it",
+					absolute, length, len(buffer))
+			}
+			buffer = make([]uint16, length)
+			length = uint32(len(buffer))
+			r, callErr = findNextFileName(handle, &length, buffer)
+		}
+		if r != 0 {
+			continue
+		}
+		if errors.Is(callErr, errHandleEOF) {
 			return names, nil
 		}
+		return nil, fmt.Errorf("listing the names of %s after %q: %w", absolute, names[len(names)-1], callErr)
 	}
 }
 
