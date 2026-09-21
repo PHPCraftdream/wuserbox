@@ -1,11 +1,13 @@
 package proc
 
-// The driver this package's tests re-exec themselves as, and the waiting
-// that goes with it. signal.Notify and console attachment are process-wide,
-// so a test that wants to interrupt a run has to have a real second process
-// to interrupt; everything here exists to build that process, talk to it
-// through files, and know when it is gone. What the tests then measure --
-// and what was learned the hard way about console control events -- is in
+// The processes this package's tests re-exec themselves as -- the driver
+// that plays wuserbox, and the console holder whose windowless console
+// takeAConsole borrows -- and the waiting that goes with them.
+// signal.Notify and console attachment are process-wide, so a test that
+// wants to interrupt a run has to have a real second process to interrupt;
+// everything here exists to build those processes, talk to them through
+// files, and know when they are gone. What the tests then measure -- and
+// what was learned the hard way about console control events -- is in
 // interrupt_test.go.
 
 import (
@@ -35,14 +37,13 @@ const (
 
 var (
 	procFreeConsole       = w32.Kernel32.NewProc("FreeConsole")
-	procAllocConsole      = w32.Kernel32.NewProc("AllocConsole")
+	procAttachConsole     = w32.Kernel32.NewProc("AttachConsole")
 	procGenerateCtrlEvent = w32.Kernel32.NewProc("GenerateConsoleCtrlEvent")
 	procGetConsoleWindow  = w32.Kernel32.NewProc("GetConsoleWindow")
-	procShowWindow        = w32.User32.NewProc("ShowWindow")
 )
 
-// takeAConsole gives this test process a console of its own, without putting
-// a window on the screen for it.
+// takeAConsole gives this test process a console of its own, and never
+// puts a window on the screen for it.
 //
 // The console is needed: GenerateConsoleCtrlEvent reaches the processes
 // attached to a console, and a caller attached to none can call it, get a
@@ -50,30 +51,94 @@ var (
 // and a test run that opens four of them across the package is a test run
 // that takes the screen away from whoever started it.
 //
-// Hiding the window does not weaken what the console is for. A control event
-// goes to the console's list of attached processes, which is unrelated to
-// whether anything is drawn: measured by the interrupt tests themselves,
-// which deliver and catch events with the window hidden.
+// The window is not hidden; it is never created. The harness this replaces
+// allocated its own console with AllocConsole and hid the handle it left
+// behind, and that raced conhost every time: the window of an allocated
+// console is created and shown by conhost, a process of its own, and
+// AllocConsole returns as soon as the caller is attached -- the show then
+// proceeds on conhost's own schedule, so the test's ShowWindow(SW_HIDE)
+// either arrived after a flash and a stolen foreground that hiding never
+// gave back, or was overridden by the show still to come. So the console is
+// borrowed from a holder instead: this test binary re-execs itself as
+// holdConsole, started with CREATE_NO_WINDOW, which hands the holder a real
+// console with no window at all (measured -- see the createNoWindow comment
+// in job.go and section 5 of docs/investigations/2026-09-20-same-window-console.md),
+// and this process attaches to the holder's console. A console with no
+// window gives conhost nothing to show, so there is no race to lose.
 //
-// Freeing first and allocating second, before the driver is started, so the
-// driver inherits this console rather than getting an implicit one of its
-// own -- see the long note at the top of this file for why that order is not
-// optional.
+// It is still a whole console. The close test
+// TestTakingAConsoleNeverPutsAWindowOnTheScreen delivers a CTRL_BREAK_EVENT
+// through the windowless console and watches it arrive, because a console
+// that cannot deliver an event is not a console.
+//
+// Freeing this process's own console first and attaching second, before the
+// driver is started, so the driver inherits this console rather than getting
+// an implicit one of its own -- see the long note at the top of
+// interrupt_test.go for why that order is not optional.
 func takeAConsole(t *testing.T) {
 	t.Helper()
 	procFreeConsole.Call()
-	if r, _, callErr := procAllocConsole.Call(); r == 0 {
-		t.Fatalf("AllocConsole: %v", callErr)
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
 	}
-	// A console just allocated always has a window; nothing here has to cope
-	// with it being absent, and a zero handle would mean the allocation above
-	// did not do what it said.
-	window, _, callErr := procGetConsoleWindow.Call()
-	if window == 0 {
-		t.Fatalf("GetConsoleWindow after AllocConsole: %v", callErr)
+	holder := exec.Command(exe, consoleHolderFlag)
+	holder.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
+	if err := holder.Start(); err != nil {
+		t.Fatalf("starting the console holder: %v", err)
 	}
-	const hide = 0
-	procShowWindow.Call(window, hide)
+	// Registered before anything below can fail, so no path out of here
+	// leaves the holder behind -- the lesson driverCommand's comment records
+	// about drivers found still running hours later. Killing something
+	// already gone is harmless. Registered here rather than by the caller,
+	// so it also runs after driverCommand's own cleanup has killed the
+	// driver: the console the driver inherited is taken away only once
+	// nothing needs it.
+	t.Cleanup(func() {
+		_ = holder.Process.Kill()
+	})
+
+	// Not attachable the instant Start returns: the holder's console is
+	// stood up during its startup by conhost, another process, and measured
+	// on this machine AttachConsole called straight after Start answers
+	// ERROR_INVALID_HANDLE because the console is not there yet. A bounded
+	// wait, then, not an unconditional call -- the same patience
+	// waitForFile shows the driver's readiness marker, generous because
+	// nothing here is a measurement of how fast a machine starts a program.
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		r, _, callErr := procAttachConsole.Call(uintptr(holder.Process.Pid))
+		if r != 0 {
+			break
+		}
+		if !time.Now().After(deadline) {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		t.Fatalf("AttachConsole(%d): %v", holder.Process.Pid, callErr)
+	}
+
+	// The structural fix, asserted where it can be enforced: the console
+	// this process now shares with the holder has no window, so there is
+	// nothing on the screen and nothing ever to hide. Nonzero here would
+	// mean the whole point failed.
+	if window, _, _ := procGetConsoleWindow.Call(); window != 0 {
+		t.Fatalf("GetConsoleWindow after attaching to the holder: 0x%x -- the console was supposed to have no window", window)
+	}
+}
+
+// holdConsole is the other program this test binary can be: the owner of the
+// windowless console takeAConsole attaches to. It holds its console by
+// staying alive and doing nothing; the console exists for exactly as long
+// as it does, and nobody attached to it needs it to answer.
+//
+// takeAConsole's cleanup kills it when the test ends. The bound below is
+// only for the test binary itself dying without its cleanups -- the same
+// shape as the drivers found still running hours later that driverCommand's
+// comment records.
+func holdConsole() {
+	time.Sleep(10 * time.Minute)
 }
 
 // runDriver plays the wuserbox-parent role: it starts the sandboxed

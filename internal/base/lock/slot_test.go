@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
@@ -74,7 +74,7 @@ func TestASlotFreesWhenItsHolderDies(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", t.TempDir())
 	name := fmt.Sprintf("wub-slot-dies-%d", os.Getpid())
 
-	other := exec.Command(os.Args[0], "-test.run=TestSlotHelperTakesTheSlotAndDies")
+	other := quietexec.Command(os.Args[0], "-test.run=TestSlotHelperTakesTheSlotAndDies")
 	other.Env = append(os.Environ(), slotHelperEnv+"="+name)
 	if err := other.Run(); err != nil {
 		t.Fatalf("the child that dies holding the slot failed: %v", err)

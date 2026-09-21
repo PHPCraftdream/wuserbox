@@ -8,11 +8,11 @@ package acl
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
@@ -22,7 +22,7 @@ import (
 // identifier, which is refused outright.
 func icacls(t *testing.T, args ...string) ([]byte, error) {
 	t.Helper()
-	out, err := exec.Command("icacls", args...).CombinedOutput()
+	out, err := quietexec.Command("icacls", args...).CombinedOutput()
 	if strings.Contains(string(out), "The security ID structure is invalid") {
 		t.Fatalf("icacls %v: the identifier was not spelled the way icacls wants it:\n%s", args, out)
 	}

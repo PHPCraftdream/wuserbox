@@ -15,6 +15,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
 
@@ -34,7 +35,7 @@ func binary(t *testing.T) string {
 			return
 		}
 		buildOnce.path = filepath.Join(dir, "wuserbox.exe")
-		out, err := exec.Command("go", "build", "-o", buildOnce.path, "github.com/PHPCraftdream/wuserbox/cmd/wuserbox").CombinedOutput()
+		out, err := quietexec.Command("go", "build", "-o", buildOnce.path, "github.com/PHPCraftdream/wuserbox/cmd/wuserbox").CombinedOutput()
 		if err != nil {
 			buildOnce.err = err
 			t.Logf("build output: %s", out)
@@ -49,7 +50,7 @@ func binary(t *testing.T) string {
 // cli runs the command with a private config file and returns output plus exit code.
 func cli(t *testing.T, cwd string, args ...string) (string, int) {
 	t.Helper()
-	cmd := exec.Command(binary(t), args...)
+	cmd := quietexec.Command(binary(t), args...)
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(), config.EnvPath+"="+filepath.Join(t.TempDir(), "wuserbox.ktav"))
 	out, err := cmd.CombinedOutput()
@@ -113,7 +114,7 @@ func TestCLIAddDirRecordsTheRule(t *testing.T) {
 	tools := t.TempDir()
 	cfgPath := filepath.Join(t.TempDir(), "rules.ktav")
 
-	cmd := exec.Command(binary(t), "--add-dir", tools)
+	cmd := quietexec.Command(binary(t), "--add-dir", tools)
 	cmd.Dir = project
 	cmd.Env = append(os.Environ(), config.EnvPath+"="+cfgPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -134,7 +135,7 @@ func TestCLIAddDirRecordsTheRule(t *testing.T) {
 	}
 
 	// Removing it again leaves the project rule empty.
-	cmd = exec.Command(binary(t), "--remove-dir", tools)
+	cmd = quietexec.Command(binary(t), "--remove-dir", tools)
 	cmd.Dir = project
 	cmd.Env = append(os.Environ(), config.EnvPath+"="+cfgPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -165,7 +166,7 @@ func TestCLIFullLifecycle(t *testing.T) {
 	env := append(os.Environ(), config.EnvPath+"="+cfgPath)
 
 	run := func(args ...string) (string, int) {
-		cmd := exec.Command(binary(t), args...)
+		cmd := quietexec.Command(binary(t), args...)
 		cmd.Dir = project
 		cmd.Env = env
 		out, err := cmd.CombinedOutput()
@@ -243,7 +244,7 @@ func TestCLIFullLifecycle(t *testing.T) {
 // the command worked or not.
 func TestCLIReportsAFailureAsJSONWhenAsked(t *testing.T) {
 	command := binary(t)
-	output, err := exec.Command(command, "nonsense", "--json").CombinedOutput()
+	output, err := quietexec.Command(command, "nonsense", "--json").CombinedOutput()
 	if err == nil {
 		t.Fatal("an unknown command should fail")
 	}
@@ -263,7 +264,7 @@ func TestCLIReportsAFailureAsJSONWhenAsked(t *testing.T) {
 	}
 
 	// Without the flag it stays a line of prose, as it always was.
-	plain, err := exec.Command(command, "nonsense").CombinedOutput()
+	plain, err := quietexec.Command(command, "nonsense").CombinedOutput()
 	if err == nil {
 		t.Fatal("an unknown command should fail")
 	}
@@ -288,7 +289,7 @@ func TestCLIKeepsJSONWhenAFlagIsWrong(t *testing.T) {
 		{"--grant", `C:\tools`, "--json", "--nonsense"},
 		{"--run", "--json", "--nonsense", "--", "cmd.exe"},
 	} {
-		output, err := exec.Command(command, args...).CombinedOutput()
+		output, err := quietexec.Command(command, args...).CombinedOutput()
 		if err == nil {
 			t.Errorf("%v: an unknown flag should fail", args)
 			continue
@@ -315,7 +316,7 @@ func TestCLIKeepsJSONWhenAFlagIsWrong(t *testing.T) {
 func TestCLIKeepsJSONWhileWorking(t *testing.T) {
 	command := binary(t)
 	project := t.TempDir()
-	run := exec.Command(command, "--run", "--dir", project, "--json", "--non-interactive",
+	run := quietexec.Command(command, "--run", "--dir", project, "--json", "--non-interactive",
 		"--", "cmd.exe", "/c", "echo hello")
 	var out bytes.Buffer
 	run.Stderr = &out
@@ -342,7 +343,7 @@ func TestCLIKeepsJSONWhileWorking(t *testing.T) {
 func TestCLIRunsAProgramWithoutBeingTold(t *testing.T) {
 	command := binary(t)
 	project := t.TempDir()
-	out, err := exec.Command(command, "--dir", project, "--dry-run", "--quiet",
+	out, err := quietexec.Command(command, "--dir", project, "--dry-run", "--quiet",
 		"cmd.exe", "/c", "echo", "hello").CombinedOutput()
 	if err != nil {
 		t.Fatalf("a plain run failed: %v (%s)", err, out)
@@ -352,7 +353,7 @@ func TestCLIRunsAProgramWithoutBeingTold(t *testing.T) {
 	}
 
 	// And a word that is neither says which it is not.
-	mistyped, err := exec.Command(command, "--dir", project, "frobnicate").CombinedOutput()
+	mistyped, err := quietexec.Command(command, "--dir", project, "frobnicate").CombinedOutput()
 	if err == nil {
 		t.Fatal("a word that is neither a command nor a program should fail")
 	}
@@ -365,7 +366,7 @@ func TestCLIRunsAProgramWithoutBeingTold(t *testing.T) {
 // that say what a sandbox is are not accepted while starting a program.
 func TestCLIRefusesToConfigureOnARun(t *testing.T) {
 	command := binary(t)
-	out, err := exec.Command(command, "--dir", t.TempDir(), "--rw", t.TempDir(),
+	out, err := quietexec.Command(command, "--dir", t.TempDir(), "--rw", t.TempDir(),
 		"cmd.exe", "/c", "echo", "hello").CombinedOutput()
 	if err == nil {
 		t.Fatal("configuring on a run should fail")

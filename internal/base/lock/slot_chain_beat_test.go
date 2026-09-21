@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
 	"sync/atomic"
 	"syscall"
@@ -20,6 +19,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
@@ -352,7 +352,7 @@ func chainSpawnForBeatTest(t *testing.T, ready string) (outerPID, stubPID, progr
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(exe, "-test.run=TestSlotChainOuterHoldsTheChainAndWaits")
+	cmd := quietexec.Command(exe, "-test.run=TestSlotChainOuterHoldsTheChainAndWaits")
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

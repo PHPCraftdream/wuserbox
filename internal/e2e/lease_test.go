@@ -37,6 +37,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
@@ -78,7 +79,7 @@ func leaseRunner(t *testing.T, project, rules string) func(args ...string) (stri
 	t.Helper()
 	return func(args ...string) (string, int) {
 		t.Helper()
-		cmd := exec.Command(binary(t), args...)
+		cmd := quietexec.Command(binary(t), args...)
 		cmd.Dir = project
 		cmd.Env = append(os.Environ(), config.EnvPath+"="+rules)
 		out, err := cmd.CombinedOutput()

@@ -5,12 +5,12 @@ package state
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/win/access"
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 )
 
 // TestNarrowingADirectoryTakesBackWhatIsInsideIt is the regression guard for a
@@ -422,11 +422,11 @@ func substDrive(t *testing.T, target string) string {
 		if _, err := os.Stat(drive + `\`); err == nil {
 			continue
 		}
-		if err := exec.Command("cmd", "/c", "subst", drive, target).Run(); err != nil {
+		if err := quietexec.Command("cmd", "/c", "subst", drive, target).Run(); err != nil {
 			continue
 		}
 		t.Cleanup(func() {
-			_ = exec.Command("cmd", "/c", "subst", drive, "/D").Run()
+			_ = quietexec.Command("cmd", "/c", "subst", drive, "/D").Run()
 		})
 		return drive
 	}

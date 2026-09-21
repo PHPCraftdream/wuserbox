@@ -24,10 +24,18 @@ package proc
 //     a targeted event to reach anywhere: a caller attached to no console at
 //     all (true of this test binary, launched by a shell that gives it none)
 //     can call it, get a success return, and have it reach nobody -- signaling
-//     an empty console, exactly the trap the task named. FreeConsole then
-//     AllocConsole, done by the test *before* starting the driver so the
-//     driver inherits the same console rather than getting an implicit one
-//     of its own, fixes this.
+//     an empty console, exactly the trap the task named. The harness in
+//     takeAConsole fixes this, done by the test *before* starting the driver
+//     so the driver inherits the same console rather than getting an implicit
+//     one of its own: free this process's console, start a holder -- this
+//     binary re-execed with CREATE_NO_WINDOW, which gives it a real console
+//     with no window (see the createNoWindow comment in job.go) -- and attach
+//     to the holder's console. The window the earlier FreeConsole-then-
+//     AllocConsole harness tried to hide is never created at all: AllocConsole
+//     always comes with one, and conhost shows it on conhost's own schedule,
+//     so the test's ShowWindow(SW_HIDE) raced a show it either lost -- a
+//     flash, and a stolen foreground that hiding never gave back -- or arrived
+//     before a show that overrode it.
 //
 //   - That allocation has to happen in the test, not in the driver: a
 //     process's own registered console control handler -- which is what

@@ -75,7 +75,15 @@ func startRaceStub(t *testing.T, own syscall.Token, commandLine, accountSID stri
 		j.Close()
 		t.Fatal(err)
 	}
-	const flags = createSuspended
+	// Born the way a real stub is born: createNoWindow rides along with
+	// createSuspended because RunAsAccount births every stub
+	// createSuspended|createUnicodeEnvironment|createNoWindow (logon.go). The
+	// stand-in used to be started without the flag -- and a console-less
+	// caller starting a console-subsystem child without it gets the child a
+	// new console, and a new console comes with a window on the screen. The
+	// victim here waits on a file and shields itself, so it needs no console
+	// of any kind; the flag only takes the window away.
+	const flags = createSuspended | createNoWindow
 	r, _, callErr := procCreateProcessAsUser.Call(uintptr(own), 0, uintptr(unsafe.Pointer(&line[0])),
 		0, 0, 1, flags, 0, 0, uintptr(unsafe.Pointer(&startup)), uintptr(unsafe.Pointer(&created)))
 	if r == 0 {

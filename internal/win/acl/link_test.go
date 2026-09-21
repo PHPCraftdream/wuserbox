@@ -7,13 +7,13 @@ package acl
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"unsafe"
 
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
@@ -32,7 +32,7 @@ func TestAGrantDoesNotReachThroughAJunction(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := filepath.Join(root, "link")
-	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, outside).CombinedOutput(); err != nil {
+	if out, err := quietexec.Command("cmd", "/c", "mklink", "/J", link, outside).CombinedOutput(); err != nil {
 		t.Skipf("this machine would not make a junction: %v\n%s", err, out)
 	}
 	t.Cleanup(func() { _ = os.Remove(link) })
@@ -80,7 +80,7 @@ func TestAGrantRefusesAFileWithASecondNameOutside(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := filepath.Join(granted, "link.txt")
-	if out, err := exec.Command("cmd", "/c", "mklink", "/H", link, target).CombinedOutput(); err != nil {
+	if out, err := quietexec.Command("cmd", "/c", "mklink", "/H", link, target).CombinedOutput(); err != nil {
 		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
 	}
 
@@ -201,7 +201,7 @@ func TestAGrantRefusesAHardLinkAcrossFilesystemDistinctUnicodeDirectories(t *tes
 		t.Fatal(err)
 	}
 	link := filepath.Join(inside, "link.txt")
-	if out, err := exec.Command("cmd", "/c", "mklink", "/H", link, target).CombinedOutput(); err != nil {
+	if out, err := quietexec.Command("cmd", "/c", "mklink", "/H", link, target).CombinedOutput(); err != nil {
 		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
 	}
 
@@ -230,7 +230,7 @@ func TestAllowLinksHandsTheTreeOverAnyway(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := filepath.Join(granted, "link.txt")
-	if out, err := exec.Command("cmd", "/c", "mklink", "/H", link, target).CombinedOutput(); err != nil {
+	if out, err := quietexec.Command("cmd", "/c", "mklink", "/H", link, target).CombinedOutput(); err != nil {
 		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
 	}
 
@@ -267,7 +267,7 @@ func TestAGrantAllowsALinkThatStaysInsideTheTree(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(second), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("cmd", "/c", "mklink", "/H", second, first).CombinedOutput(); err != nil {
+	if out, err := quietexec.Command("cmd", "/c", "mklink", "/H", second, first).CombinedOutput(); err != nil {
 		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
 	}
 
@@ -303,7 +303,7 @@ func TestALinkInsideATreeNamedInShortFormIsStillInside(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := filepath.Join(long, "two", "shared.txt")
-	if out, err := exec.Command("cmd", "/c", "mklink", "/H", second, first).CombinedOutput(); err != nil {
+	if out, err := quietexec.Command("cmd", "/c", "mklink", "/H", second, first).CombinedOutput(); err != nil {
 		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
 	}
 

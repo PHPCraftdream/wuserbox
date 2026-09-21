@@ -2,11 +2,11 @@ package account
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
@@ -15,7 +15,7 @@ import (
 // Full Control inside its own profile.
 func junction(t *testing.T, path, target string) {
 	t.Helper()
-	out, err := exec.Command("cmd", "/c", "mklink", "/J", path, target).CombinedOutput()
+	out, err := quietexec.Command("cmd", "/c", "mklink", "/J", path, target).CombinedOutput()
 	if err != nil {
 		t.Fatalf("making a junction at %s: %v: %s", path, err, out)
 	}
@@ -160,7 +160,7 @@ func TestMakingAProfileRejectsAnExternalHardLinkBeforePermissioningIt(t *testing
 		t.Skipf("hard links unavailable on this volume: %v", err)
 	}
 
-	before, err := exec.Command("icacls", outside).CombinedOutput()
+	before, err := quietexec.Command("icacls", outside).CombinedOutput()
 	if err != nil {
 		t.Fatalf("reading the control file ACL: %v\n%s", err, before)
 	}
@@ -171,7 +171,7 @@ func TestMakingAProfileRejectsAnExternalHardLinkBeforePermissioningIt(t *testing
 	if err := MakeProfile(profile, me(t)); err == nil {
 		t.Fatal("profile with an external hard-link name was accepted")
 	}
-	after, err := exec.Command("icacls", outside).CombinedOutput()
+	after, err := quietexec.Command("icacls", outside).CombinedOutput()
 	if err != nil {
 		t.Fatalf("reading the control file ACL after refusal: %v\n%s", err, after)
 	}

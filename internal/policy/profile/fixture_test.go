@@ -2,11 +2,11 @@ package profile
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 )
 
 // useProfile points the config package and paths.Home at fresh temporary
@@ -100,7 +100,7 @@ func pathsOf(entries []config.Entry) []string {
 
 func junctionTo(t *testing.T, link, target string) {
 	t.Helper()
-	if out, err := exec.Command("cmd.exe", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+	if out, err := quietexec.Command("cmd.exe", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
 		t.Skipf("this machine would not make a junction: %v %s", err, out)
 	}
 }

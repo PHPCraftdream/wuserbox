@@ -2,7 +2,6 @@ package profile
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -10,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 )
 
 func TestCopyPlacesListedEntriesAtTheSameRelativeSpot(t *testing.T) {
@@ -55,7 +55,7 @@ func TestCopyRefusesAnExternalHardLinkBeforeTruncatingIt(t *testing.T) {
 	outside := filepath.Join(t.TempDir(), "outside.txt")
 	write(t, outside, "outside contents\n")
 	link := filepath.Join(dest, ".gitconfig")
-	if out, err := exec.Command("cmd.exe", "/c", "mklink", "/H", link, outside).CombinedOutput(); err != nil {
+	if out, err := quietexec.Command("cmd.exe", "/c", "mklink", "/H", link, outside).CombinedOutput(); err != nil {
 		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
 	}
 
@@ -84,7 +84,7 @@ func TestCopyRefusesASymlinkToAnInternalExternalHardLinkBeforeTruncatingIt(t *te
 		t.Skipf("this machine would not make a hard link: %v", err)
 	}
 	link := filepath.Join(dest, ".gitconfig")
-	if out, err := exec.Command("cmd.exe", "/c", "mklink", link, internal).CombinedOutput(); err != nil {
+	if out, err := quietexec.Command("cmd.exe", "/c", "mklink", link, internal).CombinedOutput(); err != nil {
 		t.Skipf("this machine would not make a symbolic link: %v\n%s", err, out)
 	}
 
@@ -109,7 +109,7 @@ func TestCopyAllowsHardLinksWhoseNamesStayInTheProfile(t *testing.T) {
 	alias := filepath.Join(dest, "alias.txt")
 	write(t, alias, "old contents\n")
 	link := filepath.Join(dest, ".gitconfig")
-	if out, err := exec.Command("cmd.exe", "/c", "mklink", "/H", link, alias).CombinedOutput(); err != nil {
+	if out, err := quietexec.Command("cmd.exe", "/c", "mklink", "/H", link, alias).CombinedOutput(); err != nil {
 		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
 	}
 

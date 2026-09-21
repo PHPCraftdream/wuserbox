@@ -7,10 +7,10 @@ package acl
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
@@ -115,7 +115,7 @@ func TestIsolateAddsNothingWhereThoseTwoHadNothing(t *testing.T) {
 func TestIsolateLeavesTheUserAbleToWrite(t *testing.T) {
 	dir := t.TempDir()
 	// Only the crowd, the system and administrators: no entry naming the user.
-	if out, err := exec.Command("icacls", dir, "/inheritance:r",
+	if out, err := quietexec.Command("icacls", dir, "/inheritance:r",
 		"/grant", "*"+sid.Users+":(OI)(CI)M",
 		"/grant", "*S-1-5-18:(OI)(CI)F",
 		"/grant", "*S-1-5-32-544:(OI)(CI)F").CombinedOutput(); err != nil {

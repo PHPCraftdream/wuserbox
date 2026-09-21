@@ -28,10 +28,11 @@ import (
 )
 
 const (
-	sleeperFlag = "-wuserbox-sleeper"
-	middleFlag  = "-wuserbox-middle"
-	prowlerFlag = "-wuserbox-prowler"
-	stubbyFlag  = "-wuserbox-stubby"
+	sleeperFlag       = "-wuserbox-sleeper"
+	middleFlag        = "-wuserbox-middle"
+	prowlerFlag       = "-wuserbox-prowler"
+	stubbyFlag        = "-wuserbox-stubby"
+	consoleHolderFlag = "-wuserbox-console-holder"
 
 	// A group nothing on the machine is a member of. What matters below is
 	// the restricting list and the two tokens' relationship, never what the
@@ -41,8 +42,9 @@ const (
 
 // TestMain lets `go test` re-exec this same binary as one of the processes
 // these tests need around them: the driver that plays wuserbox, the middle
-// that plays the stub, or the program at the end of the chain. Everything
-// they run is that process's own program, not a test.
+// that plays the stub, the program at the end of the chain, or the console
+// holder whose windowless console takeAConsole borrows. Everything they run
+// is that process's own program, not a test.
 func TestMain(m *testing.M) {
 	if len(os.Args) > 2 && os.Args[1] == sleeperFlag {
 		sleeper(os.Args[2])
@@ -56,6 +58,10 @@ func TestMain(m *testing.M) {
 	}
 	if len(os.Args) > 1 && os.Args[1] == stubbyFlag {
 		os.Exit(stubby())
+	}
+	if len(os.Args) > 1 && os.Args[1] == consoleHolderFlag {
+		holdConsole()
+		return
 	}
 	if len(os.Args) > 2 && os.Args[1] == raceVictimFlag {
 		os.Exit(raceVictim(os.Args[2]))

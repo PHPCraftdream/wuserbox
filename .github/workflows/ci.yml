@@ -168,3 +168,37 @@ jobs:
             echo "::error::the registry hive measurement did not pass"
             exit 1
           fi
+
+      # The one test in this repository that shows a real window, and the
+      # only place it ever runs. TestAProgramThatNeedsARealTerminalFindsOneUnderOwnConsole
+      # measures --own-console by allocating a real console, and a console
+      # comes with a window on the desktop for the length of the run: the
+      # flash is the feature being measured, not a side effect to suppress.
+      # A routine `go test ./...` has no business flashing windows at whoever
+      # runs it, so the test skips unless WUSERBOX_E2E_OWN_CONSOLE asks for
+      # it -- and this step is the only thing that sets the variable. On a
+      # runner the window costs nothing, because nobody is looking at the
+      # desktop, so this is where the cost is paid.
+      #
+      # As in the boundary step above, a skip reported as a green run would
+      # be a lie: the skip is the gate doing its job everywhere else, but
+      # this step exists to show the measurement ran, so it fails on a skip
+      # and demands the PASS line by name -- a renamed test must not slip
+      # through as silence.
+      - name: Own console measurement
+        shell: bash
+        run: |
+          if ! output=$(WUSERBOX_E2E_OWN_CONSOLE=1 go test ./internal/e2e/ -run "^TestAProgramThatNeedsARealTerminalFindsOneUnderOwnConsole$" -count=1 -v); then
+            echo "$output"
+            echo "::error::the own console measurement failed"
+            exit 1
+          fi
+          echo "$output"
+          if echo "$output" | grep -q -- "--- SKIP"; then
+            echo "::error::the own console measurement was skipped"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q -- "--- PASS: TestAProgramThatNeedsARealTerminalFindsOneUnderOwnConsole"; then
+            echo "::error::the own console measurement did not pass"
+            exit 1
+          fi

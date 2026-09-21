@@ -11,7 +11,6 @@ package pathid_test
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,6 +19,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/profile"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
 	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 )
 
 // An account no test grants anything to, so that finding its name on a path
@@ -28,7 +28,7 @@ const closeTestAccount = "S-1-5-21-1111111111-2222222222-3333333333-543211"
 
 func hardLink(t *testing.T, link, target string) {
 	t.Helper()
-	if out, err := exec.Command("cmd", "/c", "mklink", "/H", link, target).CombinedOutput(); err != nil {
+	if out, err := quietexec.Command("cmd", "/c", "mklink", "/H", link, target).CombinedOutput(); err != nil {
 		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
 	}
 }
@@ -40,7 +40,7 @@ func hardLink(t *testing.T, link, target string) {
 // it is searched.
 func holdsOn(t *testing.T, path, account string) bool {
 	t.Helper()
-	out, err := exec.Command("icacls", path).CombinedOutput()
+	out, err := quietexec.Command("icacls", path).CombinedOutput()
 	if err != nil {
 		t.Fatalf("icacls %s: %v", path, err)
 	}

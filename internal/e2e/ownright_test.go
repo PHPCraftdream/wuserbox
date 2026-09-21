@@ -18,7 +18,6 @@ package e2e
 import (
 	"bytes"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,6 +25,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
@@ -125,7 +125,7 @@ func TestWhatTheSandboxOwnsStaysLockedAfterTheGrantIsGone(t *testing.T) {
 
 		// The list this phase's own legitimate change left. Everything below
 		// is refused, so this is the list the refusals must leave standing.
-		before, err := exec.Command("icacls", made).CombinedOutput()
+		before, err := quietexec.Command("icacls", made).CombinedOutput()
 		if err != nil {
 			t.Fatalf("icacls %s: %v\n%s", made, err, before)
 		}
@@ -160,7 +160,7 @@ func TestWhatTheSandboxOwnsStaysLockedAfterTheGrantIsGone(t *testing.T) {
 
 		// And the refusals undid nothing within this phase: the list is the
 		// one this phase's own legitimate change left.
-		after, err := exec.Command("icacls", made).CombinedOutput()
+		after, err := quietexec.Command("icacls", made).CombinedOutput()
 		if err != nil {
 			t.Fatalf("icacls %s: %v\n%s", made, err, after)
 		}
@@ -179,7 +179,7 @@ func TestWhatTheSandboxOwnsStaysLockedAfterTheGrantIsGone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("icacls", made, "/grant", "*"+caller+":(F)").CombinedOutput(); err != nil {
+	if out, err := quietexec.Command("icacls", made, "/grant", "*"+caller+":(F)").CombinedOutput(); err != nil {
 		t.Fatalf("the operator could not re-permission what the sandbox owns, which would make the cap a one-way door for --ro and --revoke:\n%s", out)
 	}
 
@@ -236,7 +236,7 @@ func TestRevokeCapsAnInheritedObjectWithAnExplicitBroadGrant(t *testing.T) {
 	if acl.EveryoneWritable(control) {
 		t.Fatal("the control unexpectedly had a broad explicit grant")
 	}
-	aclText, err := exec.Command("icacls", broad).CombinedOutput()
+	aclText, err := quietexec.Command("icacls", broad).CombinedOutput()
 	if err != nil {
 		t.Fatalf("icacls %s: %v\n%s", broad, err, aclText)
 	}
@@ -280,7 +280,7 @@ func TestRevokeCapsAnInheritedObjectWithAnExplicitBroadGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{broad, control} {
-		if out, err := exec.Command("icacls", path, "/grant", "*"+caller+":(F)").CombinedOutput(); err != nil {
+		if out, err := quietexec.Command("icacls", path, "/grant", "*"+caller+":(F)").CombinedOutput(); err != nil {
 			t.Fatalf("the operator could not recover %s after revoke: %v\n%s", path, err, out)
 		}
 		if err := os.Remove(path); err != nil {
@@ -358,7 +358,7 @@ func TestADirectRevokeCapsAFileTheSandboxOwnsWithNoNarrowingFirst(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("icacls", made, "/grant", "*"+caller+":(F)").CombinedOutput(); err != nil {
+	if out, err := quietexec.Command("icacls", made, "/grant", "*"+caller+":(F)").CombinedOutput(); err != nil {
 		t.Fatalf("the operator could not re-permission what a direct revoke left behind:\n%s", out)
 	}
 	if err := os.Remove(made); err != nil {
@@ -431,7 +431,7 @@ func TestARevokeReachesAnObjectTheSandboxGaveItselfADACL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("icacls", self, "/grant", "*"+caller+":(F)").CombinedOutput(); err != nil {
+	if out, err := quietexec.Command("icacls", self, "/grant", "*"+caller+":(F)").CombinedOutput(); err != nil {
 		t.Fatalf("the operator could not re-permission a file the sandbox had sealed and a revoke then took back:\n%s", out)
 	}
 	if err := os.Remove(self); err != nil {

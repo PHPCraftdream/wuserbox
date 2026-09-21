@@ -7,13 +7,13 @@ package e2e
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/win/access"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
@@ -189,7 +189,7 @@ func TestNarrowingNeverHandsOutReading(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("icacls", dir, "/inheritance:r",
+	if out, err := quietexec.Command("icacls", dir, "/inheritance:r",
 		"/grant", "*"+owner+":(OI)(CI)F",
 		"/grant", "*"+sid.System+":(OI)(CI)F",
 		"/grant", "*"+sid.Everyone+":(OI)(CI)(WD)").CombinedOutput(); err != nil {

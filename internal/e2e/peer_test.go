@@ -7,13 +7,13 @@ package e2e
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
@@ -161,7 +161,7 @@ func TestASandboxCannotRewriteThePermissionsItWasLeft(t *testing.T) {
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("icacls", dir,
+	if out, err := quietexec.Command("icacls", dir,
 		"/grant", "*"+sid.Everyone+":(OI)(CI)(WDAC)").CombinedOutput(); err != nil {
 		t.Fatalf("arranging the directory: %v\n%s", err, out)
 	}

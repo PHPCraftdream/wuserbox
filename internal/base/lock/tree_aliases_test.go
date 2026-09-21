@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
@@ -40,12 +41,12 @@ func freeDriveLetter(t *testing.T) string {
 // its mapping off the machine on the way out.
 func substAlias(t *testing.T, alias, target string) {
 	t.Helper()
-	out, err := exec.Command("subst.exe", alias, target).CombinedOutput()
+	out, err := quietexec.Command("subst.exe", alias, target).CombinedOutput()
 	if err != nil {
 		t.Fatalf("substituting %s for %s: %v: %s", alias, target, err, out)
 	}
 	t.Cleanup(func() {
-		if out, err := exec.Command("subst.exe", alias, "/D").CombinedOutput(); err != nil {
+		if out, err := quietexec.Command("subst.exe", alias, "/D").CombinedOutput(); err != nil {
 			t.Errorf("removing the %s alias: %v: %s", alias, err, out)
 		}
 	})

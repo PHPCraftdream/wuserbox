@@ -21,12 +21,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"syscall"
 	"testing"
 	"unsafe"
 
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
@@ -78,7 +78,7 @@ func reclaimTree(t *testing.T, root string) {
 		t.Logf("%s is left behind: reclaiming it needs a privilege this desk's token does not hold (%v)", root, err)
 		t.Skip("recovering a fully revoked, self-owned grant root needs SeRestorePrivilege, which an administrator token holds and this one does not")
 	}
-	if out, err := exec.Command("icacls", root, "/reset", "/T", "/C").CombinedOutput(); err != nil {
+	if out, err := quietexec.Command("icacls", root, "/reset", "/T", "/C").CombinedOutput(); err != nil {
 		t.Fatalf("icacls /reset with SeRestorePrivilege enabled: %v\n%s", err, out)
 	}
 	if err := os.RemoveAll(root); err != nil {

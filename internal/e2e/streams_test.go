@@ -90,6 +90,11 @@ func TestTheStreamsComeBackFromInsideTheSandbox(t *testing.T) {
 	}
 }
 
+// ownConsoleEnv is the variable that asks for the window this test shows.
+// Unset by every routine test run; the dedicated CI step is the only thing
+// that sets it.
+const ownConsoleEnv = "WUSERBOX_E2E_OWN_CONSOLE"
+
 // TestAProgramThatNeedsARealTerminalFindsOneUnderOwnConsole measures the
 // thing --own-console exists for: that the account -> stub -> restricted
 // token chain hands the program console handles GetConsoleMode answers.
@@ -105,9 +110,17 @@ func TestTheStreamsComeBackFromInsideTheSandbox(t *testing.T) {
 // The cost is a real window. The positive run allocates a console, and a
 // console comes with a window on the desktop for the length of the run --
 // one window, one test, the price of measuring the thing for real instead of
-// through a surrogate. That is also why this test inherits this file's
-// administrator gate and skips without it.
+// through a surrogate. That cost is paid only where the test is asked for,
+// by setting WUSERBOX_E2E_OWN_CONSOLE=1: a routine `go test ./...` leaves
+// the variable unset and the test skips on that alone, before anything else
+// is asked of the machine, because not being asked for is the routine case
+// on any of them. Only a run that opts in goes on to learn the measurement
+// also needs administrator rights, which is what this file's gate asks for
+// and why it still skips without them.
 func TestAProgramThatNeedsARealTerminalFindsOneUnderOwnConsole(t *testing.T) {
+	if os.Getenv(ownConsoleEnv) == "" {
+		t.Skip("a routine run does not ask for the real window this test shows; set WUSERBOX_E2E_OWN_CONSOLE=1 to ask for it")
+	}
 	requireAdministrator(t)
 	root, err := paths.Resolve(t.TempDir())
 	if err != nil {

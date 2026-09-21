@@ -17,10 +17,10 @@ package acl
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
 
@@ -121,7 +121,7 @@ func TestPinnedPathsFailClosedWhenRelevanceCannotBeResolved(t *testing.T) {
 	}
 	// The name survives as a dangling junction: Lstat sees it, the identity
 	// lookup cannot reach anything through it.
-	if out, err := exec.Command("cmd", "/c", "mklink", "/J", linked, filepath.Join(root, "vanished")).CombinedOutput(); err != nil {
+	if out, err := quietexec.Command("cmd", "/c", "mklink", "/J", linked, filepath.Join(root, "vanished")).CombinedOutput(); err != nil {
 		t.Skipf("this machine would not make a junction: %v\n%s", err, out)
 	}
 	t.Cleanup(func() { _ = os.Remove(linked) })

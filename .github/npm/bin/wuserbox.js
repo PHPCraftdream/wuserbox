@@ -19,9 +19,14 @@ if (!fs.existsSync(executable)) {
   process.exit(1);
 }
 
+// child_process defaults windowsHide to false, so this true is load-bearing:
+// when node itself has no console (GUI launcher, scheduled task, background
+// runner), Windows would hand the child a new console window that steals
+// focus. From a terminal nothing changes: with stdio "inherit" the child
+// attaches to the console node already has.
 const result = spawnSync(executable, process.argv.slice(2), {
   stdio: "inherit",
-  windowsHide: false,
+  windowsHide: true,
 });
 
 if (result.error) {

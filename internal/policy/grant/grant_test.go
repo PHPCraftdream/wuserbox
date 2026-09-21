@@ -2,7 +2,6 @@ package grant
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -13,6 +12,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
 	"github.com/PHPCraftdream/wuserbox/internal/win/access"
 	"github.com/PHPCraftdream/wuserbox/internal/win/acl"
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 )
 
 const unusedAccount = "S-1-5-21-1111111111-2222222222-3333333333-654321"
@@ -188,7 +188,7 @@ func TestTwoAccountsKeepTheirPermissionsOnOneDirectory(t *testing.T) {
 		}
 	}
 
-	listed, err := exec.Command("icacls", shared).CombinedOutput()
+	listed, err := quietexec.Command("icacls", shared).CombinedOutput()
 	if err != nil {
 		t.Fatalf("icacls %s: %v", shared, err)
 	}
@@ -406,7 +406,7 @@ func TestARefusalLeavesReadingAlone(t *testing.T) {
 	}
 	// And the refusal is really there, or the check above would pass for the
 	// plain reason that nothing was written at all.
-	listed, err := exec.Command("icacls", file).CombinedOutput()
+	listed, err := quietexec.Command("icacls", file).CombinedOutput()
 	if err != nil {
 		t.Fatalf("icacls %s: %v", file, err)
 	}

@@ -3,7 +3,6 @@ package sandbox
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	acct "github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 )
@@ -92,7 +92,7 @@ func TestInitRefusesAnExternalHardLinkBeforeChangingItsACL(t *testing.T) {
 
 func icaclsText(t *testing.T, path string) string {
 	t.Helper()
-	out, err := exec.Command("icacls", path).CombinedOutput()
+	out, err := quietexec.Command("icacls", path).CombinedOutput()
 	if err != nil {
 		t.Fatalf("icacls %s: %v\n%s", path, err, out)
 	}

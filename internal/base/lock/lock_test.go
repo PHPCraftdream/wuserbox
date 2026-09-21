@@ -3,12 +3,13 @@ package lock
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 )
 
 func TestAHoldWaitReportsAStuckHolderWithoutRunningWork(t *testing.T) {
@@ -64,7 +65,7 @@ func TestAHeldNameShutsOutAnotherProcess(t *testing.T) {
 	}
 	defer release()
 
-	other := exec.Command(os.Args[0], "-test.run=TestLockHelperTakesTheLock")
+	other := quietexec.Command(os.Args[0], "-test.run=TestLockHelperTakesTheLock")
 	other.Env = append(os.Environ(), lockHelperEnv+"=1", "LOCALAPPDATA="+local)
 	if err := other.Start(); err != nil {
 		t.Fatal(err)

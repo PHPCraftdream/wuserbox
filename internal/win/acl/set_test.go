@@ -8,12 +8,12 @@ package acl
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"unsafe"
 
+	"github.com/PHPCraftdream/wuserbox/internal/win/quietexec"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
@@ -28,7 +28,7 @@ const unusedAccount = "S-1-5-21-1111111111-2222222222-3333333333-543210"
 // accident, so that line has the path taken off it before it is searched.
 func holds(t *testing.T, path, account, text string) bool {
 	t.Helper()
-	out, err := exec.Command("icacls", path).CombinedOutput()
+	out, err := quietexec.Command("icacls", path).CombinedOutput()
 	if err != nil {
 		t.Fatalf("icacls %s: %v", path, err)
 	}
@@ -71,7 +71,7 @@ func normalizeOwner(t *testing.T, path, owner string) {
 	if alreadyOwned(path, owner) {
 		return
 	}
-	if out, err := exec.Command("icacls", path, "/setowner", "*"+owner).CombinedOutput(); err != nil {
+	if out, err := quietexec.Command("icacls", path, "/setowner", "*"+owner).CombinedOutput(); err != nil {
 		t.Skipf("owner-specific fixture cannot be normalized on this machine: %s: %v\n%s", path, err, out)
 	}
 }
