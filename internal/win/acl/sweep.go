@@ -77,6 +77,51 @@ func sweep(root string, everyone, users, authenticated, holder, owner uintptr, s
 // reread is what preserves the parent-before-child dependency when a parent
 // changes inherited permissions.
 func narrowTree(root string, everyone, users, authenticated, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) error {
+	_, err := orderedNarrow(root, dispatchWindow(),
+		func(path string) (narrowDecision, error) {
+			return classifyNarrow(path, everyone, users, authenticated, owner, sandbox, hand, mark, pinned)
+		},
+		func(path string) error {
+			return narrowOwn(path, everyone, users, authenticated, holder, owner, sandbox, hand, mark, pinned)
+		})
+	return err
+}
+
+// dispatchWindow is how far a real sweep lets the walk run ahead of the
+// writer: two objects for each worker, the same measure the channels are cut
+// to. The credits below, not these channels, are what hold the walk to it.
+func dispatchWindow() int {
+	return workers() * 2
+}
+
+// orderedNarrow walks root the way filepath.WalkDir does, asks classify of
+// every object on the workers, and gives the answers to one writer, which
+// applies them in walk order: a parent is published before whatever is inside
+// it, and a publish re-reads the object first, so what it writes is the list
+// as the walk left it.
+//
+// The channels being bounded is not what keeps this run bounded. The writer
+// reads whatever result arrives, ahead of its place in the order or not, and
+// one slow early answer would otherwise leave the workers free to carry every
+// object in the tree into that wait, each as a held path. So the walk runs on
+// credits instead: a dispatched object holds one until the writer commits it,
+// and the walk stops dispatching when none are left, however eagerly the
+// workers would take more.
+//
+// A pinned directory is what the old sequential walk answered with SkipDir.
+// Results for its descendants may already be in flight, so the writer holds
+// the root and discards them -- the one root whose subtree the writer is
+// still inside, not the whole skip history. The walk never returns to a
+// subtree it has left and the writer commits strictly in walk order, so the
+// first commit outside a held root says every later commit is outside too.
+// The comparison is the filesystem's own spelling, byte for byte at the
+// component boundary: no Unicode folding, and a name that merely begins with
+// the held one is not inside it.
+//
+// window is how far ahead of the writer the walk may run; at least one. What
+// comes back with the error is the most the writer ever held at once, the
+// number window promises to cap.
+func orderedNarrow(root string, window int, classify func(string) (narrowDecision, error), apply func(string) error) (int, error) {
 	type object struct {
 		seq  uint64
 		path string
@@ -88,11 +133,16 @@ func narrowTree(root string, everyone, users, authenticated, holder, owner uintp
 		err      error
 	}
 
-	jobs := make(chan object, workers()*2)
-	results := make(chan result, workers()*2)
+	jobs := make(chan object, window)
+	results := make(chan result, window)
 	stop := make(chan struct{})
 	var stopOnce sync.Once
 	cancel := func() { stopOnce.Do(func() { close(stop) }) }
+
+	credits := make(chan struct{}, window)
+	for i := 0; i < window; i++ {
+		credits <- struct{}{}
+	}
 
 	var hands sync.WaitGroup
 	for i := 0; i < workers(); i++ {
@@ -107,7 +157,7 @@ func narrowTree(root string, everyone, users, authenticated, holder, owner uintp
 					if !ok {
 						return
 					}
-					decision, err := classifyNarrow(one.path, everyone, users, authenticated, owner, sandbox, hand, mark, pinned)
+					decision, err := classify(one.path)
 					answer := result{seq: one.seq, path: one.path, decision: decision, err: err}
 					select {
 					case results <- answer:
@@ -124,6 +174,11 @@ func narrowTree(root string, everyone, users, authenticated, holder, owner uintp
 		defer close(jobs)
 		var seq uint64
 		walkErr := walkTree(root, func(path string, _ fs.DirEntry) error {
+			select {
+			case <-credits:
+			case <-stop:
+				return filepath.SkipAll
+			}
 			one := object{seq: seq, path: path}
 			select {
 			case jobs <- one:
@@ -140,12 +195,12 @@ func narrowTree(root string, everyone, users, authenticated, holder, owner uintp
 		close(results)
 	}()
 
-	// A pinned directory causes the old sequential walk to return SkipDir.
-	// Results for descendants may already be in flight, so retain those roots
-	// and discard their results in the ordered writer.
-	var skipped []string
+	// The writer is where the order exists, and the only place a credit
+	// comes back.
+	var skipped string
 	pending := make(map[uint64]result)
 	var next uint64
+	var held, most int
 	var failure error
 	failed := false
 	for answer := range results {
@@ -153,6 +208,10 @@ func narrowTree(root string, everyone, users, authenticated, holder, owner uintp
 			continue
 		}
 		pending[answer.seq] = answer
+		held++
+		if held > most {
+			most = held
+		}
 		for {
 			one, ok := pending[next]
 			if !ok {
@@ -160,9 +219,14 @@ func narrowTree(root string, everyone, users, authenticated, holder, owner uintp
 			}
 			delete(pending, next)
 			next++
-			if underSkipped(one.path, skipped) {
+			held--
+			credits <- struct{}{}
+			if skipped != "" && underSkipped(one.path, skipped) {
 				continue
 			}
+			// This answer is outside the subtree the writer was inside, and
+			// no later one can be back inside it.
+			skipped = ""
 			if one.err != nil {
 				failure = one.err
 				failed = true
@@ -171,9 +235,9 @@ func narrowTree(root string, everyone, users, authenticated, holder, owner uintp
 			}
 			switch one.decision {
 			case narrowSkip:
-				skipped = append(skipped, one.path)
+				skipped = one.path
 			case narrowApply:
-				if err := narrowOwn(one.path, everyone, users, authenticated, holder, owner, sandbox, hand, mark, pinned); err != nil {
+				if err := apply(one.path); err != nil {
 					failure = err
 					failed = true
 					cancel()
@@ -186,21 +250,18 @@ func narrowTree(root string, everyone, users, authenticated, holder, owner uintp
 	}
 	walkErr := <-walkDone
 	if failure != nil {
-		return failure
+		return most, failure
 	}
-	return walkErr
+	return most, walkErr
 }
 
-func underSkipped(path string, skipped []string) bool {
-	for _, root := range skipped {
-		// Both spellings come from the same WalkDir traversal. Do not use
-		// filepath.Rel here: on Windows it applies Unicode EqualFold and
-		// treats the distinct K and Kelvin-sign directory names as one.
-		if len(path) > len(root) && strings.HasPrefix(path, root) && path[len(root)] == filepath.Separator {
-			return true
-		}
-	}
-	return false
+// underSkipped reports whether path is inside the skipped root the writer is
+// still holding.
+func underSkipped(path, root string) bool {
+	// Both spellings come from the same WalkDir traversal. Do not use
+	// filepath.Rel here: on Windows it applies Unicode EqualFold and
+	// treats the distinct K and Kelvin-sign directory names as one.
+	return len(path) > len(root) && strings.HasPrefix(path, root) && path[len(root)] == filepath.Separator
 }
 
 type narrowDecision uint8
