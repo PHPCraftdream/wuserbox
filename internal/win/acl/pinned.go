@@ -5,8 +5,20 @@ import (
 	"io/fs"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
+)
+
+// Two counters, for the close test of a keep-list and anyone diagnosing one:
+// how many tree entries a snapshot stored, and how often a later lookup had
+// to go back to the file system because its answer was not held. The first
+// is what the memory question about a walk is about; for a sweep the second
+// stays at zero, because every object the narrowing consults was resolved
+// before the first write could make asking again impossible.
+var (
+	pinnedSnapshots  atomic.Int64
+	pinnedReresolves atomic.Int64
 )
 
 // pinnedPaths names existing directory entries by the spelling Windows gives
@@ -96,6 +108,7 @@ func (set pinnedPaths) contains(path string) (bool, error) {
 	key, found := set.resolved[path]
 	set.resolvedMu.RUnlock()
 	if !found {
+		pinnedReresolves.Add(1)
 		var err error
 		key, err = pathid.Key(path)
 		if err != nil {
@@ -109,6 +122,16 @@ func (set pinnedPaths) contains(path string) (bool, error) {
 // snapshot resolves one tree entry before any permission change can make it
 // unreadable. The caller may run this from several workers; permission writes
 // must still wait until the complete read-only pass finishes.
+//
+// The caller decides what is worth holding: the sweep's narrowing consults
+// the keep-list for objects the sandbox's own account owns and for nothing
+// else, so those are the only entries it asks to be held, and a path the
+// narrowing never consults is one forgetting cannot turn into a wrong
+// sparing. What is held is held for the whole operation -- once the walk's
+// own writes have landed, an owned object can be one this process can no
+// longer open, and the answer taken before them is the only one there will
+// be. contains goes back to the file system for a path that was never held
+// and fails closed when that answer is no longer to be had.
 func (set pinnedPaths) snapshot(path string) error {
 	key, err := pathid.Key(path)
 	if err != nil {
@@ -117,17 +140,31 @@ func (set pinnedPaths) snapshot(path string) error {
 	set.resolvedMu.Lock()
 	set.resolved[path] = key
 	set.resolvedMu.Unlock()
+	pinnedSnapshots.Add(1)
 	return nil
 }
 
 // prepare resolves the tree before any permission change can make a child
 // unreadable. The work is read-only and parallel, while later lookups use
 // this snapshot and fail closed for a path that was renamed or replaced.
+//
+// What is held is what the walk that follows will consult: it stops at a
+// pinned directory and never visits what is under it, so the entries spelled
+// under a pinned path are passed over here too -- the same question
+// underSkipped answers, by the filesystem's own spelling, byte for byte at
+// the component boundary. A record path spelled differently from the walk's
+// own never matches, and such an entry is snapshotted as before: a miss
+// costs one snapshot, never a wrong answer.
 func (set pinnedPaths) prepare(root string) error {
 	if err := set.snapshot(root); err != nil {
 		return err
 	}
 	return together(root, func(path string, _ fs.DirEntry) error {
+		for _, one := range set.entries {
+			if underSkipped(path, one.path) {
+				return nil
+			}
+		}
 		return set.snapshot(path)
 	})
 }

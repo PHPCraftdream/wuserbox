@@ -63,7 +63,7 @@ func sweep(root string, everyone, users, authenticated, holder, owner uintptr, s
 	// can change underneath between the passes -- but it turns the ordinary
 	// reason for stopping, an entry of a kind that cannot be carried over,
 	// into a refusal before anything has moved.
-	if err := inspect(root, pinned); err != nil {
+	if err := inspect(root, sandbox, pinned); err != nil {
 		return err
 	}
 	return narrowTree(root, everyone, users, authenticated, holder, owner, sandbox, hand, mark, pinned)
@@ -331,7 +331,7 @@ func classifyNarrow(path string, everyone, users, authenticated, owner uintptr, 
 // file. Whichever answer comes back wrong first stops the rest: nothing has
 // been written at that point, so stopping early costs only the reading that
 // was already under way.
-func inspect(root string, pinned pinnedPaths) error {
+func inspect(root string, sandbox []uintptr, pinned pinnedPaths) error {
 	counting := os.Getenv(EnvAllowLinks) == ""
 	// The one spelling of the tree that the names below can be compared with.
 	// Where it cannot be worked out, the given one stands in: that can only
@@ -354,13 +354,27 @@ func inspect(root string, pinned pinnedPaths) error {
 		}
 	}
 	return together(root, func(path string, entry fs.DirEntry) error {
-		if len(pinned.keys) != 0 {
+		_, owner, err := readable(path)
+		if err != nil {
+			return err
+		}
+		// The keep-list's snapshot is asked for here, while every object can
+		// still be opened, and only for the objects the narrowing will still
+		// consult it about: classifyNarrow and capObject ask for objects the
+		// sandbox's own account owns, and for nothing else. Forgetting the
+		// rest is not an eviction gamble -- no later step ever looks -- while
+		// keeping it made the snapshot of a tree the sandbox had merely been
+		// allowed into as large as the tree. What is asked for is held for
+		// the whole operation: once the walk's own writes have landed, an
+		// owned object can be one this process can no longer open, and the
+		// answer taken now is the only one there will be. A path that finds
+		// nothing goes back to the file system and fails closed when the
+		// answer is no longer to be had, which is what a path the first pass
+		// never saw always did.
+		if len(pinned.keys) != 0 && ownedByTheSandbox(owner, sandbox) {
 			if err := pinned.snapshot(path); err != nil {
 				return err
 			}
-		}
-		if _, err := readable(path); err != nil {
-			return err
 		}
 		if !counting {
 			return nil
@@ -440,24 +454,27 @@ func walkTree(root string, visit func(string, fs.DirEntry) error) error {
 }
 
 // readable reports whether an object's permission list can be carried over,
-// and is what the first pass asks of every one of them.
-func readable(path string) ([]heldEntry, error) {
+// and answers with the owner the descriptor names. The first pass asks both
+// of every one of them, in the one call: the keep-list's snapshot needs the
+// owner to know which paths the narrowing will still consult it about, and
+// asking separately would cost a second read of the same descriptor.
+func readable(path string) ([]heldEntry, uintptr, error) {
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
-		seFileObject, daclInfo, 0, 0, uintptr(unsafe.Pointer(&dacl)), 0,
+		seFileObject, daclInfo|ownerInfo, 0, 0, uintptr(unsafe.Pointer(&dacl)), 0,
 		uintptr(unsafe.Pointer(&descriptor))); r != 0 {
-		return nil, callFailed("reading the permissions of", path, r)
+		return nil, 0, callFailed("reading the permissions of", path, r)
 	}
 	defer w32.Free(descriptor)
 	if dacl == nil {
-		return nil, nil
+		return nil, ownerOf(descriptor), nil
 	}
 	held, err := entriesOf(dacl)
 	if err != nil {
-		return nil, fmt.Errorf("reading the permissions of %s: %w", path, err)
+		return nil, 0, fmt.Errorf("reading the permissions of %s: %w", path, err)
 	}
-	return held, nil
+	return held, ownerOf(descriptor), nil
 }
 
 // narrowOwn takes the changing rights of Everyone, BUILTIN\Users and

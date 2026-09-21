@@ -468,3 +468,264 @@ func TestTheIdentitiesOfAnAccountThatNamesNoGroupAreItself(t *testing.T) {
 		}
 	}
 }
+
+// snapshotSweepFixture builds a tree with a nested grant in it: handed is the
+// directory about to be swept, pinned is a granted directory inside it, and
+// two more owned objects sit outside the pinned one. Everything in it is
+// four walked objects: made, pinned, the file inside pinned, plain -- the
+// sweep's walk passes the root itself over.
+func snapshotSweepFixture(t *testing.T) (handed, pinnedDir, pinnedFile, made, plain string) {
+	t.Helper()
+	handed = filepath.Join(t.TempDir(), "handed")
+	if err := os.Mkdir(handed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pinnedDir = filepath.Join(handed, "pinned")
+	if err := os.Mkdir(pinnedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pinnedFile = filepath.Join(pinnedDir, "kept.txt")
+	if err := os.WriteFile(pinnedFile, []byte("kept"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	made = filepath.Join(handed, "made.txt")
+	if err := os.WriteFile(made, []byte("made"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plain = filepath.Join(handed, "plain.txt")
+	if err := os.WriteFile(plain, []byte("plain"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return handed, pinnedDir, pinnedFile, made, plain
+}
+
+// sweepSIDs resolves, once, the identities a direct call of sweep needs.
+func sweepSIDs(t *testing.T) (everyone, users, authenticated, holder, limited, mark uintptr) {
+	t.Helper()
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err = sid.Parse(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	everyone, err = sid.Parse(sid.Everyone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users, err = sid.Parse(sid.Users)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticated, err = sid.Parse(sid.Authenticated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limited, err = sid.Parse(sid.OwnerRights)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mark, err = sid.Parse(handDownMark)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return everyone, users, authenticated, holder, limited, mark
+}
+
+// TestASweepSnapshotsWhatTheNarrowingWillConsult drives a real sweep over a
+// nested-grant tree and counts what the keep-list's snapshot retained. The
+// synthetic world's one account is both the sandbox and the owner, so every
+// walked object is one the narrowing consults the keep-list about: the
+// snapshot holds the whole tree, and that is the honest residual bound -- a
+// tree the sandbox made stays a snapshot the size of the tree. The companion
+// test below is the half a narrowing can reach.
+func TestASweepSnapshotsWhatTheNarrowingWillConsult(t *testing.T) {
+	handed, pinnedDir, pinnedFile, made, plain := snapshotSweepFixture(t)
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{handed, pinnedDir, pinnedFile, made, plain} {
+		normalizeOwner(t, path, owner)
+	}
+	everyone, users, authenticated, holder, limited, mark := sweepSIDs(t)
+	sandbox, err := sandboxIdentities(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := makePinnedPaths([]string{pinnedDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned, err = pinned.relevant(handed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reclaim(t, made); reclaim(t, plain) })
+
+	before, beforeReresolves := pinnedSnapshots.Load(), pinnedReresolves.Load()
+	if err := sweep(handed, everyone, users, authenticated, holder, limited, sandbox, nil, mark, pinned); err != nil {
+		t.Fatal(err)
+	}
+	if got := pinnedSnapshots.Load() - before; got != 4 {
+		t.Fatalf("the sweep's snapshot holds %d paths, want the 4 walked objects the narrowing consults the keep-list about", got)
+	}
+	if got := pinnedReresolves.Load() - beforeReresolves; got != 0 {
+		t.Fatalf("the narrowing asked the file system %d times for answers the snapshot should have held", got)
+	}
+	// A snapshot that holds only the consulted objects must answer exactly
+	// as the full one did: the record spares the pinned directory with what
+	// is inside it, and the cap lands on the owned objects outside it.
+	if holds(t, pinnedFile, "OWNER RIGHTS", "") {
+		t.Errorf("an object inside the pinned directory was capped although the record pins the directory above it")
+	}
+	if !holds(t, made, "OWNER RIGHTS", "(RX)") {
+		t.Fatal("an owned object outside the pinned directory was not capped")
+	}
+	rewriteWorks(t, pinnedFile, owner)
+	rewriteRefused(t, made, owner, "the sweep should have capped what the sandbox owns outside the pinned directory")
+}
+
+// TestASweepSnapshotsNothingForObjectsTheSandboxDoesNotOwn is the half the
+// narrowing is for: the record still holds a pinned grant inside the root
+// and the walk still passes every object, but the sandbox owns none of them,
+// so the narrowing will never consult the keep-list about any of them --
+// and none of them is remembered.
+func TestASweepSnapshotsNothingForObjectsTheSandboxDoesNotOwn(t *testing.T) {
+	handed, pinnedDir, pinnedFile, made, plain := snapshotSweepFixture(t)
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{handed, pinnedDir, pinnedFile, made, plain} {
+		normalizeOwner(t, path, owner)
+	}
+	everyone, users, authenticated, holder, limited, mark := sweepSIDs(t)
+	// An identity that parses but matches nothing: no object in the fixture
+	// is owned by it, so the narrowing consults the keep-list for nothing.
+	stranger, err := sid.Parse(unusedAccount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := makePinnedPaths([]string{pinnedDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned, err = pinned.relevant(handed)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	before, beforeReresolves := pinnedSnapshots.Load(), pinnedReresolves.Load()
+	if err := sweep(handed, everyone, users, authenticated, holder, limited, []uintptr{stranger}, nil, mark, pinned); err != nil {
+		t.Fatal(err)
+	}
+	if got := pinnedSnapshots.Load() - before; got != 0 {
+		t.Fatalf("the sweep's snapshot holds %d paths although the narrowing consults the keep-list for none of them", got)
+	}
+	if got := pinnedReresolves.Load() - beforeReresolves; got != 0 {
+		t.Fatalf("the narrowing consulted the keep-list %d times although it owns nothing here", got)
+	}
+	// Nothing was written, and nothing needed remembering to know that.
+	if holds(t, made, "OWNER RIGHTS", "") {
+		t.Fatal("an object no sandbox owns was capped by a sweep that owns nothing")
+	}
+	rewriteWorks(t, made, owner)
+}
+
+// TestTheRevokesSnapshotHoldsWhatItsWalkWillConsult is the revoke's half,
+// asked of prepare directly. A revoke's walk stops at a pinned directory and
+// never visits what is under it, so its snapshot holds the tree except what
+// is spelled inside a pinned one: here root, child, outer, and the pinned
+// directory itself -- but not the file inside it.
+func TestTheRevokesSnapshotHoldsWhatItsWalkWillConsult(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pinnedDir := filepath.Join(child, "pinned")
+	if err := os.Mkdir(pinnedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	kept := filepath.Join(pinnedDir, "kept.txt")
+	if err := os.WriteFile(kept, []byte("kept"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outer := filepath.Join(child, "outer.txt")
+	if err := os.WriteFile(outer, []byte("outer"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	set, err := makePinnedPaths([]string{pinnedDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err = set.relevant(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := pinnedSnapshots.Load()
+	if err := set.prepare(root); err != nil {
+		t.Fatal(err)
+	}
+	for _, consulted := range []string{root, child, outer, pinnedDir} {
+		if _, ok := set.resolved[consulted]; !ok {
+			t.Errorf("the revoke's snapshot does not hold %s, which its walk consults", consulted)
+		}
+	}
+	if _, ok := set.resolved[kept]; ok {
+		t.Errorf("the revoke's snapshot holds %s, which its walk never consults -- it stops at the pinned directory above it", kept)
+	}
+	if got := pinnedSnapshots.Load() - before; got != 4 {
+		t.Fatalf("the revoke's snapshot stored %d paths, want the 4 its walk consults: root, child, outer, and the pinned directory itself", got)
+	}
+}
+
+// TestALookupTheSnapshotDoesNotHoldFailsClosed pins the behavior the sweep's
+// narrowed snapshot leans on: a consulted path that is not held goes back to
+// the file system, and a path that exists but can no longer be opened for
+// its identity is an error, never a quiet no. A missing name is the other
+// road, and it is deliberately not an error: there is no object for a
+// lookup to spare.
+func TestALookupTheSnapshotDoesNotHoldFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	set, err := makePinnedPaths([]string{child})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err = set.relevant(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := set.prepare(root); err != nil {
+		t.Fatal(err)
+	}
+	if kept, err := set.contains(child); err != nil || !kept {
+		t.Fatalf("a held path was not answered from the snapshot: kept=%v err=%v", kept, err)
+	}
+	// Sealed against this account entirely: the name still shows in the
+	// parent's listing, and opening the object for its directory-entry
+	// identity is refused -- the shape a path the walk's own writes can
+	// leave behind, and the one a lookup must refuse to answer.
+	sealed := filepath.Join(root, "sealed.txt")
+	if err := os.WriteFile(sealed, []byte("sealed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	setSDDL(t, sealed, `D:P(D;;FA;;;`+owner+`)`)
+	t.Cleanup(func() { reclaim(t, sealed) })
+	if _, err := os.Lstat(sealed); err != nil {
+		t.Fatalf("the sealed file is not visible to Lstat, so this test proves nothing: %v", err)
+	}
+	if _, err := set.contains(sealed); err == nil {
+		t.Fatal("a consulted path that exists but cannot be resolved was answered anyway")
+	}
+}
