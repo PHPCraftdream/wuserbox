@@ -23,7 +23,12 @@ import (
 // what its exclusions protected was never ours to take back.
 func forget(root *os.Root, previously []config.Entry, current []config.Entry) error {
 	for _, entry := range previously {
-		if stillNamed(root, current, entry.Path) {
+		// One resolver for this entry's whole question, and no more:
+		// clearEntry below mutates the directories a later stillNamed
+		// would ask about, so the resolver's snapshots must not outlive
+		// the question they were read for.
+		resolver := newPlaceResolver(root)
+		if stillNamed(resolver, current, entry.Path) {
 			continue
 		}
 		// A recorded entry whose name the volume resolves onto a reserved
@@ -252,14 +257,14 @@ func clearKeeping(root *os.Root, dir, rel string, w *walk, kept *bool) error {
 // entry claims, and it is the question whose both wrong directions delete:
 // reading two spellings of one place as strangers deletes a live copy, and
 // reading two places as one spares a stray for good. Where the volume can
-// answer, it is asked -- sameEntryPlace opens both spellings and compares
-// them as the one witness both lists stand before. Where it cannot, the
-// recorded place is not on disk and the spellings are compared cleaned and
-// nothing else: the clean is the half that was measured (a rules file
-// respelling "agent" as "./agent"), and case is deliberately left out of
-// it, because with no place on disk there is nothing for case to be
-// witnessed against and every extra join is the fold's i-for-U+0131
-// mistake in a fallback's clothes.
+// answer, it is asked -- the resolver opens both spellings and compares
+// their canonical places as the one witness both lists stand before. Where
+// it cannot, the recorded place is not on disk and the spellings are
+// compared cleaned and nothing else: the clean is the half that was
+// measured (a rules file respelling "agent" as "./agent"), and case is
+// deliberately left out of it, because with no place on disk there is
+// nothing for case to be witnessed against and every extra join is the
+// fold's i-for-U+0131 mistake in a fallback's clothes.
 //
 // What the fallback has to keep working is the record's own escape hatch:
 // a recorded entry whose limits cannot bind is refused below unless the
@@ -267,15 +272,27 @@ func clearKeeping(root *os.Root, dir, rel string, w *walk, kept *bool) error {
 // entry back under its recorded spelling and running once -- which may be
 // a run where the copy never lands at all, so the hatch cannot depend on
 // anything being on disk.
-func stillNamed(root *os.Root, current []config.Entry, recorded string) bool {
+//
+// The question is answered through one resolver that spans this whole
+// question, not one comparison at a time: every current entry's place is
+// put to the same snapshots and collected into a canonical-presence index,
+// so the recorded entry is named by the set rather than by one resolver
+// per pair. forget's clearEntry for a previous recorded entry falls
+// between two stillNamed calls, which is what keeps every cached answer
+// describing directories the pass has not yet cleared -- the resolver dies
+// with the question it was built for, before the next deletion can turn
+// its snapshots into lies.
+func stillNamed(resolver *placeResolver, current []config.Entry, recorded string) bool {
 	cleaned := cleanEntryPath(recorded)
+	places := make(map[string]bool, len(current))
 	for _, entry := range current {
 		if cleanEntryPath(entry.Path) == cleaned {
 			return true
 		}
-		if sameEntryPlace(root, entry.Path, recorded) {
-			return true
+		if canonical, ok := resolver.place(entry.Path); ok {
+			places[canonical] = true
 		}
 	}
-	return false
+	recordedPlace, ok := resolver.place(recorded)
+	return ok && places[recordedPlace]
 }

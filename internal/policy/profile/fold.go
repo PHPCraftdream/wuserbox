@@ -148,10 +148,13 @@ func FoldedEntryPath(path string) string {
 // The question is put to the volume through a placeResolver built for this
 // one comparison, so the two spellings share a single look at every
 // directory they touch: the second spelling is answered from what the
-// first already read. The resolver deliberately lives no longer than the
-// comparison -- forget clears and copyEntries copies between two of these,
-// and an answer held across that would describe directories this very
-// operation has since changed.
+// first already read. sameEntryPlace stays the one-comparison convenience;
+// the callers that have a whole set of comparisons to do -- forget's
+// stillNamed, copyEntries' recordVouches -- hold one resolver across each
+// whole set instead of building one per comparison, and they still stop at
+// what happens between the sets: forget clears and copyEntries copies
+// between two of these, and an answer held across that would describe
+// directories this very operation has since changed.
 func sameEntryPlace(root *os.Root, first, second string) bool {
 	return newPlaceResolver(root).samePlace(first, second)
 }
@@ -170,9 +173,26 @@ type placeResult struct {
 // dirSnapshot is one directory's children as this operation first read
 // them. Every walk after the first through the same directory reads this
 // list rather than opening the directory and enumerating it again.
+//
+// byName is that list as a map, so a component's exact-spelling question
+// is one lookup instead of a scan over every child for every question. A
+// directory's exact names are unique, so the map cannot answer differently
+// than the scan did -- it only stops the scan from being repeated.
+//
+// canonical holds, per child name, the pathid.Canonical answer the alias
+// branch computed for it. That branch's scan opens every sibling and asks
+// the volume for its canonical spelling, and those answers cannot go stale
+// while the resolver lives -- nothing under the root moves -- so the first
+// scan in a directory fills this in and every later scan in the same
+// directory, this query or a later one, reads it instead of re-opening the
+// siblings one by one. Only successful answers are kept: a sibling that
+// would not open or canonicalize is asked again next time, exactly as the
+// scan without the cache would have asked.
 type dirSnapshot struct {
-	children []os.DirEntry
-	ok       bool
+	children  []os.DirEntry
+	byName    map[string]string
+	canonical map[string]string
+	ok        bool
 }
 
 // placeResolver answers the ownership question for one operation, and it
@@ -188,13 +208,18 @@ type dirSnapshot struct {
 // operation, each entry once.
 //
 // "One operation" is as long as the resolver lives, and that is a promise
-// about mutation, not about time. A DedupeEntries call compares and writes
-// nothing, so one resolver spans all of its comparisons; stillNamed and
-// recordVouches reach this file through sameEntryPlace, whose callers
-// clear and copy between two comparisons, so each of those builds its own.
-// What no resolver may do is outlive the run that built it: the volume
-// answers for the moment of asking, and a cache carried across CLI runs
-// would answer a later question with an earlier disk.
+// about mutation, not about time: one holder spans one whole question-set
+// and stops at the first thing that could change an answer under it. A
+// DedupeEntries call compares and writes nothing, so one resolver spans
+// all of its comparisons; stillNamed holds one across every current entry
+// it compares a single recorded entry against; recordVouches holds one
+// across the whole record it asks about a single entry; forget's
+// clearEntry and copyEntries' mirror fall between two of these, and an
+// answer held across one of those would describe directories this very
+// operation has since changed. What no resolver may do is outlive the run
+// that built it: the volume answers for the moment of asking, and a cache
+// carried across CLI runs would answer a later question with an earlier
+// disk.
 //
 // opens and reads are the measurement the review's close test holds the
 // resolver to: every open of a directory made to enumerate it, and every
@@ -205,8 +230,18 @@ type placeResolver struct {
 	root   *os.Root
 	dirs   map[string]dirSnapshot
 	places map[string]placeResult
-	opens  int
-	reads  int
+	// alias remembers the alias branch's whole answer, keyed by the joined
+	// path the branch opens. The branch is the one place a walk can cost
+	// more than a lookup -- the spelling opened, then every sibling opened
+	// and canonicalized to count the matches -- and the original paid that
+	// again for every question about the same spelling. The promise places
+	// and dirs are kept under covers this answer too, a miss included:
+	// nothing under the root moves while the resolver lives, so asking the
+	// volume again could only make it repeat itself. The branch's opens are
+	// resolution, not enumeration, and stay uncounted.
+	alias map[string]placeResult
+	opens int
+	reads int
 }
 
 // newPlaceResolver is a variable so the counting test can hold the
@@ -219,6 +254,7 @@ func defaultPlaceResolver(root *os.Root) *placeResolver {
 		root:   root,
 		dirs:   make(map[string]dirSnapshot),
 		places: make(map[string]placeResult),
+		alias:  make(map[string]placeResult),
 	}
 }
 
@@ -246,29 +282,39 @@ func (r *placeResolver) samePlace(first, second string) bool {
 	return ok && opened == other
 }
 
-// snapshot returns one directory's children, read from the volume once per
+// snapshot returns one directory's snapshot, read from the volume once per
 // resolver. A directory that would not open is remembered shut for the
 // same stretch -- nothing under the root moves while the resolver lives,
 // so the second question would only be refused again.
-func (r *placeResolver) snapshot(dir string) ([]os.DirEntry, bool) {
+func (r *placeResolver) snapshot(dir string) (dirSnapshot, bool) {
 	if snap, ok := r.dirs[dir]; ok {
-		return snap.children, snap.ok
+		return snap, snap.ok
 	}
 	r.opens++
 	file, err := r.root.Open(dir)
 	if err != nil {
 		r.dirs[dir] = dirSnapshot{}
-		return nil, false
+		return dirSnapshot{}, false
 	}
 	r.reads++
 	children, err := file.ReadDir(-1)
 	_ = file.Close()
 	if err != nil {
 		r.dirs[dir] = dirSnapshot{}
-		return nil, false
+		return dirSnapshot{}, false
 	}
-	r.dirs[dir] = dirSnapshot{children: children, ok: true}
-	return children, true
+	byName := make(map[string]string, len(children))
+	for _, child := range children {
+		byName[child.Name()] = child.Name()
+	}
+	snap := dirSnapshot{
+		children:  children,
+		byName:    byName,
+		canonical: make(map[string]string),
+		ok:        true,
+	}
+	r.dirs[dir] = snap
+	return snap, true
 }
 
 // canonicalEntryPath resolves the stored directory-entry spelling without
@@ -276,7 +322,11 @@ func (r *placeResolver) snapshot(dir string) ([]os.DirEntry, bool) {
 // -- and a missing component has no witnessed place. The walk reads each
 // directory from the resolver's snapshot; the one opening left in an exact
 // match's absence is the alias branch below, where the volume itself has
-// to say which stored spelling a name resolves onto.
+// to say which stored spelling a name resolves onto. That branch's whole
+// answer is kept in the resolver's alias memo and its siblings' canonical
+// spellings in the snapshot, so a second question about the same spelling
+// in the same directory, this query or any later one this resolver
+// answers, opens nothing at all.
 func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 	clean := cleanEntryPath(path)
 	if clean == "." || filepath.IsAbs(clean) || clean == ".." ||
@@ -285,48 +335,59 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 	}
 	current := "."
 	for _, component := range strings.Split(clean, string(filepath.Separator)) {
-		children, ok := r.snapshot(current)
+		snap, ok := r.snapshot(current)
 		if !ok {
 			return "", false
 		}
-		chosen := ""
-		for _, child := range children {
-			if child.Name() == component {
-				chosen = child.Name()
-				break
-			}
-		}
+		chosen := snap.byName[component]
 		if chosen == "" {
 			// Go's Unicode fold is only a candidate. NTFS has a
 			// per-volume table, so open the spelling itself before
 			// accepting a case-insensitive directory entry.
-			opened, err := r.root.Open(filepath.Join(current, component))
-			if err != nil {
-				return "", false
-			}
-			openedPath, err := pathid.Canonical(opened.Name())
-			_ = opened.Close()
-			if err != nil {
-				return "", false
-			}
-			matches := 0
-			for _, child := range children {
-				childFile, err := r.root.Open(filepath.Join(current, child.Name()))
+			aliasPath := filepath.Join(current, component)
+			if memo, seen := r.alias[aliasPath]; seen {
+				chosen = memo.canonical
+			} else {
+				opened, err := r.root.Open(aliasPath)
 				if err != nil {
-					continue
+					r.alias[aliasPath] = placeResult{}
+					return "", false
 				}
-				childPath, childErr := pathid.Canonical(childFile.Name())
-				_ = childFile.Close()
-				if childErr == nil && childPath == openedPath {
-					chosen = child.Name()
-					matches++
+				openedPath, err := pathid.Canonical(opened.Name())
+				_ = opened.Close()
+				if err != nil {
+					r.alias[aliasPath] = placeResult{}
+					return "", false
 				}
-			}
-			// Canonical paths retain the stored directory-entry spelling. Hard
-			// links therefore match only the name Windows actually resolved,
-			// rather than merging every name for the same file identity.
-			if matches != 1 {
-				return "", false
+				matches := 0
+				for _, child := range snap.children {
+					childPath, known := snap.canonical[child.Name()]
+					if !known {
+						childFile, err := r.root.Open(filepath.Join(current, child.Name()))
+						if err != nil {
+							continue
+						}
+						var childErr error
+						childPath, childErr = pathid.Canonical(childFile.Name())
+						_ = childFile.Close()
+						if childErr != nil {
+							continue
+						}
+						snap.canonical[child.Name()] = childPath
+					}
+					if childPath == openedPath {
+						chosen = child.Name()
+						matches++
+					}
+				}
+				// Canonical paths retain the stored directory-entry spelling. Hard
+				// links therefore match only the name Windows actually resolved,
+				// rather than merging every name for the same file identity.
+				if matches != 1 {
+					r.alias[aliasPath] = placeResult{}
+					return "", false
+				}
+				r.alias[aliasPath] = placeResult{canonical: chosen, ok: true}
 			}
 		}
 		if chosen == "" {

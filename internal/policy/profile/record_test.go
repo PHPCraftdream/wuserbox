@@ -448,10 +448,10 @@ func TestHardLinkNamesStaySeparateWhenOneIsRespelt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = root.Close() }()
-	if !recordVouches(root, []string{"first"}, "FIRST") {
+	if !recordVouches(newPlaceResolver(root), []string{"first"}, "FIRST") {
 		t.Fatal("a case-only spelling of the recorded directory entry lost its proof")
 	}
-	if recordVouches(root, []string{"first"}, "SECOND") {
+	if recordVouches(newPlaceResolver(root), []string{"first"}, "SECOND") {
 		t.Fatal("a different hard-link name was treated as the recorded entry")
 	}
 

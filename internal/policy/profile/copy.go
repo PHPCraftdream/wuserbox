@@ -300,7 +300,7 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 			// witness that can tell the two apart; taking a vanished source
 			// back here instead would act on a disappearance that is often
 			// temporary -- a drive not yet mounted, a tool not yet installed.
-			if recordVouches(root, recorded, entry.Path) {
+			if recordVouches(newPlaceResolver(root), recorded, entry.Path) {
 				copied = append(copied, entry)
 			}
 			continue
@@ -337,11 +337,26 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 // is no copy for the record to vouch for, and dropping the claim costs
 // nothing that exists. A vouch is a claim about a copy, and a claim about
 // a copy has to be witnessed by the copy.
-func recordVouches(root *os.Root, recorded []string, entry string) bool {
+//
+// One resolver spans this whole question: the entry's place is resolved
+// once, the record's places are collected into a canonical-presence set
+// once, and the answer is membership in that set rather than a fresh
+// resolver and a fresh walk per recorded entry -- the common case, a
+// source the record never heard of, costs one resolution instead of one
+// per pass over the record. copyEntries' mirror for a present source falls
+// between two recordVouches calls, so the resolver must not span the loop:
+// a snapshot that watched one entry's copy would describe a profile the
+// next question is asked after.
+func recordVouches(resolver *placeResolver, recorded []string, entry string) bool {
+	entryCanonical, ok := resolver.place(entry)
+	if !ok {
+		return false
+	}
+	places := make(map[string]bool, len(recorded))
 	for _, path := range recorded {
-		if sameEntryPlace(root, path, entry) {
-			return true
+		if canonical, ok := resolver.place(path); ok {
+			places[canonical] = true
 		}
 	}
-	return false
+	return places[entryCanonical]
 }
