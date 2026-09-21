@@ -14,6 +14,7 @@ import (
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/lock"
+	"github.com/PHPCraftdream/wuserbox/internal/base/trace"
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
@@ -841,7 +842,21 @@ func RunAsAccountWithLease(username, password, commandLine, directory string, en
 	return runAsAccount(username, password, commandLine, directory, filtered, slotPath, transferPath)
 }
 
-func runAsAccount(username, password, commandLine, directory string, env []string, slotPath, transferPath string) (int, error) {
+func runAsAccount(username, password, commandLine, directory string, env []string, slotPath, transferPath string) (code int, err error) {
+	tr := trace.Current()
+	stub := tr.Phase("stub_create")
+	createClosed := false
+	// stub_create runs from entry to the moment CreateProcessWithLogonW
+	// returns: the SID lookup, the job, the handle duplication and bridge
+	// setup, and the logon itself with its profile load, so the whole launch
+	// overhead is one record. The deferred close exists so a failure before
+	// the logon call answers still closes the phase with the error that
+	// caused it, and it must not fire once the explicit close below has run.
+	defer func() {
+		if !createClosed {
+			stub(err)
+		}
+	}()
 	accountSID, err := sid.Lookup(username)
 	if err != nil {
 		return -1, fmt.Errorf("looking up %s to narrow its own stub before it runs: %w", username, err)
@@ -877,7 +892,9 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 			return
 		}
 		jobClosed = true
+		closed := tr.Phase("job_close")
 		j.Close()
+		closed(nil)
 	}
 	defer endJob()
 
@@ -928,7 +945,9 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 			return
 		}
 		if bridgeStarted {
+			drained := tr.Phase("bridge_drain")
 			bridge.finish()
+			drained(nil)
 			return
 		}
 		bridge.close()
@@ -1083,8 +1102,13 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 	// the readers could never observe EOF when the child exits.
 	closeStreams()
 	if r == 0 {
-		return -1, fmt.Errorf("starting %s as %s: %w", commandLine, username, callErr)
+		err = fmt.Errorf("starting %s as %s: %w", commandLine, username, callErr)
+		createClosed = true
+		stub(err)
+		return -1, err
 	}
+	createClosed = true
+	stub(nil)
 	if bridge != nil {
 		bridge.start()
 		bridgeStarted = true
@@ -1132,12 +1156,18 @@ func runAsAccount(username, password, commandLine, directory string, env []strin
 		return -1, err
 	}
 	procResumeThread.Call(uintptr(created.Thread))
+	// stub_resume says the stub was released, not that the program it will
+	// start is running -- nothing the grandchild does crosses back to this
+	// process, so no finer signal exists here.
+	tr.Event("stub_resume")
 
 	// The exit code is already in hand -- waitOrStop reads it before
 	// returning -- so tearing the job down now, with everything the program
 	// left running still inside it, costs nothing and is what unblocks the
 	// bridge drain waiting further down in the defers. See endJob above.
-	code, err := j.waitOrStop(created.Process)
+	wait := tr.Phase("stub_wait")
+	code, err = j.waitOrStop(created.Process)
+	wait(err)
 	endJob()
 	return code, err
 }

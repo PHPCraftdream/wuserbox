@@ -31,8 +31,18 @@ const nobodysGroup = "S-1-5-21-1111111111-2222222222-3333333333-727272"
 // TestMain lets `go test` re-exec this binary to run the probe in a process
 // of its own.
 func TestMain(m *testing.M) {
+	// The gated child of the launch-phase close test is this binary again,
+	// dispatched by argument; it must come ahead of the driver check below
+	// because the child inherits the driver's environment, driver variable
+	// included.
+	if len(os.Args) > 3 && os.Args[1] == gateChildFlag {
+		os.Exit(runGateChild(os.Args[2], os.Args[3]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == probeFlag {
 		os.Exit(runProbe())
+	}
+	if os.Getenv(traceDriverEnv) == "1" {
+		os.Exit(runTraceDriver())
 	}
 	os.Exit(m.Run())
 }

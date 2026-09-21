@@ -38,7 +38,16 @@ import (
 // empty until `--init` runs again to add one -- and keeps running the old
 // way meanwhile, rather than refusing to run until it is upgraded.
 func Run(s *state.State, commandLine string) (int, error) {
-	done := trace.Current().Phase("command_launch")
+	// The umbrella now spans dispatch through waiting the child out and
+	// teardown; the phases underneath name the parts -- child_create,
+	// child_resume, child_wait and job_close on the restricted path,
+	// stub_create, stub_resume, stub_wait, job_close and bridge_drain on
+	// the account path, all recorded in internal/win/proc -- so a long
+	// command_lifetime with a short child_create says the program ran
+	// long, not that the start was slow. command_launch used to cover this
+	// whole span under a name that read as startup time, which is the
+	// ambiguity review P3-2 was about.
+	done := trace.Current().Phase("command_lifetime")
 	var code int
 	var err error
 	if s.Account == "" {

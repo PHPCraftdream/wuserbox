@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/PHPCraftdream/wuserbox/internal/base/trace"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
@@ -32,8 +33,15 @@ var (
 // keypress never reaches -- and there the run forwards the byte itself; see
 // relayWatchInterrupts in logon.go.
 func Run(token syscall.Token, commandLine, directory string) (int, error) {
+	// child_create measures everything up to the suspended child existing --
+	// the job, the duplicated standard handles, the create call itself -- so
+	// a long stretch here reads as slow to start, not as the program running.
+	// The name is child_create because on this path the child IS the program.
+	tr := trace.Current()
+	create := tr.Phase("child_create")
 	j, err := newJob()
 	if err != nil {
+		create(err)
 		return -1, err
 	}
 	// Behind every other teardown in this function, and safe there: nothing
@@ -45,13 +53,18 @@ func Run(token syscall.Token, commandLine, directory string) (int, error) {
 	// backgrounded child inherits; it closes its job before draining
 	// instead. See P1-2 in
 	// docs/reviews/release-review-P-2026-09-19-round10.md.
-	defer j.Close()
+	defer func() {
+		closed := tr.Phase("job_close")
+		j.Close()
+		closed(nil)
+	}()
 
 	var startup syscall.StartupInfo
 	var created syscall.ProcessInformation
 	startup.Cb = uint32(unsafe.Sizeof(startup))
 	streams, err := duplicateStandardHandles()
 	if err != nil {
+		create(err)
 		return -1, err
 	}
 	defer streams.close()
@@ -61,6 +74,7 @@ func Run(token syscall.Token, commandLine, directory string) (int, error) {
 	startup.StdErr = streams.errout
 	line, err := syscall.UTF16FromString(commandLine)
 	if err != nil {
+		create(err)
 		return -1, err
 	}
 	// Suspended only, so that nothing it starts can slip out before it is
@@ -72,9 +86,12 @@ func Run(token syscall.Token, commandLine, directory string) (int, error) {
 		0, 0, 1, flags, 0, uintptr(unsafe.Pointer(w32.UTF16(directory))),
 		uintptr(unsafe.Pointer(&startup)), uintptr(unsafe.Pointer(&created)))
 	if r == 0 {
-		return -1, fmt.Errorf("starting %s: %w", commandLine, callErr)
+		err := fmt.Errorf("starting %s: %w", commandLine, callErr)
+		create(err)
+		return -1, err
 	}
-	return runInJob(j, &created)
+	create(nil)
+	return runInJob(tr, j, &created)
 }
 
 // RunWithConsole is Run's counterpart for a program whose terminal is a
@@ -135,8 +152,15 @@ func Run(token syscall.Token, commandLine, directory string) (int, error) {
 // recorded in docs/investigations/2026-09-20-same-window-console.md
 // section 5.
 func RunWithConsole(token syscall.Token, commandLine, directory string, pseudoConsole syscall.Handle) (int, error) {
+	// child_create measures everything up to the suspended child existing --
+	// the job, the duplicated standard handles, the create call itself -- so
+	// a long stretch here reads as slow to start, not as the program running.
+	// The name is child_create because on this path the child IS the program.
+	tr := trace.Current()
+	create := tr.Phase("child_create")
 	j, err := newJob()
 	if err != nil {
+		create(err)
 		return -1, err
 	}
 	// Behind every other teardown in this function, and safe there: nothing
@@ -148,10 +172,15 @@ func RunWithConsole(token syscall.Token, commandLine, directory string, pseudoCo
 	// backgrounded child inherits; it closes its job before draining
 	// instead. See P1-2 in
 	// docs/reviews/release-review-P-2026-09-19-round10.md.
-	defer j.Close()
+	defer func() {
+		closed := tr.Phase("job_close")
+		j.Close()
+		closed(nil)
+	}()
 
 	startup, freeStartup, err := startupInfoForPseudoConsole(pseudoConsole)
 	if err != nil {
+		create(err)
 		return -1, err
 	}
 	defer freeStartup()
@@ -164,6 +193,7 @@ func RunWithConsole(token syscall.Token, commandLine, directory string, pseudoCo
 	startup.Flags = syscall.STARTF_USESTDHANDLES
 	line, err := syscall.UTF16FromString(commandLine)
 	if err != nil {
+		create(err)
 		return -1, err
 	}
 	dir := w32.UTF16(directory)
@@ -185,15 +215,21 @@ func RunWithConsole(token syscall.Token, commandLine, directory string, pseudoCo
 	runtime.KeepAlive(dir)
 	runtime.KeepAlive(startup)
 	if r == 0 {
-		return -1, fmt.Errorf("starting %s: %w", commandLine, callErr)
+		err := fmt.Errorf("starting %s: %w", commandLine, callErr)
+		create(err)
+		return -1, err
 	}
-	return runInJob(j, &created)
+	create(nil)
+	return runInJob(tr, j, &created)
 }
 
 // runInJob is the part of starting a child that is the same whichever way it
 // was launched: into its job while still suspended, so nothing it starts can
-// slip out unwatched, then running, then waited for.
-func runInJob(j *job, created *syscall.ProcessInformation) (int, error) {
+// slip out unwatched, then running, then waited for. The child_resume event
+// marks the moment the suspended child is actually released to run, and
+// child_wait measures only the wait from there to its exit, so a long
+// child_wait is the program -- or its teardown -- running, not a slow launch.
+func runInJob(tr *trace.Logger, j *job, created *syscall.ProcessInformation) (int, error) {
 	defer syscall.CloseHandle(created.Process)
 	defer syscall.CloseHandle(created.Thread)
 
@@ -202,6 +238,10 @@ func runInJob(j *job, created *syscall.ProcessInformation) (int, error) {
 		return -1, err
 	}
 	procResumeThread.Call(uintptr(created.Thread))
+	tr.Event("child_resume")
 
-	return j.waitOrStop(created.Process)
+	wait := tr.Phase("child_wait")
+	code, err := j.waitOrStop(created.Process)
+	wait(err)
+	return code, err
 }

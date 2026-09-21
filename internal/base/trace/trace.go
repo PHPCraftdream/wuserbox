@@ -30,13 +30,34 @@ type Field struct {
 
 // Logger writes newline-delimited JSON with elapsed and phase durations.
 // A disabled logger is cheap and safe to call from all normal paths.
+//
+// Every record names its writer: the process's pid plus a per-process run
+// identifier. The run identifier is per-process rather than per-run because
+// handing one shared identifier across the account boundary would need a
+// transport into the sandbox, which is deliberately out of scope; the fields
+// are ready for the day a shared identifier does cross.
 type Logger struct {
 	mu       sync.Mutex
 	start    time.Time
+	run      string
 	output   io.Writer
 	file     *os.File
 	path     string
 	disabled bool
+}
+
+var thisPID = os.Getpid()
+
+// newRunID names the logical run every record of one logger belongs to: this
+// process's own pid plus the nanosecond reading at the logger's birth. Every
+// logger a process builds gets its own, so a trace file fed by more than one
+// process -- the caller here, a stub or an elevated child appending to the
+// same file -- can have its lines told apart by who wrote them without any
+// of the writers knowing about each other. It is a diagnostic aid, not a
+// security token, and it carries no secret: a pid and a clock reading are
+// exactly what a reader of the file already knows it is looking at.
+func newRunID() string {
+	return strconv.Itoa(thisPID) + "-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 }
 
 // New returns a logger writing to output. A nil output disables it.
@@ -44,7 +65,7 @@ func New(output io.Writer) *Logger {
 	if output == nil {
 		return &Logger{disabled: true}
 	}
-	return &Logger{start: time.Now(), output: output}
+	return &Logger{start: time.Now(), run: newRunID(), output: output}
 }
 
 // FromEnv creates the process logger. It never returns an error: tracing must
@@ -64,13 +85,13 @@ func FromEnv() *Logger {
 		_ = os.Setenv(EnvFile, name)
 	}
 	if name == "stderr" {
-		return &Logger{start: time.Now(), output: os.Stderr, path: name}
+		return &Logger{start: time.Now(), run: newRunID(), output: os.Stderr, path: name}
 	}
 	file, err := os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return New(nil)
 	}
-	return &Logger{start: time.Now(), output: file, file: file, path: name}
+	return &Logger{start: time.Now(), run: newRunID(), output: file, file: file, path: name}
 }
 
 var (
@@ -131,10 +152,15 @@ func (l *Logger) emit(name, status string, duration time.Duration, phaseErr erro
 	if l == nil || l.disabled {
 		return
 	}
+	// pid and run name the writer on every record so a trace file fed by
+	// more than one process stays attributable; phase-specific metadata
+	// still travels the usual way, through Field.
 	record := map[string]any{
 		"elapsed_ms": time.Since(l.start).Milliseconds(),
 		"phase":      name,
 		"status":     status,
+		"pid":        thisPID,
+		"run":        l.run,
 	}
 	if duration > 0 {
 		record["duration_ms"] = duration.Milliseconds()
