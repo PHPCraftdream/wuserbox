@@ -21,7 +21,6 @@ import (
 	"os"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/PHPCraftdream/wuserbox/internal/account"
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
@@ -39,11 +38,6 @@ import (
 // help, and this is neither of those things. Nobody types it, and nothing
 // that does carry two dashes can ever collide with it.
 const StubFlag = "-sandbox-stub"
-
-// relayFlushGrace is the bounded window the relay's output pump gets
-// after the program has ended, before this process exits and closes
-// everything it names.
-const relayFlushGrace = 250 * time.Millisecond
 
 // Stub restricts this process's own token to the sandbox's identities and
 // starts the program under it. It is what runs as the sandbox's account.
@@ -196,6 +190,7 @@ func Stub(args []string) error {
 		defer restore()
 	}
 	var relay *consoleRelay
+	var pump *relayPump
 	if relayWanted {
 		r, err := takeConsoleRelay()
 		if err != nil {
@@ -241,7 +236,7 @@ func Stub(args []string) error {
 		// the leftover-holder shape P1-2 was about cannot form here, and
 		// the pipes' last holders are this process and the console's own
 		// conhost, both of which go away below.
-		pumpRelay(relay, os.Stdout, os.Stdin)
+		pump = pumpRelay(relay, os.Stdout, os.Stdin)
 		if resizeRead != nil {
 			// The third leg of the relay: the operator's console changes
 			// size, and this process is the only one that can answer,
@@ -256,17 +251,28 @@ func Stub(args []string) error {
 		return err
 	}
 	if relay != nil {
-		// conhost renders on a timer of its own and holds the last write
-		// end of the relay's output pipe: ending the console the instant
-		// the program exits can drop the last rendered bytes on the floor
-		// -- the shape TestTheConsoleRelayCarriesTheChildsRenderedOutput
-		// measured. The pump gets this long to carry the tail across.
-		// Then the console is closed here, explicitly, because os.Exit
-		// skips the deferred close and a conhost outliving this process
-		// is exactly the kind of handle holder the run's caller is
-		// draining against; close is safe to call twice.
-		time.Sleep(relayFlushGrace)
-		relay.close()
+		// The old code slept a fixed 250ms and closed the relay, which
+		// narrowed the race between conhost's last rendered bytes and this
+		// process's exit without closing it -- review P2-1. finish instead
+		// ends the console, waits for the drain to reach the end of the
+		// pipe and for its writes into the bridge to complete, and only
+		// then closes the read end: ClosePseudoConsole returning is not the
+		// completion signal -- Windows 11 24H2+ can return before the pty
+		// has drained, and the doc's own guidance is to keep reading the
+		// pipe -- so the drain's end is the signal finish trusts. A non-nil
+		// error is returned rather than exiting with the program's code:
+		// the message crosses the stderr bridge, a different pipe from the
+		// stdout one that may itself be the broken half, and the nonzero
+		// wuserbox exit code reaches the caller without needing any pipe.
+		// The program's own exit code is named in the message because the
+		// operator is owed it even when the delivery that would have
+		// carried it broke. os.Exit below skips deferred calls, so the
+		// explicit close is still what keeps a conhost from outliving the
+		// handle-draining the run's caller does -- finish's relay.close on
+		// the success path is that close now.
+		if err := pump.finish(relay); err != nil {
+			return fmt.Errorf("the program ended with exit code %d, but its relayed console output was not fully delivered: %w", code, err)
+		}
 	}
 	// The program's own exit code, carried out of this process as its own, the
 	// same way a run carries it out of wuserbox. Nothing after this line runs,

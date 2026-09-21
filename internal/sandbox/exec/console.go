@@ -27,6 +27,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -402,9 +403,32 @@ func noInherit(file *os.File) error {
 	return nil
 }
 
-// close ends the pseudo console and both pipe ends. Closing the console is
-// also what ends its conhost and what lets a reader of output reach EOF --
-// the measured shape of every drain in this repository that reads a pseudo
+// closeConsole ends the pseudo console and nothing else. It is its own
+// method because finishing the relay needs the two ends of close separated
+// in time: ending the console is what makes conhost eventually let go of
+// the write end of the output pipe, and that has to happen BEFORE the read
+// end is closed, while the read end closes only once the drain has been
+// watched to its end -- which is finish's work, not this method's.
+// ClosePseudoConsole returning is also not the completion signal for any of
+// it: on Windows 11 24H2+ the call can return before the pty has finished
+// draining internally, and the documented completion signal is the read
+// side reaching the end of the pipe -- which is why finish keeps reading to
+// EOF after calling this instead of trusting the return. Twice-safe like
+// close: the handle is cleared before it is closed.
+func (r *consoleRelay) closeConsole() {
+	if r == nil {
+		return
+	}
+	if r.hpc != 0 {
+		procClosePseudoConsole.Call(uintptr(r.hpc))
+		r.hpc = 0
+	}
+}
+
+// close ends the pseudo console and both pipe ends, closeConsole for the
+// console and then both ends of the relay. Closing the console is also what
+// ends its conhost and what lets a reader of output reach EOF -- the
+// measured shape of every drain in this repository that reads a pseudo
 // console's pipe. os.Exit skips deferred calls, so on the stub's success
 // path close never runs; the stub's own death closes everything it names.
 // Safe to call twice: the handle is cleared before it is closed, which is
@@ -414,12 +438,28 @@ func (r *consoleRelay) close() {
 	if r == nil {
 		return
 	}
-	if r.hpc != 0 {
-		procClosePseudoConsole.Call(uintptr(r.hpc))
-		r.hpc = 0
-	}
+	r.closeConsole()
 	_ = r.input.Close()
 	_ = r.output.Close()
+}
+
+// relayDrainCeiling is how long finish waits for the relay's output drain to
+// end before giving up on it. It is a var, not a const, on purpose: the
+// tests that model a wedged drain need to shrink it to keep the model
+// deterministic, and nothing in production reads it before Stub runs.
+// (why it exists: the exceptional path -- a drain that never ends because
+// the consumer never reads and the pipe never closes; the alternative to
+// giving up is a stub that hangs against a run waiting for it to die.)
+var relayDrainCeiling = 5 * time.Second
+
+// relayPump is what the tracked half of pumpRelay reports through: the
+// WaitGroup the output drain is counted on, and the result of the copy that
+// drain performed -- delivery's own verdict, recorded rather than discarded,
+// because discarding it turned every delivery failure into a silent
+// truncation.
+type relayPump struct {
+	drained  sync.WaitGroup
+	drainErr error
 }
 
 // pumpRelay starts the two copy loops that carry the relayed console
@@ -428,17 +468,76 @@ func (r *consoleRelay) close() {
 // VT read from the relay's output goes out as this process writes it, and
 // whatever the caller forwarded in is written to the relay's input as it
 // arrives; neither loop translates, because both ends already hold the
-// bytes a terminal would have sent or drawn. Nothing here waits for them:
-// they run until this process ends, which is the same moment the
-// program's exit makes the run move on, and the streams they name close
-// with it.
-func pumpRelay(relay *consoleRelay, stdout io.Writer, stdin io.Reader) {
-	go func() {
-		_, _ = io.Copy(stdout, relay.output)
-	}()
+// bytes a terminal would have sent or drawn. The input loop runs until the
+// process ends and stays fire-and-forget; the output half is the tracked
+// one, and the pump returned here is what finish waits on. The output
+// loop's io.Copy result is recorded on the pump rather than discarded --
+// discarding it, as the first draft of this code did, turned every delivery
+// failure into a silent truncation behind a success exit code, the shape
+// review finding P2-1 is about.
+func pumpRelay(relay *consoleRelay, stdout io.Writer, stdin io.Reader) *relayPump {
+	pump := &relayPump{}
 	go func() {
 		_, _ = io.Copy(relay.input, stdin)
 	}()
+	pump.drained.Add(1)
+	go func() {
+		defer pump.drained.Done()
+		_, pump.drainErr = io.Copy(stdout, relay.output)
+	}()
+	return pump
+}
+
+// finish ends the relay the way the end of a run needs it ended, and the
+// order is the fix, not a convention. The relay's input stops first: the
+// program is dead and nothing will read a keystroke again, so the loop
+// feeding them in has no work left to be right about. The console closes
+// second -- closeConsole, and nothing else: ending the console is what
+// makes conhost let go of the write end of the output pipe, while the read
+// end stays open, because the drain still has to be watched through it. The
+// drain is waited on third, and that wait is what review finding P2-1
+// measured the absence of: the fixed pause the stub used to sleep narrowed
+// the race between conhost's last rendered bytes and this process's exit
+// without closing it, where waiting for the tracked goroutine closes it.
+// The wait is exact and not merely prompt, either: io.Copy's return is
+// precisely "the source is at EOF or failed AND the last Write into the
+// caller's bridge has returned" -- it writes a chunk before it reads the
+// next -- so a Wait on the drain is waiting for delivery, not merely for
+// the pipe's end.
+//
+// The ceiling is the error path, not the expected one. The expected path
+// completes the moment conhost lets go of the write end, usually far under
+// 250ms; the ceiling exists for the drain that never ends because the
+// consumer never reads and the pipe never closes, and giving up there is
+// what keeps this stub from hanging against a run waiting for it to die.
+// On that path finish deliberately does NOT close the read end to break the
+// drain loose: closing a handle a synchronous read is blocked in is
+// undefined ground, the process is on its way out, and its death closes
+// what it names -- the documented pattern here.
+//
+// A non-nil return must not become a silent truncation behind the
+// program's own exit code. The stub returns it, so it travels back the way
+// every other late stub failure travels: reported on stderr -- a bridge
+// pipe separate from the stdout one that may itself be the broken half --
+// and paid for with wuserbox's own failure exit code (exit.Failed, read
+// back through exit.Of), the one signal that needs no pipe at all.
+func (p *relayPump) finish(relay *consoleRelay) error {
+	_ = relay.input.Close()
+	relay.closeConsole()
+	waited := make(chan struct{})
+	go func() {
+		p.drained.Wait()
+		close(waited)
+	}()
+	timer := time.NewTimer(relayDrainCeiling)
+	defer timer.Stop()
+	select {
+	case <-waited:
+	case <-timer.C:
+		return fmt.Errorf("the relay's output drain did not end within %s; the run's output may be incomplete", relayDrainCeiling)
+	}
+	relay.close()
+	return p.drainErr
 }
 
 // resize asks the relayed console to become cols by rows. Best effort by

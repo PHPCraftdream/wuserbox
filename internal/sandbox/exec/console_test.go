@@ -20,6 +20,7 @@ package exec
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -264,7 +265,7 @@ func TestTheRelayPumpCarriesRenderedBytesOutAndKeystrokesIn(t *testing.T) {
 		os.Stdin, os.Stdout = oldIn, oldOut
 		keyRead.Close()
 	}()
-	pumpRelay(relay, os.Stdout, os.Stdin)
+	pump := pumpRelay(relay, os.Stdout, os.Stdin)
 	// Queued before the child exists, so nothing in the test's timing
 	// decides whether the console ever sees them.
 	const keys = "WUSERBOX-KEYS"
@@ -352,6 +353,14 @@ func TestTheRelayPumpCarriesRenderedBytesOutAndKeystrokesIn(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	relay.close()
+	// The pump is now tracked, so the test awaits it before closing the
+	// read side its own drain guards: relay.close breaks the pump's source
+	// -- the established close-under-reader shape this package's drains
+	// use -- and the await proves every byte it read was written into
+	// screenWrite before that read side is closed and the drain below can
+	// reach EOF. The pump ends with a read error there because the test
+	// forced it, and the test does not consult the pump's error.
+	pump.drained.Wait()
 	// The pump's output side is the last writer on screenWrite, and the
 	// relay's close is what ends it: closing the write end here is what
 	// lets the drain below reach EOF at all, the same moment the stub's
@@ -544,4 +553,328 @@ func TestAResizeMessageReshapesTheRelayedConsole(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatalf("the relay's output never reached EOF; captured so far:\n%s", captured())
 	}
+}
+
+// barrierWriter is a writer whose first Write blocks until release is
+// closed, and which keeps everything it is finally handed. It models the
+// outer bridge pipe's reader deliberately holding the stream back after the
+// child has exited -- the consumer side of the P2-1 race: conhost's last
+// rendered bytes are already in this process's hands, the copy into the
+// caller's bridge cannot return because the reader will not take them, and
+// the only honest completion signal is that copy coming back.
+type barrierWriter struct {
+	mu      sync.Mutex
+	held    bytes.Buffer
+	release chan struct{}
+}
+
+func (w *barrierWriter) Write(p []byte) (int, error) {
+	<-w.release
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.held.Write(p)
+}
+
+func (w *barrierWriter) captured() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]byte(nil), w.held.Bytes()...)
+}
+
+// goneBridgeWriter is a consumer whose very first Write fails: a bridge
+// pipe whose reader end went away mid-carry.
+type goneBridgeWriter struct{}
+
+func (goneBridgeWriter) Write(p []byte) (int, error) { return 0, errBridgeGone }
+
+// errBridgeGone is what goneBridgeWriter fails with, and what the test
+// below demands the pump's recorded error name.
+var errBridgeGone = errors.New("the consumer's bridge went away mid-carry")
+
+// TestTheRelayPumpHoldsTheRunUntilItsConsumerHasSwallowedTheOutput pins what
+// the old fixed 250ms grace could only approximate: the run's completion --
+// finish returning here, standing in for the stub's os.Exit -- cannot
+// happen while the consumer still holds the stream back. The barrier stands
+// for a bridge reader that stops reading exactly when the child exits, the
+// shape P2-1 measured: every byte is already waiting in this process, the
+// write into the consumer cannot return, and no fixed pause can cover a
+// hold whose length the consumer alone decides -- which is why the negative
+// window below, 400ms, is deliberately longer than the 250ms the old grace
+// slept: no sleep can satisfy this test, only the release does. What finish
+// waits for is delivery and not merely the pipe's end, because io.Copy's
+// return is a completed last Write into the consumer, and the equality
+// check is the proof of it: the full payload crossed, nothing dropped by
+// the race the old code narrowed but never closed.
+//
+// What this test does not measure is a real conhost; the sibling ConPTY
+// tests cover that. The relay here is hand-built with hpc left 0, which
+// makes finish's closeConsole a no-op on purpose: nothing in this test may
+// depend on a console existing or on ClosePseudoConsole's timing -- the
+// property under test is the drain, and the drain alone.
+func TestTheRelayPumpHoldsTheRunUntilItsConsumerHasSwallowedTheOutput(t *testing.T) {
+	outRead, outWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The relay's input end only has to be closable -- finish closes it
+	// first -- so a throwaway pipe stands in; the read end is closed here
+	// and the write end belongs to the relay.
+	inRead, inWrite, err := os.Pipe()
+	if err != nil {
+		outRead.Close()
+		outWrite.Close()
+		t.Fatal(err)
+	}
+	defer inRead.Close()
+	relay := &consoleRelay{input: inWrite, output: outRead}
+	consumer := &barrierWriter{release: make(chan struct{})}
+	// The empty reader ends the input loop at its first Read, so the only
+	// goroutine still doing anything is the tracked drain.
+	pump := pumpRelay(relay, consumer, strings.NewReader(""))
+	payload := bytes.Repeat([]byte("WUSERBOX-DRAIN-BARRIER/"), 400)
+	if _, err := outWrite.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	// EOF is now already waiting behind the data, so the drain's one
+	// remaining obstacle is the barrier -- the consumer holding the
+	// stream back after the child would have exited.
+	if err := outWrite.Close(); err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- pump.finish(relay) }()
+	select {
+	case err := <-finished:
+		t.Fatalf("finish reported the run finished before the consumer released the output: %v", err)
+	case <-time.After(400 * time.Millisecond):
+	}
+	close(consumer.release)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("finish returned an error once the consumer had swallowed the output: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("finish never returned after the consumer released the output")
+	}
+	if got := consumer.captured(); !bytes.Equal(got, payload) {
+		offset := -1
+		limit := len(got)
+		if len(payload) < limit {
+			limit = len(payload)
+		}
+		for i := 0; i < limit; i++ {
+			if got[i] != payload[i] {
+				offset = i
+				break
+			}
+		}
+		t.Fatalf("the consumer swallowed %d of the %d bytes (first differing offset %d); the delivery was not complete",
+			len(got), len(payload), offset)
+	}
+	// Twice-safe: finish's success path already closed the relay.
+	relay.close()
+}
+
+// TestARelayConsumerThatStopsMidDrainIsReportedNotSwallowed pins the other
+// half of the tracked drain: a delivery failure comes back as an error,
+// neither as success nor as silence. The pump this package shipped first
+// discarded io.Copy's result exactly, so a consumer whose bridge died
+// mid-carry was indistinguishable from a delivery that completed -- a
+// silent truncation behind the program's own exit code, the shape P2-1 is
+// about. The assert here pins the surfacing the recorded error now gives.
+// The production consequence is the stub returning it: the message crosses
+// the stderr bridge, a different pipe from the stdout one that may itself
+// be the broken half, and wuserbox pays for it with its own failure exit
+// code -- the signal that needs no working pipe.
+func TestARelayConsumerThatStopsMidDrainIsReportedNotSwallowed(t *testing.T) {
+	outRead, outWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inRead, inWrite, err := os.Pipe()
+	if err != nil {
+		outRead.Close()
+		outWrite.Close()
+		t.Fatal(err)
+	}
+	defer inRead.Close()
+	relay := &consoleRelay{input: inWrite, output: outRead}
+	pump := pumpRelay(relay, goneBridgeWriter{}, strings.NewReader(""))
+	payload := bytes.Repeat([]byte("WUSERBOX-DRAIN-FAILURE/"), 400)
+	if _, err := outWrite.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := outWrite.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Inline, deliberately: the drain fails on its first Write, so finish
+	// returns promptly -- the call not hanging is the no-hang proof, and
+	// nothing in the assertion depends on timing.
+	err = pump.finish(relay)
+	if err == nil {
+		t.Fatal("finish reported success although the consumer's bridge failed mid-drain")
+	}
+	if !errors.Is(err, errBridgeGone) {
+		t.Fatalf("finish's error does not name the consumer's failure: %v", err)
+	}
+	relay.close()
+}
+
+// TestTheRelayPumpGivesUpOnADrainOnlyPastTheCeiling measures the
+// exceptional path the ceiling exists to bound: a drain that never ends,
+// because the consumer never reads and nothing closes the pipe. The bound
+// must be reachable -- the alternative to giving up is a stub that hangs
+// against a run waiting for it to die -- and reaching it must still be an
+// error, not a success with truncated output: the report says the run's
+// output may be incomplete, which is the honest verdict, and the caller
+// turns it into a failure exit code rather than letting a short delivery
+// pass for a whole one.
+//
+// The ceiling is shrunk to 200ms to keep the model deterministic; nothing
+// else about the shape differs from production. The second half measures
+// that giving up on the wait did not abandon the drain: the tracked
+// goroutine is still awaited once the consumer lets the stream go, and
+// every byte crosses then. finish deliberately does not close the read end
+// under the wedged drain -- closing a handle a synchronous read is blocked
+// in is undefined ground -- so this test releases the barrier instead, the
+// same way the process's own death would end the pipe.
+func TestTheRelayPumpGivesUpOnADrainOnlyPastTheCeiling(t *testing.T) {
+	oldCeiling := relayDrainCeiling
+	relayDrainCeiling = 200 * time.Millisecond
+	defer func() { relayDrainCeiling = oldCeiling }()
+	outRead, outWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inRead, inWrite, err := os.Pipe()
+	if err != nil {
+		outRead.Close()
+		outWrite.Close()
+		t.Fatal(err)
+	}
+	defer inRead.Close()
+	relay := &consoleRelay{input: inWrite, output: outRead}
+	consumer := &barrierWriter{release: make(chan struct{})}
+	pump := pumpRelay(relay, consumer, strings.NewReader(""))
+	payload := bytes.Repeat([]byte("WUSERBOX-DRAIN-CEILING/"), 400)
+	if _, err := outWrite.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := outWrite.Close(); err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- pump.finish(relay) }()
+	var finishErr error
+	select {
+	case finishErr = <-finished:
+	case <-time.After(10 * time.Second):
+		t.Fatal("finish never gave up on the drain that never ended")
+	}
+	if finishErr == nil {
+		t.Fatal("finish reported success although the drain never ended")
+	}
+	if !strings.Contains(finishErr.Error(), "incomplete") {
+		t.Fatalf("the ceiling's error does not say the output may be incomplete: %v", finishErr)
+	}
+	// The consumer is still holding the stream back at this point -- the
+	// ceiling, not delivery, is what finish returned on. Releasing it is
+	// what lets the drain move, the way the process's own death would
+	// have ended the pipe, and the tracked drain must still be awaited
+	// to its end.
+	close(consumer.release)
+	allDone := make(chan struct{})
+	go func() {
+		pump.drained.Wait()
+		close(allDone)
+	}()
+	select {
+	case <-allDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the tracked drain never ended even after the consumer released the output")
+	}
+	if got := consumer.captured(); !bytes.Equal(got, payload) {
+		t.Fatalf("the consumer swallowed %d of the %d bytes; the drain dropped bytes after the ceiling",
+			len(got), len(payload))
+	}
+	relay.close()
+}
+
+// TestTheRelayFinishDoesNotRestOnClosePseudoConsolesReturn is the live
+// ConPTY measurement of finish's order: ClosePseudoConsole is called inside
+// finish, before the barrier ever releases, and its return is never
+// consulted -- the verdict still waits for the child's rendered marker to
+// be fully delivered to the consumer. What this machine cannot do is
+// reproduce 24H2-specific timing on demand -- its Windows generation is
+// whatever it is -- so what is pinned is structural: the child's exit is
+// the only thing waited for before finish starts, which is exactly the
+// shape the fixed stub runs; the barrier holds the consumer back past both
+// the child's exit and the EOF ending the console produces; and finish
+// still does not return until everything the drain read has crossed. On a
+// Windows generation where the call returns before the pty has drained
+// internally, the drain-after-close this test exercises is what carries the
+// tail -- the doc's own guidance is to keep reading the pipe, and that is
+// the reading this verdict waits past the call's return for.
+func TestTheRelayFinishDoesNotRestOnClosePseudoConsolesReturn(t *testing.T) {
+	if err := procCreatePseudoConsole.Find(); err != nil {
+		t.Skip("CreatePseudoConsole is not available on this Windows build (ConPTY needs Windows 10 1809+)")
+	}
+	relay, err := takeConsoleRelay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.close()
+	consumer := &barrierWriter{release: make(chan struct{})}
+	// No keystrokes exist in this test; the empty reader ends the input
+	// loop at its first Read.
+	pump := pumpRelay(relay, consumer, strings.NewReader(""))
+	var own syscall.Token
+	// The child runs under the current, same-account, unrestricted token;
+	// the account crossing is not this test's business.
+	if err := syscall.OpenProcessToken(syscall.Handle(^uintptr(0)), syscall.TOKEN_ALL_ACCESS, &own); err != nil {
+		t.Fatal(err)
+	}
+	defer own.Close()
+	// The same shape as the carries-the-output sibling: twenty-one
+	// characters, under the console's 80 columns, echoed through the
+	// console by name -- see that test's doc comment for why a standard
+	// handle would point somewhere else entirely.
+	const marker = "WUSERBOX-CONPTY-RELAY"
+	// RunWithConsole returns when the child has exited, and nothing else
+	// is waited for before finish starts -- no marker watch, no pause:
+	// exactly the moment the fixed stub used to begin its grace.
+	code, err := proc.RunWithConsole(own, `C:\Windows\System32\cmd.exe /c echo `+marker+`> CON`, t.TempDir(), relay.hpc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 {
+		t.Fatalf("the child ended with exit code %d, want 0", code)
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- pump.finish(relay) }()
+	// finish has ended the console by now, so ClosePseudoConsole has
+	// returned and the source pipe may well be at EOF -- and the verdict
+	// must still not land while the consumer holds the stream back. The
+	// 300ms window is a negative assertion, not an oracle: no pause covers
+	// a hold whose length the consumer alone decides.
+	select {
+	case err := <-finished:
+		t.Fatalf("finish returned within 300ms, before the consumer released the output: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(consumer.release)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("finish returned an error once the consumer had swallowed the output: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("finish never returned after the consumer released the output")
+	}
+	if got := string(consumer.captured()); !strings.Contains(got, marker) {
+		t.Errorf("the relayed console's marker never reached the consumer; captured:\n%s", got)
+	}
+	// Twice-safe with the deferred close above.
+	relay.close()
 }
