@@ -15,6 +15,18 @@ import (
 
 var procGetFinalPathName = w32.Kernel32.NewProc("GetFinalPathNameByHandleW")
 
+// getFinalPathName stands in for GetFinalPathNameByHandleW the way the file
+// name family below does, so a test can offer the resolver a buffer too
+// small for the answer it holds. The conversion into the call's own
+// spelling lives here, so everything on either side of it works in Go's
+// types.
+var getFinalPathName = func(handle syscall.Handle, buffer []uint16) (int, error) {
+	const volumeNameDOS = 0x0
+	written, _, callErr := procGetFinalPathName.Call(uintptr(handle),
+		uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)), volumeNameDOS)
+	return int(written), callErr
+}
+
 // The FindFirstFileNameW family behind variables, so a test can interrupt an
 // enumeration partway the way a disk error would and hold the callers to
 // what they owe an answer that is not the whole list. The conversions into
@@ -58,6 +70,13 @@ type fileID struct {
 	low    uint32
 }
 
+// initialBufferLen is the room a call offers Windows at first. An ordinary
+// path fits inside it; a longer answer comes back naming the room it needs,
+// and the buffer grows to exactly that, so the cost of a resolution tracks
+// the paths actually resolved instead of the longest path Windows can
+// spell.
+const initialBufferLen = 256
+
 // Canonical returns the spelling Windows resolves for an existing path. In
 // particular, it retains the volume's distinction between names such as K and
 // the Kelvin sign; Go's Unicode folding must not decide a filesystem boundary.
@@ -71,11 +90,22 @@ func Canonical(path string) (string, error) {
 	}
 	defer func() { _ = syscall.CloseHandle(handle) }()
 
-	const volumeNameDOS = 0x0
-	buffer := make([]uint16, syscall.MAX_LONG_PATH)
-	written, _, callErr := procGetFinalPathName.Call(uintptr(handle),
-		uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)), volumeNameDOS)
-	if written == 0 || int(written) >= len(buffer) {
+	buffer := make([]uint16, initialBufferLen)
+	written, callErr := getFinalPathName(handle, buffer)
+	if written > len(buffer) {
+		// The refusal comes back naming the room the final name needs,
+		// terminating null included, whatever error Windows cares to set
+		// beside it. Room past the ceiling the full-size buffer has always
+		// stood at is not a name waiting for space, and the answer to that
+		// stays a refusal; the same call is made once more with exactly the
+		// room asked for, and anything that still does not hold is refused.
+		if written > syscall.MAX_LONG_PATH {
+			return "", fmt.Errorf("resolving %s: %w", path, callErr)
+		}
+		buffer = make([]uint16, written)
+		written, callErr = getFinalPathName(handle, buffer)
+	}
+	if written == 0 || written >= len(buffer) {
 		return "", fmt.Errorf("resolving %s: %w", path, callErr)
 	}
 	name := syscall.UTF16ToString(buffer[:written])
@@ -192,9 +222,25 @@ const maxNamesBuffer = 1 << 20
 
 func enumerateNames(absolute string) ([]string, error) {
 	volume := filepath.VolumeName(absolute)
-	buffer := make([]uint16, syscall.MAX_LONG_PATH)
+	buffer := make([]uint16, initialBufferLen)
 	length := uint32(len(buffer))
 	handle, callErr := findFirstFileName(absolute, &length, buffer)
+	// The first name goes on the way the rest of the walk does: a did not
+	// fit answer holds the room the name needs, terminating null included,
+	// and the same call is made again with that much. A demanded size past
+	// the ceiling the first call has always refused past, or one no bigger
+	// than the buffer that has just failed, is a number the call will never
+	// converge on, and the answer to that is a refusal rather than an
+	// allocation or a loop.
+	for handle == uintptr(syscall.InvalidHandle) && errors.Is(callErr, errMoreData) {
+		if length == 0 || length <= uint32(len(buffer)) || length > syscall.MAX_LONG_PATH {
+			return nil, fmt.Errorf("listing the names of %s: the first name asks for %d characters and the buffer of %d cannot grow to hold it",
+				absolute, length, len(buffer))
+		}
+		buffer = make([]uint16, length)
+		length = uint32(len(buffer))
+		handle, callErr = findFirstFileName(absolute, &length, buffer)
+	}
 	if handle == uintptr(syscall.InvalidHandle) {
 		return nil, fmt.Errorf("listing the names of %s: %w", absolute, callErr)
 	}

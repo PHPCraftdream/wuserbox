@@ -125,9 +125,9 @@ func TestNamesRefusesAnEnumerationThatFailsPartway(t *testing.T) {
 // TestNamesGrowsTheBufferWhenANameDoesNotFit keeps the API's own way to go
 // on: ERROR_MORE_DATA names the room the next name needs, the same call is
 // made again with that much, and the enumeration continues from the name it
-// stopped on rather than past it. The sizes are far past any real path on
-// purpose: the initial buffer already holds the longest name Windows can
-// spell, so only a scripted answer can say "did not fit" and mean it.
+// stopped on rather than past it. The sizes run past the first buffer on
+// purpose, so the walk is held to growing and going on rather than
+// refusing what it was owed the room for.
 func TestNamesGrowsTheBufferWhenANameDoesNotFit(t *testing.T) {
 	path := subject(t)
 	scriptEnumeration(t, `\dir\own`, []nextStep{
@@ -155,7 +155,7 @@ func TestNamesGrowsTheBufferWhenANameDoesNotFit(t *testing.T) {
 func TestNamesRefusesANameThatCannotFitTheBufferItGets(t *testing.T) {
 	path := subject(t)
 	scriptEnumeration(t, `\dir\own`, []nextStep{
-		{required: uint32(syscall.MAX_LONG_PATH)},
+		{required: initialBufferLen},
 	})
 
 	if _, err := Names(path); err == nil {
