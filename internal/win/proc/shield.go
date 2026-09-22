@@ -33,6 +33,7 @@ var (
 	procThread32First            = w32.Kernel32.NewProc("Thread32First")
 	procThread32Next             = w32.Kernel32.NewProc("Thread32Next")
 	procOpenThread               = w32.Kernel32.NewProc("OpenThread")
+	procGetExitCodeThread        = w32.Kernel32.NewProc("GetExitCodeThread")
 )
 
 const (
@@ -56,6 +57,14 @@ const (
 	sizeOfThreadEntry32 = 28
 	errNoMoreItems      = 18
 	errInvalidParameter = 87
+	// Diagnostic-only rights, opened fresh rather than added to the
+	// writeDac open above: widening that open's own access mask would
+	// change what its own access check measures, and diagnoseThreadShutFailure
+	// exists to look without doing that.
+	threadQueryLimitedInformation = 0x0800
+	readControl                   = 0x00020000
+	ownerSecurityInformation      = 0x1
+	stillActive                   = 259
 	// THREADENTRY32: dwSize, cntUsage, th32ThreadID, th32OwnerProcessID, ...
 	offsetOfThreadID     = 8
 	offsetOfOwnerProcess = 12
@@ -345,9 +354,54 @@ func shutThreadsAlreadyRunningOnce(dacl uintptr, pid uint32) (int, error) {
 			daclSecurityInformation|protectedDaclSecurityInformation, 0, 0, dacl, 0)
 		syscall.CloseHandle(syscall.Handle(handle))
 		if r != 0 {
-			return 0, fmt.Errorf("shutting thread %d: error %d", id, r)
+			return 0, fmt.Errorf("shutting thread %d: error %d (%s)", id, r, diagnoseThreadShutFailure(id))
 		}
 		shut++
 	}
 	return shut, nil
+}
+
+// diagnoseThreadShutFailure is called only once a shut has already failed,
+// to say more than the bare error code does: whether the thread that just
+// refused WRITE_DAC after granting it moments earlier is still running or
+// has since ended, and whose it is. Opened fresh with only the rights each
+// question needs, rather than added to shutThreadsAlreadyRunningOnce's own
+// WRITE_DAC open -- widening that open's access mask would change what its
+// own access check measures, and a diagnostic that changed the thing it
+// was looking at would not be one. Every failure here becomes a word in the
+// sentence instead of stopping it: this runs after the run has already
+// failed, and a second failure while explaining the first must not hide it.
+func diagnoseThreadShutFailure(id uint32) string {
+	life := "cannot even query it to say whether it is still running"
+	if h, _, _ := procOpenThread.Call(threadQueryLimitedInformation, 0, uintptr(id)); h != 0 {
+		var code uint32
+		if r, _, _ := procGetExitCodeThread.Call(h, uintptr(unsafe.Pointer(&code))); r != 0 {
+			if code == stillActive {
+				life = "still running"
+			} else {
+				life = fmt.Sprintf("already ended, exit code %d", code)
+			}
+		} else {
+			life = "its exit code did not read either"
+		}
+		syscall.CloseHandle(syscall.Handle(h))
+	}
+
+	owner := "cannot even read its owner"
+	if h, _, _ := procOpenThread.Call(readControl, 0, uintptr(id)); h != 0 {
+		var ownerSID, descriptor uintptr
+		if r, _, _ := procGetSecurityInfo.Call(h, seKernelObject, ownerSecurityInformation,
+			uintptr(unsafe.Pointer(&ownerSID)), 0, 0, 0, uintptr(unsafe.Pointer(&descriptor))); r == 0 {
+			if name, err := sid.Name(ownerSID); err == nil {
+				owner = "owned by " + name
+			} else {
+				owner = "owned by an unresolvable SID"
+			}
+			w32.Free(descriptor)
+		} else {
+			owner = "its owner did not read either"
+		}
+		syscall.CloseHandle(syscall.Handle(h))
+	}
+	return life + "; " + owner
 }
