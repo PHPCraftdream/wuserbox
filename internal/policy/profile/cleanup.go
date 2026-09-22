@@ -122,6 +122,19 @@ func cleanDir(root *os.Root, dir, rel string, cleanup []config.Mask, matched *[]
 			*matched = append(*matched, CleanupPlan{Path: childRel, Files: files})
 			continue
 		}
+		// The relevance question comes first, before the volume is asked
+		// anything about the child: a branch no glob can reach is skipped
+		// whole, its directories never opened and its names never looked
+		// at, which is mayMatchDescendant's own contract. Asking it first
+		// is also what keeps another program's hold from stopping a
+		// cleanup it has nothing to do with -- a directory the globs
+		// cannot reach that a running process keeps shut refuses the look
+		// below with a sharing violation, and a walk that looked before
+		// asking the globs would fail a run over a branch no glob ever
+		// named.
+		if !mayMatchDescendant(cleanup, childRel) {
+			continue
+		}
 		// Lstat, not the ReadDir entry's own type bit: a junction the
 		// sandbox planted has to be recognized here the same defensive way
 		// clearWhatIsNotADirectory recognizes one, rather than trusted to
@@ -132,14 +145,26 @@ func cleanDir(root *os.Root, dir, rel string, cleanup []config.Mask, matched *[]
 		// alone. Measured: skipping this check turns the junction test
 		// above into a hard failure of the run, "path escapes from
 		// parent", instead of a link cleanup quietly does not follow.
-		info, readable := lookAt(root, childPath)
-		if !readable {
-			continue
+		//
+		// This is the branch the globs can reach, so the error is asked
+		// rather than folded into a skip: what stands under this name, or
+		// would stand under it had it been a directory, is exactly what
+		// the rules file asked cleared, and a look that cannot finish is
+		// not an answer that nothing is there. The volume's own nothing --
+		// the branch gone between the listing above and this look -- is
+		// still the nothing to walk past; any other refusal, an ordinary
+		// program's exclusive hold most commonly, stops the run with the
+		// error it got. The globs are read again by every run, so the next
+		// one asks again, where folding the refusal into a skip reported a
+		// whole cleanup over a match this walk never saw.
+		info, err := root.Lstat(childPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
 		}
 		if !info.IsDir() || info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
-			continue
-		}
-		if !mayMatchDescendant(cleanup, childRel) {
 			continue
 		}
 		if err := cleanDir(root, childPath, childRel, cleanup, matched, remove); err != nil {

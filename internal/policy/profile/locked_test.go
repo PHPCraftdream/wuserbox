@@ -284,3 +284,96 @@ func TestACopyThatCannotAskItsDestinationStopsAndTheRetryCopies(t *testing.T) {
 		t.Errorf("the record came back as %v, want the copied entry", pathsOf(copied))
 	}
 }
+
+// TestALockedAncestorStopsTheCleanupAndTheRetryClears is the review's
+// measured case through the public Copy: the cleanup glob names a file
+// under app, and an ordinary program's exclusive hold on app itself keeps
+// the walk from asking what stands under it. A cleanup that cannot ask
+// must stop the run with the error it got, where reading the refusal as a
+// branch with nothing under it reported a whole cleanup over a match it
+// never looked at; the run after the hold lets go clears the match, since
+// the globs are read again every run and need no record to survive on.
+func TestALockedAncestorStopsTheCleanupAndTheRetryClears(t *testing.T) {
+	_, dest := useCleanup(t, nil, []string{"app/cache.txt"})
+	write(t, filepath.Join(dest, "app", "cache.txt"), "stale cache")
+	root, err := os.OpenRoot(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	release := lockExclusive(t, filepath.Join(dest, "app"), true)
+	holdProof(t, root, "app")
+
+	_, _, err = Copy(dest, nil, nil)
+	release()
+	if err == nil {
+		t.Fatal("a cleanup that could not ask what stands under a locked ancestor reported success over the match it never looked at")
+	}
+	if !strings.Contains(err.Error(), "app") {
+		t.Errorf("the refusal did not name the directory it stopped on: %v", err)
+	}
+	if got := read(t, filepath.Join(dest, "app", "cache.txt")); got != "stale cache" {
+		t.Fatalf("the match behind the hold was disturbed by the run that could not look at its ancestor: %q", got)
+	}
+
+	if _, _, err := Copy(dest, nil, nil); err != nil {
+		t.Fatalf("the retry after the hold let go failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "app", "cache.txt")); !os.IsNotExist(err) {
+		t.Errorf("the retry left the match standing: %v", err)
+	}
+}
+
+// TestACleanupUnderAMissingAncestorIsStillANoOp pins the other half of the
+// split the fix draws: the volume's own nothing stays the no-op it always
+// was. A glob naming a branch that was never there, or a match missing
+// under one that was, reads as nothing to clear and must not fail the run
+// -- the question the look answers is "gone or cannot ask", and this holds
+// the gone half of it at the public Copy.
+func TestACleanupUnderAMissingAncestorIsStillANoOp(t *testing.T) {
+	_, dest := useCleanup(t, nil, []string{"gone/cache.txt", "app/cache.txt"})
+	write(t, filepath.Join(dest, "app", "other.log"), "not a match")
+
+	copied, _, err := Copy(dest, nil, nil)
+	if err != nil {
+		t.Fatalf("a cleanup over names that are not there failed the run: %v", err)
+	}
+	if len(copied) != 0 {
+		t.Errorf("a run with no profile entries reported copying %v", pathsOf(copied))
+	}
+	if _, err := os.Stat(filepath.Join(dest, "gone")); !os.IsNotExist(err) {
+		t.Errorf("the missing branch was created or disturbed: %v", err)
+	}
+	if got := read(t, filepath.Join(dest, "app", "other.log")); got != "not a match" {
+		t.Errorf("a file no glob names was disturbed: %q", got)
+	}
+}
+
+// TestALockedBranchNoGlobCanReachDoesNotStopTheCleanup pins the order the
+// fix is: the relevance question is asked before the volume is asked about
+// the child at all, so a directory another program holds shut in a branch
+// the globs cannot reach neither stops the run nor costs it a look, and
+// the unrelated cleanup beside it goes through whole.
+func TestALockedBranchNoGlobCanReachDoesNotStopTheCleanup(t *testing.T) {
+	_, dest := useCleanup(t, nil, []string{"kept/cache.txt"})
+	write(t, filepath.Join(dest, "kept", "cache.txt"), "stale cache")
+	write(t, filepath.Join(dest, "locked", "session.json"), "another program's hold")
+	root, err := os.OpenRoot(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	release := lockExclusive(t, filepath.Join(dest, "locked"), true)
+	holdProof(t, root, "locked")
+	defer release()
+
+	if _, _, err := Copy(dest, nil, nil); err != nil {
+		t.Fatalf("a locked branch no glob can reach stopped a cleanup that had nothing to ask it: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "kept", "cache.txt")); !os.IsNotExist(err) {
+		t.Errorf("the match beside the locked branch was not cleared: %v", err)
+	}
+	if got := read(t, filepath.Join(dest, "locked", "session.json")); got != "another program's hold" {
+		t.Errorf("the locked branch was disturbed by the cleanup beside it: %q", got)
+	}
+}
