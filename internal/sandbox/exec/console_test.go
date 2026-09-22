@@ -34,6 +34,8 @@ import (
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
+	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
@@ -1497,4 +1499,126 @@ func TestALiveConsolesHungCloseIsStillBoundedByTheCeiling(t *testing.T) {
 	}
 	t.Logf("teardown returned in %s (ceiling %s); the close was still inside the native call when the ceiling cut in: %v; the child's run: %v",
 		teardownTook, relayDrainCeiling, wasStillInside, runErr)
+}
+
+// TestTheBirthHostsGuardRefusesTheStubWhenTheListCannotBeRead is the P2-1
+// close test. The guard used to read every answer but one from
+// GetConsoleProcessList as "no console of this process's own", a failed
+// read included, and a failed read is exactly the state a guard exists to
+// refuse: nothing is known about the birth console's host, and the run
+// went on to the token, to Shield and to the program anyway. Here the seam
+// fails with an error nothing in production ties to a known shape, and the
+// refusal has to travel: shutBirthConsoleHost comes back with that error,
+// and Stub -- traced one level up, at the only place production calls the
+// guard -- comes back with it too, before the token is built, before Shield
+// runs and before any program could start. Calling Stub in-process is safe
+// for the same reason TestAStubAskedForTwoConsolesAtOnceRefuses is: the
+// refusal sits before anything real happens, and this one sits before even
+// the token build.
+func TestTheBirthHostsGuardRefusesTheStubWhenTheListCannotBeRead(t *testing.T) {
+	injected := errors.New("injected: the console process list cannot be read")
+	old := getConsoleProcessList
+	getConsoleProcessList = func([]uint32) (int, error) { return 0, injected }
+	t.Cleanup(func() { getConsoleProcessList = old })
+	// The guard alone first, because the refusal has to start there.
+	if err := shutBirthConsoleHost("S-1-5-21-1-2-3-1004"); !errors.Is(err, injected) {
+		t.Fatalf("the guard did not report the failed console list read; it returned %v", err)
+	}
+	// And the bootstrap the guard stands in front of. errors.Is is the
+	// oracle, not a bare err != nil: under the old shape the guard returned
+	// nil here and Stub died later, of the fake group SID, with a different
+	// error -- an error is not evidence of the refusal, the injected one is.
+	err := Stub([]string{"S-1-5-21-1-2-3-1004", "some-read-group", "cmd /c echo hi"})
+	if !errors.Is(err, injected) {
+		t.Fatalf("the stub did not refuse on the failed console list read; it returned %v", err)
+	}
+	// Shield never ran in this process: the run did not reach the
+	// narrowing, let alone the program the narrowing is for.
+	shielded, shieldErr := proc.Shielded()
+	if shieldErr != nil {
+		t.Fatalf("reading this process's shield state: %v", shieldErr)
+	}
+	if shielded {
+		t.Fatal("the run reached Shield past a console list that could not be read")
+	}
+}
+
+// TestTheBirthHostsGuardKnowsWhatANoConsoleProcessLooksLike pins the one
+// failure the guard may spend as a no-op. GetConsoleProcessList never
+// answers "no console" with a successful empty list -- every console has at
+// least one process attached -- it fails, and the errno is the only thing
+// that says what the failure meant. Measured on Windows 10.0.19045 on
+// 2026-09-22: a process started with DETACHED_PROCESS, which has no console
+// at all, gets a zero answer and ERROR_INVALID_HANDLE, GetConsoleWindow 0.
+// That confirmed absence is the shape the callers that arrive some other
+// way than the stub -- the tests' subprocesses among them -- legitimately
+// produce, and it stays a quiet no-op. Anything else fails closed; that is
+// the sibling test's measurement.
+func TestTheBirthHostsGuardKnowsWhatANoConsoleProcessLooksLike(t *testing.T) {
+	old := getConsoleProcessList
+	getConsoleProcessList = func([]uint32) (int, error) { return 0, errorInvalidHandle }
+	t.Cleanup(func() { getConsoleProcessList = old })
+	account, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := shutBirthConsoleHost(account); err != nil {
+		t.Fatalf("a confirmed no-console answer was taken as a refusal: %v", err)
+	}
+}
+
+// TestTheBirthHostsGuardTreatsAnInheritedConsoleAsAQuietNoOp pins the
+// second no-op, the successful call about a console this process does not
+// have to itself: more than one process attached is a console inherited
+// from somebody else, and no host of this process's can be coming. The
+// values cover the shapes the real call produces: an ordinary shared
+// console, a crowded one, and consoleListSlots+1 -- the documented
+// buffer-too-small answer, a successful call that stored nothing and asked
+// for a bigger buffer, about a console that crowded it can only be
+// somebody else's.
+func TestTheBirthHostsGuardTreatsAnInheritedConsoleAsAQuietNoOp(t *testing.T) {
+	account, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, attached := range []int{2, 17, consoleListSlots + 1} {
+		old := getConsoleProcessList
+		getConsoleProcessList = func([]uint32) (int, error) { return attached, nil }
+		if err := shutBirthConsoleHost(account); err != nil {
+			t.Errorf("%d processes attached to an inherited console was taken as a refusal: %v", attached, err)
+		}
+		getConsoleProcessList = old
+	}
+}
+
+// TestTheBirthHostsGuardShutsTheOneHostOfAConsoleOfItsOwn is the shape the
+// production stub arrives in, measured at the seam: the list answers one --
+// this process alone on a console of its own -- and the guard must not
+// read that as a no-op either. aBarePtyConhost stands up a real console
+// host of this process's, the poll finds it by the same walk production
+// runs, and ShieldConhost shuts it, so the guard comes back with nil only
+// after a real shut of a real host. On the ordinary desk's seat the shut's
+// door list is measured directly -- the host no longer opens for
+// PROCESS_ALL_ACCESS, the exact door the wiring test measured open before
+// the shut; on an elevated seat the list's deliberate administrators allow
+// answers every door, so there is nothing to refuse-measure and the nil
+// alone is the assertion.
+func TestTheBirthHostsGuardShutsTheOneHostOfAConsoleOfItsOwn(t *testing.T) {
+	if err := procCreatePseudoConsole.Find(); err != nil {
+		t.Skip("CreatePseudoConsole is not available on this Windows build (ConPTY needs Windows 10 1809+)")
+	}
+	_, hostPid := aBarePtyConhost(t)
+	old := getConsoleProcessList
+	getConsoleProcessList = func([]uint32) (int, error) { return 1, nil }
+	t.Cleanup(func() { getConsoleProcessList = old })
+	account, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := shutBirthConsoleHost(account); err != nil {
+		t.Fatalf("the guard refused a console of this process's own that had exactly one host: %v", err)
+	}
+	if !token.IsAdmin() && canOpen(t, hostPid, processAllAccess) {
+		t.Errorf("the birth host the guard shut (%d) still opens for everything; the shut never landed", hostPid)
+	}
 }

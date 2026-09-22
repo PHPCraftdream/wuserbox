@@ -23,6 +23,7 @@ package exec
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -75,6 +76,26 @@ const (
 	consoleListSlots = 64
 )
 
+// getConsoleProcessList crosses a package var rather than the proc
+// directly, the same way the two calls that take the HPCON itself do:
+// production never reassigns it, and the seam is what lets a test stand a
+// failure exactly where the native call sits -- the failure the old guard
+// used to read as "no console of this process's own" and answer with a
+// silent skip of the birth host's shield (review round 2, P2-1). The
+// wrapper answers in Go terms: the error is non-nil exactly when the
+// native call failed, which per GetConsoleProcessList's own contract is a
+// zero answer -- every console has at least one process attached, so a
+// successful call never returns zero -- and the errno the failure carried
+// is the whole of what the call reports.
+var getConsoleProcessList = func(attached []uint32) (int, error) {
+	n, _, callErr := procGetConsoleProcessList.Call(uintptr(unsafe.Pointer(&attached[0])),
+		uintptr(len(attached)))
+	if n == 0 {
+		return 0, callErr
+	}
+	return int(n), nil
+}
+
 // shutNewConsoleHost shuts the one console host this process has gained
 // since before was taken, shutting it out of shutOut -- the account SID the
 // run refuses, the same who proc.Shield shuts this process to.
@@ -116,6 +137,13 @@ func shutNewConsoleHost(before []uint32, shutOut string) error {
 	return nil
 }
 
+// errorInvalidHandle is ERROR_INVALID_HANDLE, errno 6 -- the one failure
+// GetConsoleProcessList is measured to answer a process with no console at
+// all. The syscall package does not name this errno in the current
+// toolchain, so it is restated here rather than imported, its value
+// checked against Microsoft's errno table.
+const errorInvalidHandle = syscall.Errno(6)
+
 // shutBirthConsoleHost shuts the host of the console this process was born
 // with, shutting it out of shutOut. The stub arrives as
 // CreateProcessWithLogonW made it, and CREATE_NO_WINDOW is a console with no
@@ -124,15 +152,25 @@ func shutNewConsoleHost(before []uint32, shutOut string) error {
 // console host of a relay run and the only one of a plain run.
 //
 // GetConsoleProcessList guards the poll, because it is the one call that
-// knows whether a host of this process's own is coming at all: it counts the
-// processes attached to the CURRENT console. Zero says this process has no
-// console, and more than one says the console was inherited from somebody
-// else. A console that is not this process's own has no host of this
-// process's, so in either case there is nothing to shut and nothing will
-// appear, and the helper returns nil without polling. That is not a hole:
-// the callers that hit this path are processes that did not arrive the way
-// CreateProcessWithLogonW's stub arrives -- the tests' subprocesses among
-// them, attached to their harness's console.
+// knows whether a host of this process's own is coming at all, and its
+// answers are not one answer -- telling them apart is the P2-1 fix. One is
+// a console of this process's own -- CREATE_NO_WINDOW's shape -- and the
+// poll runs. More than one is a successful call about a console inherited
+// from somebody else, which a console of this process's own never is: no
+// host of this process's is coming, and the helper returns nil without
+// polling. Zero is neither of those: it is a failed call, because every
+// console has at least one process attached, so a successful call never
+// answers zero, and GetLastError says which failure it was. The one
+// failure measured to mean "no console at all" is ERROR_INVALID_HANDLE --
+// a process started with DETACHED_PROCESS answers zero, error 6,
+// GetConsoleWindow 0, measured on Windows 10.0.19045 on 2026-09-22 -- and
+// that confirmed absence is the safe no-op the callers that arrive some
+// other way than CreateProcessWithLogonW's stub legitimately produce, the
+// tests' subprocesses among them. Any other failure leaves the state
+// unknown, and unknown is not something this guard may spend: the error
+// goes up and the run stops before the token narrows, the same refusal the
+// poll's own deadline and the walk's two errors take, rather than a run
+// started beside a host that was never looked for.
 //
 // Why a poll and not one snapshot: the host is born before this code runs
 // but shows up in the walk late, and a snapshot taken at entry would answer
@@ -142,15 +180,28 @@ func shutNewConsoleHost(before []uint32, shutOut string) error {
 // refused rather than left with an unshut host.
 func shutBirthConsoleHost(shutOut string) error {
 	var attached [consoleListSlots]uint32
-	// One attached process -- this one alone -- is the only shape a console
-	// of this process's own can have. A zero answer is also what a failed
-	// call leaves behind, and both it and "more than one" mean the same
-	// thing here: no console of this process's own, so no host of this
-	// process's to shut and none coming.
-	if n, _, _ := procGetConsoleProcessList.Call(uintptr(unsafe.Pointer(&attached[0])),
-		uintptr(len(attached))); n != 1 {
+	n, err := getConsoleProcessList(attached[:])
+	if err != nil {
+		if errors.Is(err, errorInvalidHandle) {
+			// The one failure measured to mean "no console at all":
+			// nothing of this process's to shut and nothing coming.
+			return nil
+		}
+		return fmt.Errorf("asking which console this process is attached to: %w; "+
+			"the birth console's state is unknown, and the run is refused rather "+
+			"than started beside a host that was never looked for", err)
+	}
+	// A successful call answering more than one names a console inherited
+	// from somebody else -- a console of this process's own has exactly
+	// this one process attached -- so there is nothing of this process's
+	// to shut and nothing coming. A return value past the slots asked for
+	// is the documented buffer-too-small answer, still a successful call
+	// about a console this crowded can only be somebody else's.
+	if n > 1 {
 		return nil
 	}
+	// Exactly one: a console of this process's own, and the host the poll
+	// below is for.
 	deadline := time.Now().Add(birthHostPollWant)
 	for {
 		hosts, err := proc.ConsoleHostChildren(uint32(syscall.Getpid()))
