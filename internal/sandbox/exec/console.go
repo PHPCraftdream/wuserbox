@@ -47,6 +47,22 @@ var (
 	procGetConsoleProcessList = w32.Kernel32.NewProc("GetConsoleProcessList")
 )
 
+// The two calls that take the HPCON itself cross package vars rather than
+// the procs directly. Production never reassigns them; the seam exists for
+// the close tests, which need a controllable hold exactly where the native
+// call sits -- a resize held between reading the handle and the call is the
+// instant the close race lives in, and a close that never returns is the
+// shape the drain ceiling has to bound -- and a conhost's own timing is not
+// something a deterministic test can schedule around.
+var (
+	closePseudoConsole = func(hpc syscall.Handle) {
+		procClosePseudoConsole.Call(uintptr(hpc))
+	}
+	resizePseudoConsole = func(hpc syscall.Handle, cols, rows int) {
+		procResizePseudoConsole.Call(uintptr(hpc), coordValue(cols, rows))
+	}
+)
+
 // The birth console's host shows up in the walk late -- measured about
 // 150 ms after the process it hosts -- so shutBirthConsoleHost polls this
 // often, for at most this long, before refusing.
@@ -279,10 +295,24 @@ const handleFlagInherit = 0x00000001
 // the same stream a real terminal's pixels start life as. hpc is the
 // console itself, named in the child's thread attribute list by
 // proc.RunWithConsole.
+//
+// The handle has one ownership. hpcMu is the mutex the close settles its
+// transition under -- the closed state set, the handle taken out -- and the
+// same mutex every resize reads before it calls; resizes counts the resize
+// calls that passed the check so the close can wait them out before it
+// frees the console. That makes the two WinAPI calls that consume the
+// handle impossible to overlap, and it is why neither call runs under the
+// mutex: a native call that wedges must wedge on its own, where finish's
+// ceiling can race it, not while holding the one lock the other caller
+// needs (review round 2, P1-2, coordinated with P1-1's bounded close).
 type consoleRelay struct {
 	hpc    syscall.Handle
 	input  *os.File
 	output *os.File
+
+	hpcMu     sync.Mutex
+	hpcClosed bool
+	resizes   sync.WaitGroup
 }
 
 // takeConsoleRelay gives the program a console that has no window at all: a
@@ -414,15 +444,39 @@ func noInherit(file *os.File) error {
 // draining internally, and the documented completion signal is the read
 // side reaching the end of the pipe -- which is why finish keeps reading to
 // EOF after calling this instead of trusting the return. Twice-safe like
-// close: the handle is cleared before it is closed.
+// close, and twice-safe without waiting: the closed state and the handle
+// are settled under hpcMu before any call is made, so a second entry finds
+// nothing left to free and returns at once -- even while a first close is
+// still blocked inside ClosePseudoConsole itself, which is what lets
+// finish's ceiling path decline to re-enter a call that never comes back.
+//
+// The order inside is the P1-2 fix, and it is the review's own: the closed
+// state goes first, under the mutex, which stops every resize that has not
+// yet passed its check; resizes.Wait then waits out the calls that already
+// passed -- each counted on its way in, each released only after its
+// ResizePseudoConsole returned -- and only then is the handle freed. A
+// resize in flight and the free can therefore never overlap. The mutex is
+// never held across either native call, so a wedged ClosePseudoConsole
+// holds nothing a resize needs, and the close runs where finish's deadline
+// can race it instead of behind it.
 func (r *consoleRelay) closeConsole() {
 	if r == nil {
 		return
 	}
-	if r.hpc != 0 {
-		procClosePseudoConsole.Call(uintptr(r.hpc))
-		r.hpc = 0
+	r.hpcMu.Lock()
+	if r.hpcClosed {
+		r.hpcMu.Unlock()
+		return
 	}
+	r.hpcClosed = true
+	hpc := r.hpc
+	r.hpc = 0
+	r.hpcMu.Unlock()
+	if hpc == 0 {
+		return
+	}
+	r.resizes.Wait()
+	closePseudoConsole(hpc)
 }
 
 // close ends the pseudo console and both pipe ends, closeConsole for the
@@ -505,25 +559,42 @@ func pumpRelay(relay *consoleRelay, stdout io.Writer, stdin io.Reader) *relayPum
 // next -- so a Wait on the drain is waiting for delivery, not merely for
 // the pipe's end.
 //
-// The ceiling is the error path, not the expected one. The expected path
-// completes the moment conhost lets go of the write end, usually far under
-// 250ms; the ceiling exists for the drain that never ends because the
-// consumer never reads and the pipe never closes, and giving up there is
-// what keeps this stub from hanging against a run waiting for it to die.
-// On that path finish deliberately does NOT close the read end to break the
-// drain loose: closing a handle a synchronous read is blocked in is
-// undefined ground, the process is on its way out, and its death closes
-// what it names -- the documented pattern here.
+// The ceiling is the error path, not the expected one, and it is created
+// here -- before the close has even begun -- because it bounds the whole
+// teardown and not merely the drain: the one call in the sequence that can
+// hang forever is ClosePseudoConsole, which before Windows 11 24H2 does
+// not return while its output pipe has nowhere to drain (Microsoft's own
+// contract), so a timer started after that call returned would never cover
+// the one call that needs covering -- review finding P1-1. The close
+// therefore runs on its own goroutine, and the select below races it
+// against the deadline instead of standing in front of it. The expected
+// path completes the moment conhost lets go of the write end, usually far
+// under 250ms; the ceiling exists for the teardown that never ends --
+// a close with nowhere to drain, a consumer that never reads, or both --
+// and giving up there is what keeps this stub from hanging against a run
+// waiting for it to die.
+//
+// No path re-enters a blocking close. closeConsole is twice-safe without
+// waiting, so a relay.close after a verdict is either real work on the
+// success path or an instant no-op; on the ceiling path nothing closes
+// anything -- the goroutine already inside ClosePseudoConsole is the one
+// close the console gets, the read end stays open for the same reason it
+// always did (closing a handle a synchronous read is blocked in is
+// undefined ground), and the stub's own death closes what it names.
 //
 // A non-nil return must not become a silent truncation behind the
-// program's own exit code. The stub returns it, so it travels back the way
-// every other late stub failure travels: reported on stderr -- a bridge
-// pipe separate from the stdout one that may itself be the broken half --
-// and paid for with wuserbox's own failure exit code (exit.Failed, read
-// back through exit.Of), the one signal that needs no pipe at all.
+// program's own exit code, and a verdict the drain already reached is
+// never thrown away for the clock's: the drain-ended case returns the
+// recorded error however the close is doing, and the ceiling case still
+// takes one last non-blocking look at the drain before it reports, because
+// a verdict that landed in the same instant as the deadline outranks the
+// deadline. The stub returns the error, so it travels back the way every
+// other late stub failure travels: reported on stderr -- a bridge pipe
+// separate from the stdout one that may itself be the broken half -- and
+// paid for with wuserbox's own failure exit code (exit.Failed, read back
+// through exit.Of), the one signal that needs no pipe at all.
 func (p *relayPump) finish(relay *consoleRelay) error {
 	_ = relay.input.Close()
-	relay.closeConsole()
 	waited := make(chan struct{})
 	go func() {
 		p.drained.Wait()
@@ -531,10 +602,44 @@ func (p *relayPump) finish(relay *consoleRelay) error {
 	}()
 	timer := time.NewTimer(relayDrainCeiling)
 	defer timer.Stop()
+	closed := make(chan struct{})
+	go func() {
+		relay.closeConsole()
+		close(closed)
+	}()
 	select {
+	case <-closed:
+		// The console ended inside the budget; the drain gets what is
+		// left of it. The expected path lands here: the close returns
+		// in milliseconds and conhost lets go of the write end, so the
+		// drain's end follows at once.
+		select {
+		case <-waited:
+		case <-timer.C:
+			return fmt.Errorf("the relay's output drain did not end within %s; the run's output may be incomplete", relayDrainCeiling)
+		}
 	case <-waited:
+		// The drain ended first -- the pipe reached its end and its
+		// last Write into the consumer returned -- while the close is
+		// still going. The verdict is in, and it outranks waiting on a
+		// call that may never return; relay.close below is a real close
+		// of the pipe ends and an instant no-op on the console, whose
+		// close finishes on its own goroutine or ends with the process.
+		relay.close()
+		return p.drainErr
 	case <-timer.C:
-		return fmt.Errorf("the relay's output drain did not end within %s; the run's output may be incomplete", relayDrainCeiling)
+		// The deadline expired before either half ended -- the shape
+		// the ceiling exists for. One last non-blocking look at the
+		// drain, because a verdict that landed in the same instant as
+		// the deadline outranks the clock; otherwise the run is
+		// reported possibly-incomplete rather than hung.
+		select {
+		case <-waited:
+			relay.close()
+			return p.drainErr
+		default:
+		}
+		return fmt.Errorf("the relay's console close or its output drain did not end within %s; the run's output may be incomplete", relayDrainCeiling)
 	}
 	relay.close()
 	return p.drainErr
@@ -545,13 +650,30 @@ func (p *relayPump) finish(relay *consoleRelay) error {
 // -- the next message retries, and the console keeping its previous size is
 // the honest visible outcome of a resize conhost would not take -- so the
 // call's result is deliberately ignored. No-op on a nil relay or a closed
-// one (hpc 0), which is the same twice-safe shape close keeps, for the same
-// reason: the pump can outlive neither.
+// one, and the closed check reads the same state under the same mutex the
+// close settles its transition under -- not a separate glance at the field,
+// which would leave the race P1-2 is about standing between the check and
+// the call. A resize that passes the check is counted on resizes before the
+// mutex is let go, and closeConsole waits that count out before it frees
+// the handle, so the WinAPI call below is aimed only at a console that is
+// still there and can be running only while no close is; after the closed
+// state is set the call is never reached at all, which is what makes a
+// resize asked for during the teardown the no-op the relay's death needs
+// it to be.
 func (r *consoleRelay) resize(cols, rows int) {
-	if r == nil || r.hpc == 0 {
+	if r == nil {
 		return
 	}
-	procResizePseudoConsole.Call(uintptr(r.hpc), coordValue(cols, rows))
+	r.hpcMu.Lock()
+	if r.hpcClosed || r.hpc == 0 {
+		r.hpcMu.Unlock()
+		return
+	}
+	hpc := r.hpc
+	r.resizes.Add(1)
+	r.hpcMu.Unlock()
+	defer r.resizes.Done()
+	resizePseudoConsole(hpc, cols, rows)
 }
 
 // pumpRelayResizes starts the one loop that reads the relay's third pipe --
@@ -575,6 +697,12 @@ func (r *consoleRelay) resize(cols, rows int) {
 // failing ends the loop: the write end closing is the run ending, the same
 // shape as every drain here. Nothing waits on the loop; it runs until this
 // process ends, like the two copy loops pumpRelay starts.
+//
+// The loop itself stays fire-and-forget, but the resizes it asks for are no
+// longer bare calls: each crosses relay.resize, under the relay's single
+// ownership of the HPCON, so a message answered during the teardown is a
+// no-op rather than a native call aimed at a console the close has already
+// freed.
 func pumpRelayResizes(relay *consoleRelay, resized io.Reader) {
 	go func() {
 		var message [proc.ResizeMessageLen]byte

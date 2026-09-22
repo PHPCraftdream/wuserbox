@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -877,4 +878,623 @@ func TestTheRelayFinishDoesNotRestOnClosePseudoConsolesReturn(t *testing.T) {
 	}
 	// Twice-safe with the deferred close above.
 	relay.close()
+}
+
+// TestAResizeHeldBetweenTheHandleAndTheWinAPICallIsOrderedBeforeTheClose is
+// the P1-2 close test, deterministic and console-free. The relay is
+// hand-built with a fake handle -- both hooked WinAPI calls intercept
+// everything, so the value is never aimed at anything real -- and the
+// resize pump is fed one real message whose call is held at the gate
+// exactly where the native call would sit: past the handle read, before
+// the call, the instant the old race lived in. finish runs against it
+// while the resize stands there. Under the old shape the close freed the
+// console at that instant and the gate's release would then have fired
+// ResizePseudoConsole against the freed handle; under the new one the
+// close cannot pass an in-flight resize -- closeConsole waits it out --
+// and finish's ceiling returns first, because the ceiling now covers the
+// close's own wait too. The assertions are the order itself, not a
+// usually-fine outcome: the close never begins while the resize is held,
+// the resize the gate releases is aimed at the still-live handle and
+// returns before the free begins, the free happens exactly once, and a
+// resize asked for after the closed state is set is a no-op that neither
+// calls nor blocks.
+func TestAResizeHeldBetweenTheHandleAndTheWinAPICallIsOrderedBeforeTheClose(t *testing.T) {
+	oldCeiling := relayDrainCeiling
+	relayDrainCeiling = 300 * time.Millisecond
+	// The restores are t.Cleanups, registered so they run after the
+	// test's own defers and in this order: quiesce first, then the
+	// hooks, then the ceiling. A test that dies mid-flight must not
+	// restore a hook a still-running goroutine is about to read -- that
+	// is a data race on the package var standing in for the seam -- so
+	// the quiesce is registered last and runs first, and on the success
+	// path it is a no-op.
+	t.Cleanup(func() { relayDrainCeiling = oldCeiling })
+	const fakeHPC = syscall.Handle(0x00C0FFEE)
+	outRead, outWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outWrite.Close()
+	inRead, inWrite, err := os.Pipe()
+	if err != nil {
+		outRead.Close()
+		outWrite.Close()
+		t.Fatal(err)
+	}
+	defer inRead.Close()
+	relay := &consoleRelay{hpc: fakeHPC, input: inWrite, output: outRead}
+
+	// The hooks stand where the native calls sit. The resize records the
+	// handle it was aimed at -- the value is what the race is about --
+	// and holds until the gate; the close records the handle it frees,
+	// so "the close began" means exactly "the console was freed".
+	var (
+		mu      sync.Mutex
+		aimedAt []syscall.Handle
+		events  []string
+	)
+	resizeEntered := make(chan struct{}, 1)
+	closeBegan := make(chan struct{}, 1)
+	gate := make(chan struct{})
+	oldResize, oldClose := resizePseudoConsole, closePseudoConsole
+	resizePseudoConsole = func(hpc syscall.Handle, cols, rows int) {
+		mu.Lock()
+		aimedAt = append(aimedAt, hpc)
+		events = append(events, fmt.Sprintf("resize %dx%d call", cols, rows))
+		mu.Unlock()
+		resizeEntered <- struct{}{}
+		<-gate
+		mu.Lock()
+		events = append(events, "resize call returned")
+		mu.Unlock()
+	}
+	closePseudoConsole = func(hpc syscall.Handle) {
+		mu.Lock()
+		aimedAt = append(aimedAt, hpc)
+		events = append(events, "close call")
+		mu.Unlock()
+		closeBegan <- struct{}{}
+	}
+	t.Cleanup(func() { resizePseudoConsole, closePseudoConsole = oldResize, oldClose })
+	releaseGate := new(sync.Once)
+	t.Cleanup(func() {
+		releaseGate.Do(func() { close(gate) })
+	})
+
+	// Nothing may reach a consumer and the input loop ends on its empty
+	// reader, the siblings' shape; the drain itself stays wedged on the
+	// never-written, never-closed output pipe, so finish's verdict can
+	// come only from the ceiling -- which is the point.
+	pump := pumpRelay(relay, &bytes.Buffer{}, strings.NewReader(""))
+	resizedRead, resizedWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resizedWrite.Close()
+	pumpRelayResizes(relay, resizedRead)
+	message := make([]byte, proc.ResizeMessageLen)
+	binary.LittleEndian.PutUint16(message[0:], 101)
+	binary.LittleEndian.PutUint16(message[2:], 37)
+	if _, err := resizedWrite.Write(message); err != nil {
+		t.Fatal(err)
+	}
+	// The resize is awaited to the gate BEFORE finish runs. At the gate
+	// it has already passed the closed check and counted itself
+	// in-flight -- exactly the state the test is about -- and no
+	// scheduling coin can take that away: started the other way round,
+	// finish's close could win the handle first and turn the resize
+	// into the no-op a closed relay rightly owes, failing this test on
+	// a loaded machine with nothing wrong at all. finish runs inline:
+	// its ceiling brings it back in ~300ms, at the gate's mercy only.
+	select {
+	case <-resizeEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the resize message never reached the hooked WinAPI call")
+	}
+	finishErr := pump.finish(relay)
+	if finishErr == nil {
+		t.Fatal("finish reported success while a resize was in flight and the close was parked behind it")
+	}
+	if !strings.Contains(finishErr.Error(), "incomplete") {
+		t.Fatalf("the ceiling's error does not say the output may be incomplete: %v", finishErr)
+	}
+	// The close must not have begun while the resize held the call: the
+	// free waits behind the in-flight resize, by construction, and the
+	// gate is still shut.
+	select {
+	case <-closeBegan:
+		t.Fatal("the console was freed while a resize call was still in flight against it")
+	default:
+	}
+	// A resize asked for now -- the closed state is already set -- is
+	// refused without a call and without waiting on the close parked
+	// behind the gate.
+	refused := make(chan struct{})
+	go func() { relay.resize(20, 5); close(refused) }()
+	select {
+	case <-refused:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a resize on a closing relay waited on the teardown instead of being refused")
+	}
+	mu.Lock()
+	aimed := len(aimedAt)
+	mu.Unlock()
+	if aimed != 1 {
+		t.Fatalf("the refused resize reached the WinAPI call %d extra times", aimed-1)
+	}
+	// Release the gate: the in-flight resize returns against the handle
+	// it read while the console was still alive, and only then does the
+	// close reach the free.
+	releaseGate.Do(func() { close(gate) })
+	select {
+	case <-closeBegan:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the close never reached the console after the in-flight resize returned")
+	}
+	mu.Lock()
+	order := append([]string(nil), events...)
+	handles := append([]syscall.Handle(nil), aimedAt...)
+	mu.Unlock()
+	returned := slices.Index(order, "resize call returned")
+	freedAt := slices.Index(order, "close call")
+	if returned < 0 || freedAt < 0 || returned > freedAt {
+		t.Fatalf("the in-flight resize and the free ran out of order: %v", order)
+	}
+	for _, h := range handles {
+		if h != fakeHPC {
+			t.Fatalf("a WinAPI call was aimed at handle %#x, not the live one", h)
+		}
+	}
+	// End the drain the way the process's own death would -- data and
+	// then the pipe's end, so the blocked read unblocks before the read
+	// end is ever closed -- and then close the relay itself: twice-safe,
+	// and the free it finds already done must not happen a second time.
+	if _, err := outWrite.Write([]byte("WUSERBOX-TEARDOWN")); err != nil {
+		t.Fatal(err)
+	}
+	if err := outWrite.Close(); err != nil {
+		t.Fatal(err)
+	}
+	allDone := make(chan struct{})
+	go func() {
+		pump.drained.Wait()
+		close(allDone)
+	}()
+	select {
+	case <-allDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the tracked drain never ended after the output pipe did")
+	}
+	relay.close()
+	mu.Lock()
+	closeCount := 0
+	for _, e := range events {
+		if e == "close call" {
+			closeCount++
+		}
+	}
+	mu.Unlock()
+	if closeCount != 1 {
+		t.Fatalf("the console was freed %d times, want exactly once", closeCount)
+	}
+}
+
+// TestAFinishWhoseConsoleCloseHangsIsBoundedByTheCeilingNotByTheClose is
+// the structural half of the P1-1 close test. The old finish called
+// closeConsole synchronously and only then started the clock, so a
+// ClosePseudoConsole that never returned -- which before Windows 11 24H2
+// is exactly what Microsoft's contract says one with nowhere to drain can
+// do -- held the whole run past any ceiling. Here the hooked close is that
+// hang, stood exactly where the native call sits, and the drain is wedged
+// on its own -- a never-written, never-closed pipe -- so finish's only way
+// out is the ceiling. The assertions measure the shape, not a usually-fine
+// outcome: the close enters the native call, and finish still returns
+// while it is in there -- the deadline raced the close, it did not stand
+// behind it -- with the honest possibly-incomplete verdict rather than a
+// silent success; a second closeConsole answers at once instead of
+// queueing behind the hung one; and once the gate lets the call finish it
+// ran exactly once.
+func TestAFinishWhoseConsoleCloseHangsIsBoundedByTheCeilingNotByTheClose(t *testing.T) {
+	oldCeiling := relayDrainCeiling
+	relayDrainCeiling = 300 * time.Millisecond
+	// Same cleanup order as the sibling test: quiesce first, then the
+	// hooks, then the ceiling, so a mid-flight death never restores a
+	// hook a still-running goroutine is about to read.
+	t.Cleanup(func() { relayDrainCeiling = oldCeiling })
+	const fakeHPC = syscall.Handle(0x00C0FFEF)
+	outRead, outWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outWrite.Close()
+	inRead, inWrite, err := os.Pipe()
+	if err != nil {
+		outRead.Close()
+		outWrite.Close()
+		t.Fatal(err)
+	}
+	defer inRead.Close()
+	relay := &consoleRelay{hpc: fakeHPC, input: inWrite, output: outRead}
+	// The drain is wedged from birth -- nothing is ever written to the
+	// output pipe and nothing ever closes it -- so no drain verdict can
+	// end this teardown; the ceiling is the only way out, and the close
+	// is hung for as long as the gate says so.
+	pump := pumpRelay(relay, &bytes.Buffer{}, strings.NewReader(""))
+	var (
+		mu         sync.Mutex
+		closeCount int
+		closeHPC   syscall.Handle
+	)
+	closeStarted := make(chan struct{}, 1)
+	closeEnded := make(chan struct{}, 1)
+	gate := make(chan struct{})
+	oldClose := closePseudoConsole
+	closePseudoConsole = func(hpc syscall.Handle) {
+		mu.Lock()
+		closeCount++
+		closeHPC = hpc
+		mu.Unlock()
+		closeStarted <- struct{}{}
+		<-gate
+		closeEnded <- struct{}{}
+	}
+	t.Cleanup(func() { closePseudoConsole = oldClose })
+	releaseGate := new(sync.Once)
+	t.Cleanup(func() {
+		releaseGate.Do(func() { close(gate) })
+	})
+	// finish runs inline and its ceiling brings it back; the close's
+	// arrival at the hooked call is checked afterwards, from the
+	// buffered signal the wrapper left.
+	finishErr := pump.finish(relay)
+	select {
+	case <-closeStarted:
+	default:
+		t.Fatal("the close never reached the hooked ClosePseudoConsole")
+	}
+	if finishErr == nil || !strings.Contains(finishErr.Error(), "incomplete") {
+		t.Fatalf("the ceiling's verdict with the close hung inside the native call: %v", finishErr)
+	}
+	// finish is back while the close is still parked inside the call --
+	// that is the structural property itself: the deadline counted
+	// against the close, not after it.
+	select {
+	case <-closeEnded:
+		t.Fatal("the hooked close returned before the gate moved -- the hang was never held")
+	default:
+	}
+	// Nothing re-enters the blocking close: a second closeConsole --
+	// the shape any deferred cleanup would take -- answers at once
+	// instead of queueing behind the hung one, and the console is still
+	// freed exactly once.
+	reentered := make(chan struct{})
+	go func() { relay.closeConsole(); close(reentered) }()
+	select {
+	case <-reentered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a second closeConsole waited on the close that is still hung inside the native call")
+	}
+	mu.Lock()
+	count := closeCount
+	mu.Unlock()
+	if count != 1 {
+		t.Fatalf("the console was freed %d times while the close was still hung, want once", count)
+	}
+	// The close is allowed to finish now; exactly once is still the
+	// count, the relay's own close included.
+	releaseGate.Do(func() { close(gate) })
+	select {
+	case <-closeEnded:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the hooked close never returned even after the gate moved")
+	}
+	if _, err := outWrite.Write([]byte("WUSERBOX-TEARDOWN")); err != nil {
+		t.Fatal(err)
+	}
+	if err := outWrite.Close(); err != nil {
+		t.Fatal(err)
+	}
+	allDone := make(chan struct{})
+	go func() {
+		pump.drained.Wait()
+		close(allDone)
+	}()
+	select {
+	case <-allDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the tracked drain never ended after the output pipe did")
+	}
+	relay.close()
+	mu.Lock()
+	count, hpc := closeCount, closeHPC
+	mu.Unlock()
+	if count != 1 {
+		t.Fatalf("the console was freed %d times in total, want exactly once", count)
+	}
+	if hpc != fakeHPC {
+		t.Fatalf("the close was aimed at handle %#x, not the relay's console", hpc)
+	}
+}
+
+// prefixBarrierWriter is a consumer that lets the stream's first few
+// thousand bytes through and holds everything after that until release.
+// The live close test needs a stall that begins mid-carry -- the pipe ends
+// up wedged exactly as with barrierWriter, because the pour is far longer
+// than the prefix -- but the child's own early words stay readable in the
+// prefix, so a child that failed before it ever poured says so where the
+// test can quote it.
+type prefixBarrierWriter struct {
+	release chan struct{}
+	prefix  int
+
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (w *prefixBarrierWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	room := w.prefix - w.buf.Len()
+	n := 0
+	if room > 0 {
+		take := p
+		if len(take) > room {
+			take = take[:room]
+		}
+		n, _ = w.buf.Write(take)
+	}
+	if n < len(p) {
+		<-w.release
+		more, _ := w.buf.Write(p[n:])
+		n += more
+	}
+	return n, nil
+}
+
+func (w *prefixBarrierWriter) captured() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]byte(nil), w.buf.Bytes()...)
+}
+
+// TestALiveConsolesHungCloseIsStillBoundedByTheCeiling is the live ConPTY
+// half of the P1-1 close test, on whatever Windows generation this machine
+// runs -- 10.0.19045 at the time of writing, which is before the 24H2
+// change, i.e. a machine the documented hang is reproducible on. The child
+// announces itself with a file, then pours a bounded few hundred kilobytes
+// through the console -- more than the relay's output pipe holds -- while
+// the consumer holds the stream back from its very first Write and nothing
+// ever drains: pending output with nowhere to go is the exact state the
+// ClosePseudoConsole contract says the call can block in. finish starts
+// there, and must come back inside the ceiling with the honest
+// possibly-incomplete verdict -- whether or not this machine's conhost
+// actually wedges the call. If it does, this run bounded the hang itself;
+// if it does not, the ceiling still bounded the whole teardown, and the
+// log line records which of the two ran, because the two outcomes are
+// different evidence and neither may pass silently for the other. The
+// resize pump runs through the teardown -- real messages, real
+// resizes, against a real console being closed underneath them, ten of
+// them spaced wide -- which is what the race detector reads: every access
+// to the handle crosses the same ownership or the run trips. The pump is
+// gated on the child's ready file and paced deliberately, because the
+// storm this fixture first used was measured to take the child's console
+// down with it -- a broken fixture failing honestly is still a broken
+// fixture.
+//
+// The consumer stalls mid-carry rather than at its first Write -- the
+// first few thousand bytes pass, so a child that failed before it poured
+// is quoted by the test instead of being invisible behind the stall -- and
+// the pipe still ends up wedged, because the pour is far longer than the
+// prefix.
+//
+// What the test asserts is the bound and the exactly-once free, not the
+// whole pour: a client that has already exited while its pipe is stalled
+// leaves conhost free to drop its pending tail once the teardown returns
+// the pipe, and bytes conhost never wrote are upstream of anything the
+// relay can answer for. How much crossed is logged, not asserted.
+func TestALiveConsolesHungCloseIsStillBoundedByTheCeiling(t *testing.T) {
+	if err := procCreatePseudoConsole.Find(); err != nil {
+		t.Skip("CreatePseudoConsole is not available on this Windows build (ConPTY needs Windows 10 1809+)")
+	}
+	oldCeiling := relayDrainCeiling
+	relayDrainCeiling = 2 * time.Second
+	defer func() { relayDrainCeiling = oldCeiling }()
+	relay, err := takeConsoleRelay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer := &prefixBarrierWriter{release: make(chan struct{}), prefix: 4096}
+	pump := pumpRelay(relay, consumer, strings.NewReader(""))
+	// The third leg runs through the whole teardown: bounded messages,
+	// spaced wide enough that the pump is answering them while the close
+	// races the ceiling underneath them.
+	resizedRead, resizedWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pumpRelayResizes(relay, resizedRead)
+	stopResizes := make(chan struct{})
+	resizesGo := make(chan struct{})
+	var resizeWG sync.WaitGroup
+	resizeWG.Add(1)
+	go func() {
+		defer resizeWG.Done()
+		// The flood waits for the child the way every relay test in
+		// this file waits for it: no resize crosses until the child
+		// says it is up. And it is deliberately gentle -- ten resizes,
+		// fifty milliseconds apart -- because the storm this test
+		// first used was measured, across three fixture shapes, to
+		// take the child's console down with it: a console resized
+		// flat out under a client attaching to it or pouring through
+		// it is a broken fixture, not a measurement. Ten crossings of
+		// the ownership are what the race detector reads; it needs
+		// the interleavings, not thousands of them.
+		<-resizesGo
+		message := make([]byte, proc.ResizeMessageLen)
+		for i := 0; i < 10; i++ {
+			binary.LittleEndian.PutUint16(message[0:], uint16(81+i%20))
+			binary.LittleEndian.PutUint16(message[2:], uint16(26+i%10))
+			if _, err := resizedWrite.Write(message); err != nil {
+				return
+			}
+			select {
+			case <-stopResizes:
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}()
+	// The close is wrapped, not replaced: the real call still runs, and
+	// what the wrapper adds is the evidence -- that it began, when the
+	// machine actually gave it back, and that it ran exactly once.
+	var (
+		closeMu    sync.Mutex
+		closeCount int
+	)
+	closeStarted := make(chan struct{}, 1)
+	closeEnded := make(chan struct{}, 1)
+	oldClose := closePseudoConsole
+	closePseudoConsole = func(hpc syscall.Handle) {
+		closeMu.Lock()
+		closeCount++
+		closeMu.Unlock()
+		closeStarted <- struct{}{}
+		oldClose(hpc)
+		closeEnded <- struct{}{}
+	}
+	defer func() { closePseudoConsole = oldClose }()
+	// The child: announce, then pour. The pour is bounded -- six thousand
+	// console lines, far more than the pipe holds -- and nothing waits on
+	// the child's exit: a child parked mid-write on a full console is
+	// exactly one of the shapes this teardown has to survive, and the
+	// buffered channel takes its exit code whenever it comes.
+	var own syscall.Token
+	if err := syscall.OpenProcessToken(syscall.Handle(^uintptr(0)), syscall.TOKEN_ALL_ACCESS, &own); err != nil {
+		t.Fatal(err)
+	}
+	defer own.Close()
+	readyFile := filepath.Join(t.TempDir(), "close-ceiling-ready.txt")
+	line := fmt.Sprintf(`powershell.exe -NoProfile -Command "Set-Content -LiteralPath '%s' 'ready'; for ($i = 0; $i -lt 6000; $i++) { [Console]::WriteLine('WUSERBOX-CLOSE-CEILING-' + $i) }"`, readyFile)
+	// The child's working directory is its own, outside the test's: a
+	// child still parked there when the test ends would hold the
+	// directory open and turn cleanup into a second failure standing
+	// in for the first.
+	childDir, err := os.MkdirTemp("", "wuserbox-close-ceiling-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(childDir) }()
+	ranWith := make(chan error, 1)
+	go func() {
+		_, runErr := proc.RunWithConsole(own, line, childDir, relay.hpc)
+		ranWith <- runErr
+	}()
+	readyDeadline := time.Now().Add(60 * time.Second)
+	for {
+		if _, err := os.Stat(readyFile); err == nil {
+			break
+		}
+		// A child that died before it poured is a failure worth
+		// naming now, not at the deadline: its early words are in
+		// the prefix the consumer let through.
+		select {
+		case runErr := <-ranWith:
+			t.Fatalf("the child ended before it began to pour: %v; its first words: %q", runErr, consumer.captured())
+		default:
+		}
+		if time.Now().After(readyDeadline) {
+			t.Fatalf("the child never began to pour; its first words: %q", consumer.captured())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// A beat for the pour to be under way: the child writes into a
+	// console whose pipe nobody is taking, so conhost is holding pending
+	// output from this instant on -- the state the close blocks in.
+	time.Sleep(200 * time.Millisecond)
+	// The child is up and pouring; now, and only now, the resizes, so
+	// the flood spans the teardown that follows and nothing else.
+	close(resizesGo)
+	teardownStarted := time.Now()
+	finished := make(chan error, 1)
+	go func() { finished <- pump.finish(relay) }()
+	var finishErr error
+	select {
+	case finishErr = <-finished:
+	case <-time.After(20 * time.Second):
+		t.Fatal("finish did not return past the ceiling even with the close running where the deadline can race it")
+	}
+	teardownTook := time.Since(teardownStarted)
+	select {
+	case <-closeStarted:
+	default:
+		t.Fatal("the close never reached the real ClosePseudoConsole")
+	}
+	if finishErr == nil || !strings.Contains(finishErr.Error(), "incomplete") {
+		var childErr error
+		select {
+		case childErr = <-ranWith:
+		default:
+		}
+		t.Fatalf("finish's verdict with the consumer stalled past the ceiling: %v; the child's exit: %v; its first words: %q", finishErr, childErr, consumer.captured())
+	}
+	// Which teardown was measured: a close still inside the native call
+	// when the ceiling cut in is the documented hang itself, bounded;
+	// a close already back means the machine did not wedge it and the
+	// ceiling bounded the drain instead. Either is evidence; the log
+	// line is what says which one this run produced.
+	wasStillInside := true
+	select {
+	case <-closeEnded:
+		wasStillInside = false
+	default:
+	}
+	// Now unstick everything the way the process's own death would, and
+	// measure the rest: the consumer lets go, the pour finishes, the
+	// close comes back, the drain carries every byte it read.
+	close(consumer.release)
+	close(stopResizes)
+	resizeWG.Wait()
+	if err := resizedWrite.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if wasStillInside {
+		select {
+		case <-closeEnded:
+		case <-time.After(30 * time.Second):
+			t.Fatal("the console close never came back even after the consumer released the output")
+		}
+	}
+	allDone := make(chan struct{})
+	go func() {
+		pump.drained.Wait()
+		close(allDone)
+	}()
+	select {
+	case <-allDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the tracked drain never ended after the consumer released the output")
+	}
+	// How much of the pour crossed is reported, not asserted: on this
+	// OS generation a client that exits while its pipe is stalled
+	// leaves conhost free to drop its pending tail once the teardown
+	// gives the pipe back -- observed here as a run whose drain carried
+	// only the pipe's own few kilobytes -- and bytes conhost never
+	// wrote into the pipe are upstream of anything a relay can answer
+	// for. What the relay owes is the bound, the honest verdict and the
+	// exactly-once free, asserted above; the tail is Windows' own.
+	t.Logf("the drain carried %d of the pour's bytes across after the release", len(consumer.captured()))
+	relay.close()
+	closeMu.Lock()
+	calls := closeCount
+	closeMu.Unlock()
+	if calls != 1 {
+		t.Fatalf("the console was freed %d times, want exactly once", calls)
+	}
+	var runErr error
+	select {
+	case runErr = <-ranWith:
+	default:
+	}
+	t.Logf("teardown returned in %s (ceiling %s); the close was still inside the native call when the ceiling cut in: %v; the child's run: %v",
+		teardownTook, relayDrainCeiling, wasStillInside, runErr)
 }
