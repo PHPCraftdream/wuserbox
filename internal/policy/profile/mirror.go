@@ -35,12 +35,18 @@ type sink interface {
 // mirror replaces dst with a copy of src, exactly, whatever dst already
 // held. src is a path on the machine; dst is a path inside the profile's
 // root; rel is dst's path relative to the entry being copied, empty for the
-// entry itself.
+// entry itself. It answers whether the walk changed the destination's
+// structure -- made, took, or replaced a name -- as against only rewriting
+// the bytes of files that already stood: a name changed is a cached answer
+// made false, a rewritten byte is not, and the caller keeps one stretch of
+// resolver instruments across the mirrors that changed no name.
 //
 // The entry itself is never filtered: its limits say what is copied under
 // it, and an entry naming a file has nothing under it.
-func mirror(src, dst, rel string, root *os.Root, info os.FileInfo, left *int64, w *walk, prints, newPrints map[string]Print) error {
-	return walkEntry(copySink{}, src, dst, rel, root, info, left, w, prints, newPrints)
+func mirror(src, dst, rel string, root *os.Root, info os.FileInfo, left *int64, w *walk, prints, newPrints map[string]Print) (bool, error) {
+	s := &copySink{}
+	err := walkEntry(s, src, dst, rel, root, info, left, w, prints, newPrints)
+	return s.mutated, err
 }
 
 // walkEntry is mirror's shape with the action pulled out: dispatch to a
@@ -131,7 +137,20 @@ func walkDir(sk sink, src, dst, rel string, root *os.Root, left *int64, w *walk,
 
 // copySink is the real fill: it writes, and it deletes what a directory's
 // mirroring leaves stale.
-type copySink struct{}
+//
+// mutated records whether anything this sink did changed the destination's
+// structure -- a directory made where nothing stood, a stray taken, a file
+// created at a name that was empty, a link replaced -- as against the bytes
+// of a file that already stood being rewritten under its own name. Every
+// mutation goes through one of the three methods below, so the flag is set
+// at the point of each, and mirror answers it once for the whole walk: the
+// caller holds one stretch of resolver instruments across the mirrors that
+// changed no name and drops it on the first one that did, because the
+// stretch's cached answers describe the names as they were, not as this
+// walk left them.
+type copySink struct {
+	mutated bool
+}
 
 // prepareDir takes away whatever sits at dst when it is not a plain
 // directory, so that a copy of a directory can be made there, and makes the
@@ -150,26 +169,34 @@ type copySink struct{}
 // making it depend on what each one happened to match would have the shape
 // of a sandbox's profile changing for reasons nobody can see from the file.
 // Predictable is worth more than tidy here.
-func (copySink) prepareDir(root *os.Root, dst string) error {
-	if err := clearWhatIsNotADirectory(root, dst); err != nil {
+func (s *copySink) prepareDir(root *os.Root, dst string) error {
+	plain, err := clearWhatIsNotADirectory(root, dst)
+	if err != nil {
 		return err
+	}
+	if !plain {
+		s.mutated = true
 	}
 	return root.MkdirAll(dst, 0o755)
 }
 
 // clearWhatIsNotADirectory is prepareDir's own half of the work, kept apart
-// so its reasoning has room to be spelled out. See prepareDir.
-func clearWhatIsNotADirectory(root *os.Root, dst string) error {
+// so its reasoning has room to be spelled out. See prepareDir. It answers
+// whether dst stood as a plain directory when it was done: false covers
+// both a name that had to be taken to make room and a name that was never
+// there, the two shapes the MkdirAll beside it acts on, and both are the
+// destination's structure changing.
+func clearWhatIsNotADirectory(root *os.Root, dst string) (plain bool, err error) {
 	info, readable := lookAt(root, dst)
 	// Nothing there, or nothing this can read: MkdirAll answers next, and
 	// its answer is the one worth reporting.
 	if !readable {
-		return nil
+		return false, nil
 	}
 	if info.IsDir() && info.Mode()&(os.ModeSymlink|os.ModeIrregular) == 0 {
-		return nil
+		return true, nil
 	}
-	return root.RemoveAll(dst)
+	return false, root.RemoveAll(dst)
 }
 
 // lookAt is Lstat where not finding something is an answer rather than a
@@ -212,7 +239,7 @@ func lookAt(root *os.Root, name string) (os.FileInfo, bool) {
 // across about 250 files of instructions -- agents, commands, skills --
 // recopied into every sandbox on every run. What still copies every time
 // is what actually changed, which is what a refresh was for.
-func (copySink) file(src, dst string, root *os.Root, info os.FileInfo, left *int64, prints, newPrints map[string]Print) error {
+func (s *copySink) file(src, dst string, root *os.Root, info os.FileInfo, left *int64, prints, newPrints map[string]Print) error {
 	// Counted here, before the skip decision, and counted for skipped files
 	// too. The ceiling measures how much the rules file names, not how much
 	// one run happened to move: a list that grew to 100 MB has to be
@@ -242,9 +269,12 @@ func (copySink) file(src, dst string, root *os.Root, info os.FileInfo, left *int
 			return nil
 		}
 	}
-	taken, err := mirrorFile(src, dst, root, info.Size())
+	taken, changed, err := mirrorFile(src, dst, root, info.Size())
 	if err != nil {
 		return err
+	}
+	if changed {
+		s.mutated = true
 	}
 	// Recorded only once the copy is whole, and the print is the opened
 	// source's own rather than the walk's: the FileInfo this function was
@@ -298,10 +328,20 @@ var openSource = os.Open
 // mixture -- a print is what lets a later run skip a copy, and skipping on
 // the strength of bytes nobody can describe is how a stale copy outlives
 // every correction.
-func mirrorFile(src, dst string, root *os.Root, charged int64) (Print, error) {
+//
+// The bool this answers with says whether the destination's structure
+// changed -- whether this call made a name that was not there, the file
+// itself or a parent directory on the way to it. Rewriting the bytes of a
+// file that already stood is not that: the name is where it was, the
+// directory listings are what they were, and every canonical answer a
+// resolver holds stays true. Where this call cannot rule a creation out it
+// reports one, because a stretch carried across an unreported name is the
+// one wrong direction this answer can take.
+func mirrorFile(src, dst string, root *os.Root, charged int64) (Print, bool, error) {
+	var changed bool
 	in, err := openSource(src)
 	if err != nil {
-		return Print{}, err
+		return Print{}, false, err
 	}
 	defer func() { _ = in.Close() }()
 	// The opened handle's own measure, before anything else: this is the
@@ -312,14 +352,20 @@ func mirrorFile(src, dst string, root *os.Root, charged int64) (Print, error) {
 	// under the run, which is refused rather than carried.
 	opened, err := in.Stat()
 	if err != nil {
-		return Print{}, err
+		return Print{}, false, err
 	}
 	if opened.Size() > charged {
-		return Print{}, fmt.Errorf("%s measured %d bytes when the walk counted it and holds %d when the copy opened it, and a copy of the larger would not be the copy the budget was counted for: the source changed between the two readings, and the run refuses rather than carry what it never declared", src, charged, opened.Size())
+		return Print{}, false, fmt.Errorf("%s measured %d bytes when the walk counted it and holds %d when the copy opened it, and a copy of the larger would not be the copy the budget was counted for: the source changed between the two readings, and the run refuses rather than carry what it never declared", src, charged, opened.Size())
 	}
 	if parent := filepath.Dir(dst); parent != "." {
+		// MkdirAll below makes the name when nothing stands there, and
+		// a name made is structure changed; asked here because
+		// MkdirAll's own answer does not say whether it did anything.
+		if _, readable := lookAt(root, parent); !readable {
+			changed = true
+		}
 		if err := root.MkdirAll(parent, 0o755); err != nil {
-			return Print{}, err
+			return Print{}, false, err
 		}
 	}
 	// os.Root pins the pathname, not the file object. A sandbox can leave a
@@ -331,27 +377,34 @@ func mirrorFile(src, dst string, root *os.Root, charged int64) (Print, error) {
 	// below.
 	if info, readable := lookAt(root, dst); readable {
 		if info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
-			return Print{}, fmt.Errorf("refusing to overwrite %s: destination is a symbolic link or reparse point", dst)
+			return Print{}, false, fmt.Errorf("refusing to overwrite %s: destination is a symbolic link or reparse point", dst)
 		}
 		if info.Mode().IsRegular() {
 			full := filepath.Join(root.Name(), filepath.FromSlash(dst))
 			outside, err := pathid.OutsideNames(root.Name(), full)
 			if err != nil {
-				return Print{}, fmt.Errorf("checking destination %s for external hard links: %w", dst, err)
+				return Print{}, false, fmt.Errorf("checking destination %s for external hard links: %w", dst, err)
 			}
 			if len(outside) > 0 {
-				return Print{}, fmt.Errorf("refusing to overwrite %s: it is also hard-linked outside the sandbox profile (%s)",
+				return Print{}, false, fmt.Errorf("refusing to overwrite %s: it is also hard-linked outside the sandbox profile (%s)",
 					dst, strings.Join(outside, ", "))
 			}
 		}
+	} else {
+		// O_CREATE below makes the name, and a name made is the
+		// destination's structure changed. A file that stood here gets
+		// its bytes rewritten under its own name, which is not:
+		// truncating what a name holds leaves every listing and every
+		// canonical answer as it was.
+		changed = true
 	}
 	out, err := root.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
-		return Print{}, err
+		return Print{}, false, err
 	}
 	if _, err := copyBounded(out, in, charged); err != nil {
 		_ = out.Close()
-		return Print{}, err
+		return Print{}, false, err
 	}
 	// The transfer is down, and the last thing it owes is proof the source
 	// held still while it was read. What this catches is the same ordinary
@@ -365,13 +418,13 @@ func mirrorFile(src, dst string, root *os.Root, charged int64) (Print, error) {
 	settled, err := in.Stat()
 	if err != nil {
 		_ = out.Close()
-		return Print{}, err
+		return Print{}, false, err
 	}
 	if settled.Size() != opened.Size() || settled.ModTime().UnixNano() != opened.ModTime().UnixNano() {
 		_ = out.Close()
-		return Print{}, fmt.Errorf("%s held %d bytes stamped %d when the copy opened it and %d bytes stamped %d when it finished, and what was written may be part of the file that was there and part of the one that replaced it: the run refuses rather than record a print for the mixture", src, opened.Size(), opened.ModTime().UnixNano(), settled.Size(), settled.ModTime().UnixNano())
+		return Print{}, false, fmt.Errorf("%s held %d bytes stamped %d when the copy opened it and %d bytes stamped %d when it finished, and what was written may be part of the file that was there and part of the one that replaced it: the run refuses rather than record a print for the mixture", src, opened.Size(), opened.ModTime().UnixNano(), settled.Size(), settled.ModTime().UnixNano())
 	}
-	return Print{Size: opened.Size(), ModNanos: opened.ModTime().UnixNano()}, out.Close()
+	return Print{Size: opened.Size(), ModNanos: opened.ModTime().UnixNano()}, changed, out.Close()
 }
 
 // copyBounded copies in to out while the running total stays within limit,
@@ -428,11 +481,11 @@ func copyBounded(out io.Writer, in io.Reader, limit int64) (int64, error) {
 // statement is kept. Without it the copy would skip the excluded path and
 // this would then delete it for not being in the source, which is a slower
 // way of doing the same damage.
-func (copySink) finishDir(root *os.Root, dst, rel string, present map[string]bool, w *walk) error {
-	return removeStrayChildren(root, dst, rel, present, w)
+func (s *copySink) finishDir(root *os.Root, dst, rel string, present map[string]bool, w *walk) error {
+	return s.removeStrayChildren(root, dst, rel, present, w)
 }
 
-func removeStrayChildren(root *os.Root, dst, rel string, present map[string]bool, w *walk) error {
+func (s *copySink) removeStrayChildren(root *os.Root, dst, rel string, present map[string]bool, w *walk) error {
 	dir, err := root.Open(dst)
 	if err != nil {
 		return err
@@ -490,7 +543,7 @@ func removeStrayChildren(root *os.Root, dst, rel string, present map[string]bool
 			if info, readable := lookAt(root, childPath); readable &&
 				info.IsDir() && info.Mode()&(os.ModeSymlink|os.ModeIrregular) == 0 {
 				var under bool
-				if err := clearKeeping(root, childPath, childRel, w, &under); err != nil {
+				if err := clearKeeping(root, childPath, childRel, w, &under, &s.mutated); err != nil {
 					return err
 				}
 				if under {
@@ -508,8 +561,12 @@ func removeStrayChildren(root *os.Root, dst, rel string, present map[string]bool
 		// entry's and would make a guard that protects nothing.
 		if reservedWithinResolved(root, filepath.ToSlash(childPath)) {
 			if e.IsDir() && !reservedAtResolved(root, filepath.ToSlash(childPath)) {
-				if _, err := clearKeepingReserved(root, childPath); err != nil {
+				_, taken, err := clearKeepingReserved(root, childPath)
+				if err != nil {
 					return err
+				}
+				if taken {
+					s.mutated = true
 				}
 			}
 			continue
@@ -517,6 +574,7 @@ func removeStrayChildren(root *os.Root, dst, rel string, present map[string]bool
 		if err := root.RemoveAll(childPath); err != nil {
 			return err
 		}
+		s.mutated = true
 	}
 	return nil
 }

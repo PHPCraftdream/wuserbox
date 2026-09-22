@@ -51,7 +51,10 @@ func forget(root *os.Root, previously []config.Entry, current []config.Entry) er
 	// canonical-presence set across every question the stretch answers
 	// after it is built, so a pass that clears nothing pays for one
 	// indexing of the current list however many recorded entries it
-	// answers.
+	// answers. A clear that takes something back is the mutation that ends
+	// the stretch, and clearEntry's own answer says which clears did; a
+	// pass whose clears all find nothing to take back pays the same one
+	// indexing.
 	var stretch *placeIndex
 	for _, entry := range previously {
 		if currentSpellings[cleanEntryPath(entry.Path)] {
@@ -111,15 +114,23 @@ func forget(root *os.Root, previously []config.Entry, current []config.Entry) er
 				"and the entry can be removed again afterwards",
 				entry.Path, err, entry.Path)
 		}
-		if err := clearEntry(root, stale, entry); err != nil {
+		taken, err := clearEntry(root, stale, entry)
+		if err != nil {
 			return fmt.Errorf("clearing %s, which the rules file no longer names: %w", entry.Path, err)
 		}
-		// A real clear happened, and every cached answer the stretch held
-		// described directories the clear has since taken apart: the
-		// stretch dies here and the next question that needs the volume
-		// builds a fresh one. A question answered without a clear never
-		// costs a rebuild, which is what keeps the unchanged run linear.
-		stretch = nil
+		if taken {
+			// A clear that took something back disassembled
+			// directories the stretch's cached answers still
+			// describe: the stretch dies here and the next question
+			// that needs the volume builds a fresh one. A clear that
+			// took nothing back -- the entry's copy was already gone
+			// from the profile -- changed no name, and answering the
+			// next question out of the same instruments stays the
+			// truth: a pass over stale entries whose copies are all
+			// already gone pays for one indexing of the current list
+			// however many of them it answers.
+			stretch = nil
+		}
 	}
 	return nil
 }
@@ -142,7 +153,14 @@ func forget(root *os.Root, previously []config.Entry, current []config.Entry) er
 // -- deleted the whole tree, sessions and all. An entry that never reached
 // below its depth never put anything there, and what is there is the
 // sandbox's.
-func clearEntry(root *os.Root, stale string, entry config.Entry) error {
+//
+// The bool this answers with says whether anything was actually taken --
+// a name removed, a link replaced -- as against the entry's copy already
+// gone from the profile, which is answered and spared the same way. forget
+// holds one stretch of resolver instruments across the clears that took
+// nothing and drops it on the first one that did, because the stretch's
+// cached answers describe the names as the clears found them.
+func clearEntry(root *os.Root, stale string, entry config.Entry) (bool, error) {
 	// A reserved path is inert to the take-back whatever the entry
 	// carried: the record may name the hive outright, bare or with
 	// limits, and both branches below would honor the name to the
@@ -155,7 +173,7 @@ func clearEntry(root *os.Root, stale string, entry config.Entry) error {
 	// refuseReservedCleanup refuses.
 	rel := filepath.ToSlash(stale)
 	if reservedAtResolved(root, rel) {
-		return nil
+		return false, nil
 	}
 	if entry.Bare() {
 		// An entry over a directory the hive sits under -- AppData
@@ -163,10 +181,19 @@ func clearEntry(root *os.Root, stale string, entry config.Entry) error {
 		// the roots. What around it is ours still goes: the same walk
 		// the limits-bearing branch uses, clearing around the hive.
 		if reservedWithinResolved(root, rel) {
-			_, err := clearKeepingReserved(root, stale)
-			return err
+			_, taken, err := clearKeepingReserved(root, stale)
+			return taken, err
 		}
-		return root.RemoveAll(stale)
+		// RemoveAll answers nil for a name that is not there, and the
+		// stretch's question needs the two told apart: asked here, where
+		// the existence answer is the removal answer.
+		if _, readable := lookAt(root, stale); !readable {
+			return false, nil
+		}
+		if err := root.RemoveAll(stale); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	// A junction sitting where the entry itself landed is removed as the
 	// link it is, exactly as the unfiltered clearing would: the walk below
@@ -175,23 +202,32 @@ func clearEntry(root *os.Root, stale string, entry config.Entry) error {
 	// over a link that is safe to remove and nothing else.
 	info, readable := lookAt(root, stale)
 	if !readable {
-		return nil
+		return false, nil
 	}
 	if !info.IsDir() || info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
-		return root.RemoveAll(stale)
+		if err := root.RemoveAll(stale); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
-	var kept bool
-	if err := clearKeeping(root, stale, "", newWalk(entry), &kept); err != nil {
-		return err
+	var kept, taken bool
+	if err := clearKeeping(root, stale, "", newWalk(entry), &kept, &taken); err != nil {
+		return false, err
 	}
 	if kept {
-		return nil
+		// Children of the entry's own tree may have gone even where
+		// something was spared: taken is the walk's own count, and the
+		// answer follows it rather than kept.
+		return taken, nil
 	}
 	// Nothing under the entry survived, so the entry's own directory goes
 	// with what it held. RemoveAll rather than Remove because the entry may
 	// never have landed at all, and a clearing that errors on a name that
 	// is not there is worse than useless.
-	return root.RemoveAll(stale)
+	if err := root.RemoveAll(stale); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // clearKeeping removes what one directory of a stale entry's subtree holds
@@ -206,8 +242,12 @@ func clearEntry(root *os.Root, stale string, entry config.Entry) error {
 // claim does not stop at its first level. A directory with nothing spared
 // under it goes once its children have gone -- a directory is kept only
 // while it is the way to something kept -- so the clearing takes the entry's
-// shape apart rather than leaving empty frames behind.
-func clearKeeping(root *os.Root, dir, rel string, w *walk, kept *bool) error {
+// shape apart rather than leaving empty frames behind. It reports through
+// removed too, whether anything was actually taken, the shape
+// clearKeepingReserved answers in, so a caller that must not carry its
+// cached view of the profile across a real deletion can tell the two clears
+// apart.
+func clearKeeping(root *os.Root, dir, rel string, w *walk, kept, removed *bool) error {
 	d, err := root.Open(dir)
 	if err != nil {
 		// The entry may never have landed, or is already gone; either way
@@ -250,13 +290,17 @@ func clearKeeping(root *os.Root, dir, rel string, w *walk, kept *bool) error {
 			// worse than taking the link.
 			if info, readable := lookAt(root, childPath); !readable ||
 				info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
-				if err := root.Remove(childPath); err != nil && !os.IsNotExist(err) {
-					return err
+				if err := root.Remove(childPath); err != nil {
+					if !os.IsNotExist(err) {
+						return err
+					}
+				} else {
+					*removed = true
 				}
 				continue
 			}
 			var under bool
-			if err := clearKeeping(root, childPath, childRel, w, &under); err != nil {
+			if err := clearKeeping(root, childPath, childRel, w, &under, removed); err != nil {
 				return err
 			}
 			if under {
@@ -284,8 +328,12 @@ func clearKeeping(root *os.Root, dir, rel string, w *walk, kept *bool) error {
 				continue
 			}
 		}
-		if err := root.Remove(childPath); err != nil && !os.IsNotExist(err) {
-			return err
+		if err := root.Remove(childPath); err != nil {
+			if !os.IsNotExist(err) {
+				return err
+			}
+		} else {
+			*removed = true
 		}
 	}
 	return nil

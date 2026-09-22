@@ -256,19 +256,23 @@ func reservedWithinResolved(root *os.Root, rootRel string) bool {
 // It answers through spared whether anything was left standing, the shape
 // clearKeeping reports kept in, so a caller that must not go on to a
 // RemoveAll over the hive can ask rather than guess.
-func clearKeepingReserved(root *os.Root, dir string) (spared bool, err error) {
+// It answers through removed too, whether anything was actually taken, so a
+// caller that keeps one stretch of cached answers across its clears can
+// tell a clear that changed the destination's names from one that found
+// nothing to take.
+func clearKeepingReserved(root *os.Root, dir string) (spared, removed bool, err error) {
 	d, err := root.Open(dir)
 	if err != nil {
 		// The tree may already be gone; that is an answer, not a failure.
 		if os.IsNotExist(err) {
-			return false, nil
+			return false, false, nil
 		}
-		return false, err
+		return false, false, err
 	}
 	children, err := d.ReadDir(-1)
 	_ = d.Close()
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	for _, child := range children {
 		childPath := filepath.Join(dir, child.Name())
@@ -283,18 +287,23 @@ func clearKeepingReserved(root *os.Root, dir string) (spared bool, err error) {
 		}
 		if info, readable := lookAt(root, childPath); readable &&
 			info.IsDir() && info.Mode()&(os.ModeSymlink|os.ModeIrregular) == 0 {
-			under, err := clearKeepingReserved(root, childPath)
+			under, taken, err := clearKeepingReserved(root, childPath)
 			if err != nil {
-				return spared, err
+				return spared, removed, err
 			}
 			spared = spared || under
+			removed = removed || taken
 			if under {
 				continue
 			}
 		}
-		if err := root.Remove(childPath); err != nil && !os.IsNotExist(err) {
-			return spared, err
+		if err := root.Remove(childPath); err != nil {
+			if !os.IsNotExist(err) {
+				return spared, removed, err
+			}
+		} else {
+			removed = true
 		}
 	}
-	return spared, nil
+	return spared, removed, nil
 }
