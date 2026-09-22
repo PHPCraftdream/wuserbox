@@ -78,10 +78,10 @@ func sweep(root string, sandbox *identities, hand []explicitAccess, pinned pinne
 func narrowTree(root string, sandbox *identities, hand []explicitAccess, pinned pinnedPaths) error {
 	_, err := orderedNarrow(root, dispatchWindow(),
 		func(path string) (narrowDecision, error) {
-			return classifyNarrow(path, sandbox, hand, pinned)
+			return classifyNarrow(path, root, sandbox, hand, pinned)
 		},
 		func(path string) error {
-			return narrowOwn(path, sandbox, hand, pinned)
+			return narrowOwn(path, root, sandbox, hand, pinned)
 		})
 	return err
 }
@@ -275,7 +275,12 @@ const (
 // A write decision is deliberately conservative: the ordered writer rereads
 // the object before applying it, because a parent may have changed inherited
 // permissions since this read completed.
-func classifyNarrow(path string, sandbox *identities, hand []explicitAccess, pinned pinnedPaths) (narrowDecision, error) {
+//
+// The already-capped question is asked of the hand-down as this object would
+// hold it, not as the root holds it (handDown below), so the fast path
+// recognizes what narrowOwn actually writes: asking it of the root's own
+// entries would rewrite every capped object on every run.
+func classifyNarrow(path, root string, sandbox *identities, hand []explicitAccess, pinned pinnedPaths) (narrowDecision, error) {
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
@@ -316,7 +321,11 @@ func classifyNarrow(path string, sandbox *identities, hand []explicitAccess, pin
 		}
 		return narrowNoop, nil
 	}
-	if hearsFromAbove(held) || !alreadyCapped(held, hand, sandbox.ownerRights, sandbox.mark) {
+	down, err := handDown(hand, root, path)
+	if err != nil {
+		return narrowNoop, err
+	}
+	if hearsFromAbove(held) || !alreadyCapped(held, down, sandbox.ownerRights, sandbox.mark) {
 		return narrowApply, nil
 	}
 	return narrowNoop, nil
@@ -491,6 +500,113 @@ func readable(path string, sandbox []uintptr) (bool, error) {
 	return owned, nil
 }
 
+// handDown is the hand the sweep writes in explicitly, made specific to one
+// object: what the directory above is about to hand down TO THIS OBJECT, in
+// the shape Windows would land it in if this object's list still heard from
+// above. The entries as they sit on the granted directory answer the
+// directory's question, and a whole write that copied them as they sit would
+// answer every object's question with the root's: an INHERIT_ONLY entry
+// copied onto a file grants the file nothing -- the flag says the entry is
+// about what the object hands down, and a file hands down nothing -- so a
+// file whose owner had been writing it through real inheritance lost the
+// write to the copy that replaced it; and an entry whose NO_PROPAGATE had
+// been spent on the first generation, copied onto a grandchild, starts its
+// reach over one level deeper than the deed stopped it. A files-only entry
+// copied onto a container spreads the same way, handing down from a
+// directory the deed never covered. The shapes below are Windows' own
+// inheritance rules, measured with icacls: a child of the kind an entry
+// names inherits it effective, its copy carrying exactly the propagation the
+// entry had left; NO_PROPAGATE is spent on the first generation, so a child
+// one generation further holds nothing of it; a container a files-only entry
+// reaches without NO_PROPAGATE holds it inherit-only, for the container's
+// own files; and a files-only entry with NO_PROPAGATE passes a container by
+// entirely.
+func handDown(hand []explicitAccess, root, path string) ([]explicitAccess, error) {
+	if len(hand) == 0 {
+		return nil, nil
+	}
+	generations, err := generationsBelow(root, path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("looking at %s: %w", path, err)
+	}
+	var down []explicitAccess
+	for _, one := range hand {
+		if adapted, ok := handDownEntry(one, generations, info.IsDir()); ok {
+			down = append(down, adapted)
+		}
+	}
+	return down, nil
+}
+
+// handDownEntry adapts one entry for one child, and says whether the child
+// holds anything of it at all. dir says whether the child is a container;
+// generations counts the container hops between the directory the entry sits
+// on and this child, the immediate children being the first.
+func handDownEntry(one explicitAccess, generations int, dir bool) (explicitAccess, bool) {
+	flags := one.inheritance
+	// NO_PROPAGATE is spent on the first generation: only the immediate
+	// children of the directory the entry sits on hold anything of it.
+	if flags&InheritNoPropagate != 0 && generations != 1 {
+		return explicitAccess{}, false
+	}
+	if !dir {
+		// A file inherits an entry naming its kind as an effective one and
+		// keeps nothing inheritable: there is nothing below a file for a
+		// copy to be handed down to, and INHERIT_ONLY would leave the file
+		// holding an entry about entries it will never have.
+		if flags&InheritObjects == 0 {
+			return explicitAccess{}, false
+		}
+		one.inheritance = InheritNone
+		return one, true
+	}
+	switch {
+	case flags&InheritContainers != 0:
+		// Effective on the container, and inheritable exactly as far as the
+		// entry it came from had left: INHERIT_ONLY shields only the
+		// directory the entry sat on, so the copy loses it; and a
+		// NO_PROPAGATE entry was spent arriving here, so its copy carries no
+		// inheritance at all -- the child holds it, and hands down nothing.
+		if flags&InheritNoPropagate != 0 {
+			one.inheritance = InheritNone
+			return one, true
+		}
+		one.inheritance = flags &^ InheritOnly
+		return one, true
+	case flags&InheritObjects != 0:
+		// A files-only entry reaches a container as an inherit-only one:
+		// the copy is about the container's files, not about the container,
+		// so INHERIT_ONLY is set on it however the entry above spelled it --
+		// unless NO_PROPAGATE stopped the entry at the generation above, in
+		// which case the container holds nothing of it at all.
+		if flags&InheritNoPropagate != 0 {
+			return explicitAccess{}, false
+		}
+		one.inheritance = flags | InheritOnly
+		return one, true
+	default:
+		return explicitAccess{}, false
+	}
+}
+
+// generationsBelow counts how many directory hops path sits below root. Both
+// names come from the same WalkDir over root, so the count is the separators
+// between them, compared byte for byte at the component boundary the way
+// underSkipped compares; a path that is not below root at all is an error
+// rather than a generation, and so is the root itself, which the sweep never
+// sees but a hand-down would have nowhere to land on.
+func generationsBelow(root, path string) (int, error) {
+	rest, ok := strings.CutPrefix(path, root)
+	if !ok || rest == "" || rest[0] != filepath.Separator {
+		return 0, fmt.Errorf("%s is not below %s", path, root)
+	}
+	return strings.Count(rest, string(filepath.Separator)), nil
+}
+
 // narrowOwn takes the changing rights of Everyone, BUILTIN\Users and
 // Authenticated Users out of the entries one object holds itself, leaving
 // what it is handed from above alone, and hands whatever it took to the
@@ -517,7 +633,7 @@ func readable(path string, sandbox []uintptr) (bool, error) {
 // that spares an owned object: a path the record names was granted in the
 // operator's own right, and a list the sandbox could have written is no
 // evidence of that (owner.go).
-func narrowOwn(path string, sandbox *identities, hand []explicitAccess, pinned pinnedPaths) error {
+func narrowOwn(path, root string, sandbox *identities, hand []explicitAccess, pinned pinnedPaths) error {
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
@@ -537,7 +653,11 @@ func narrowOwn(path string, sandbox *identities, hand []explicitAccess, pinned p
 		if !owned {
 			return giveAList(path, sandbox)
 		}
-		return writeWhole(path, sandbox.fromNothing(), nil, hand, sandbox.ownerRights, sandbox.mark)
+		down, err := handDown(hand, root, path)
+		if err != nil {
+			return err
+		}
+		return writeWhole(path, sandbox.fromNothing(), nil, down, sandbox.ownerRights, sandbox.mark)
 	}
 
 	held, err := entriesOf(dacl)
@@ -581,7 +701,11 @@ func narrowOwn(path string, sandbox *identities, hand []explicitAccess, pinned p
 		}
 		return apply(path, append(update, handback...), false)
 	}
-	return capObject(path, held, update, handback, hand, sandbox.ownerRights, sandbox.mark, pinned)
+	down, err := handDown(hand, root, path)
+	if err != nil {
+		return err
+	}
+	return capObject(path, held, update, handback, down, sandbox.ownerRights, sandbox.mark, pinned)
 }
 
 // StripOwn takes away the entries an object holds itself for one account,

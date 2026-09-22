@@ -132,3 +132,77 @@ func TestAPreflightWalkBuildsNoEntryList(t *testing.T) {
 		t.Fatalf("one real walk of the list built %d entry lists, want the one it keeps", got)
 	}
 }
+
+// TestAHandDownNamesTheObjectItLandsOn walks the adapter through the
+// inheritance rules it is supposed to reproduce, one measured row at a time:
+// a HomeTop deed reaching the files of the granted directory and nothing
+// past them, a plain rw grant reaching everything, and the flag shapes in
+// between. The entry carries the same rights and the same trustee onto
+// whatever the child holds of it; what adapts is the inheritance alone.
+func TestAHandDownNamesTheObjectItLandsOn(t *testing.T) {
+	trustee, err := sid.Parse(unusedAccount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sid.Free(trustee)
+
+	for _, test := range []struct {
+		name        string
+		inheritance uint32
+		generations int
+		dir         bool
+		want        bool
+		flags       uint32
+	}{
+		// The HomeTop deed: the Modify reaches the files of the granted
+		// directory only, and the file the sandbox made holds it effective.
+		// A subdirectory holds nothing of it, and neither does anything one
+		// generation further -- NO_PROPAGATE was spent on the way there.
+		{"home-top modify, file, first generation", InheritObjects | InheritOnly | InheritNoPropagate, 1, false, true, InheritNone},
+		{"home-top modify, file, second generation", InheritObjects | InheritOnly | InheritNoPropagate, 2, false, false, 0},
+		{"home-top modify, directory, first generation", InheritObjects | InheritOnly | InheritNoPropagate, 1, true, false, 0},
+		{"home-top modify, directory, second generation", InheritObjects | InheritOnly | InheritNoPropagate, 2, true, false, 0},
+		// The plain rw grant reaches everything at every depth: a file holds
+		// it effective, a directory holds it and hands it on unchanged.
+		{"rw modify, file, first generation", InheritObjects | InheritContainers, 1, false, true, InheritNone},
+		{"rw modify, file, third generation", InheritObjects | InheritContainers, 3, false, true, InheritNone},
+		{"rw modify, directory, first generation", InheritObjects | InheritContainers, 1, true, true, InheritObjects | InheritContainers},
+		{"rw modify, directory, third generation", InheritObjects | InheritContainers, 3, true, true, InheritObjects | InheritContainers},
+		// A files-only entry without NO_PROPAGATE reaches a container as
+		// what it is there: inherit-only, for the container's own files.
+		{"object-inherit, directory, first generation", InheritObjects, 1, true, true, InheritObjects | InheritOnly},
+		{"object-inherit, file, first generation", InheritObjects, 1, false, true, InheritNone},
+		// A containers-only entry passes a file by and lands on a directory
+		// as it sits.
+		{"container-inherit, file, first generation", InheritContainers, 1, false, false, 0},
+		{"container-inherit, directory, first generation", InheritContainers, 1, true, true, InheritContainers},
+		// INHERIT_ONLY shields only the directory the entry sat on: the child
+		// the entry names holds it effective.
+		{"container-inherit inherit-only, directory, first generation", InheritContainers | InheritOnly, 1, true, true, InheritContainers},
+		// NO_PROPAGATE is spent on the first generation: the child holds the
+		// entry effective and nothing below it holds anything at all.
+		{"container-inherit no-propagate, directory, first generation", InheritContainers | InheritNoPropagate, 1, true, true, InheritNone},
+		{"container-inherit no-propagate, directory, second generation", InheritContainers | InheritNoPropagate, 2, true, false, 0},
+		// An entry that reaches nothing inheritable reaches nothing at all:
+		// it was written for the directory it sits on alone.
+		{"no inheritance, file, first generation", InheritNone, 1, false, false, 0},
+		{"no inheritance, directory, first generation", InheritNone, 1, true, false, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			one := entry(trustee, AccessModify, test.inheritance, grantAccess)
+			got, ok := handDownEntry(one, test.generations, test.dir)
+			if ok != test.want {
+				t.Fatalf("%s: the child holds the entry: %v, want %v", test.name, ok, test.want)
+			}
+			if !ok {
+				return
+			}
+			if got.inheritance != test.flags {
+				t.Fatalf("%s: the child holds the entry with inheritance %#x, want %#x", test.name, got.inheritance, test.flags)
+			}
+			if got.permissions != one.permissions || got.mode != one.mode || got.trustee != one.trustee {
+				t.Fatalf("%s: the adapted entry changed more than its inheritance", test.name)
+			}
+		})
+	}
+}
