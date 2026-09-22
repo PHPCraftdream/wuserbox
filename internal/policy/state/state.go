@@ -48,6 +48,12 @@ type State struct {
 	// the file on disk remains the authority for the next run.
 	fresh      []grant.Spec
 	trackFresh bool
+	// byPath is the operation-local index find answers from, built the
+	// first time a question is asked and dropped wherever the record's
+	// path list changes. Transient like fresh: it describes the record
+	// and the volume as this operation found them, and it is never
+	// written anywhere.
+	byPath *pathIndex
 }
 
 // BeginInit starts tracking grants first recorded by this init. The list is

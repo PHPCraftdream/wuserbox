@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/trace"
-	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 )
 
@@ -21,15 +20,6 @@ func (s *State) Kind(path string) (grant.Kind, bool) {
 		return "", false
 	}
 	return s.Grants[index].Kind, true
-}
-
-func (s *State) find(path string) (int, bool) {
-	for i, g := range s.Grants {
-		if config.SamePath(g.Path, path) {
-			return i, true
-		}
-	}
-	return 0, false
 }
 
 // Add records a permission, applying it unless the record already says the
@@ -89,6 +79,11 @@ func (s *State) record(path string, kind grant.Kind, always, explicit bool) (err
 		// back, which is what repair is for.
 		return grant.Apply(s.SID, path, kind, s.paths())
 	}
+	// From here the record's path list is rewritten and the volume acted
+	// on, and the index find answers from describes the list as it stands:
+	// it is dropped before the first change, and the next question rebuilds
+	// it over the list as it then stands.
+	s.dropIndex()
 	before := append([]grant.Spec(nil), s.Grants...)
 	if found {
 		s.Grants[index].Kind = kind
@@ -158,6 +153,9 @@ func (s *State) Remove(path string) error {
 	// permission list pinned, this sandbox's entry copied into it, and it no
 	// longer hears from here — so the entry has to be taken away by name, or
 	// the sandbox keeps writing in a corner of what it just lost.
+	// The splice below moves every entry after index, and the index find
+	// answers from still describes the list as it stood before it.
+	s.dropIndex()
 	s.Grants = append(s.Grants[:index], s.Grants[index+1:]...)
 	if err := grant.Prune(s.SID, path, s.paths()); err != nil {
 		return err

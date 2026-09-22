@@ -295,6 +295,40 @@ func TestRulesCannotContradictThemselvesThroughTheCommand(t *testing.T) {
 	}
 }
 
+// TestIdentityIsTheComparisonKeySamePathDerives pins the exported wrapper the
+// state package's find index resolves through: one key per side instead of
+// SamePath resolving both sides for every question, and therefore the same
+// keys exactly where SamePath says the same place -- existing paths and the
+// spellings the volume joins, two places it holds apart, and the missing-path
+// fallback, which folds ASCII case and nothing more because a path that names
+// nothing has no directory entry to be witnessed by.
+func TestIdentityIsTheComparisonKeySamePathDerives(t *testing.T) {
+	place, other := tempDir(t), tempDir(t)
+	for _, spelling := range []string{
+		strings.ToLower(place),
+		filepath.ToSlash(place),
+		place + string(os.PathSeparator),
+	} {
+		if Identity(spelling) != Identity(place) {
+			t.Errorf("the respelling %q of %q did not resolve to the same key", spelling, place)
+		}
+		if SamePath(spelling, place) != (Identity(spelling) == Identity(place)) {
+			t.Errorf("Identity and SamePath disagree about %q", spelling)
+		}
+	}
+	if Identity(place) == Identity(other) {
+		t.Error("two different places resolved to one key")
+	}
+
+	gone := filepath.Join(place, "gone")
+	if Identity(gone) != Identity(filepath.Join(place, "GONE")) {
+		t.Error("two ASCII-case spellings of the same missing path did not share the fallback key")
+	}
+	if Identity(gone) == Identity(filepath.Join(place, "away")) {
+		t.Error("two different missing paths shared a fallback key")
+	}
+}
+
 // tempDir is t.TempDir() with the path reduced to one spelling, the way every
 // command reduces the paths it is given. Some machines hand out a temporary
 // directory under a shortened name, and comparing one spelling against another

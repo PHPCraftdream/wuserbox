@@ -28,7 +28,18 @@ func (c *Config) RuleFor(dir string, create bool) *Rule {
 // be written the Windows way, the shell way, with a variable or with a tilde,
 // so a file edited by hand matches what the commands pass in.
 func SamePath(a, b string) bool {
-	return identity(canonical(a)) == identity(canonical(b))
+	return Identity(a) == Identity(b)
+}
+
+// Identity returns the comparison key SamePath derives for one side of a
+// question: the spelling reduced to its real location the way every command
+// reduces the paths it is given, then the filesystem's directory-entry
+// spelling of that, ASCII case folded and nothing more -- or the clean
+// spelling under a fallback prefix when it names nothing. SamePath resolves
+// both sides again for every question; a caller with many paths to compare
+// resolves each side once through this and compares keys itself.
+func Identity(path string) string {
+	return identity(canonical(path))
 }
 
 // identity uses the filesystem's directory-entry spelling when it can, and
