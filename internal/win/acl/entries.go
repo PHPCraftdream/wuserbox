@@ -273,30 +273,50 @@ func readDACL(path string) (*aclHeader, uintptr, error) {
 // holdsAny answers, from a list already read, whether account holds any
 // of the wanted rights on the object the list belongs to.
 //
+// The list is read the way Windows reads it, in order, one right at a
+// time: the first entry for this account that names a right still
+// undecided settles that right, permission or refusal alike, and no
+// entry after it revisits what was settled. A permission the list gives
+// early therefore holds however many refusals follow it -- Windows' own
+// check walks the entries in order and finishes the moment the rights it
+// is still asking about are answered, so a refusal sitting behind an
+// early permission is never reached about them. Subtracting every
+// refusal from every permission read the list out of order, and --audit
+// answered unwritable about directories a plain creation succeeds in:
+// an explicit permission for Everyone with a refusal handed down from
+// above sitting behind it is an ordinary shape, an object's own entries
+// coming before the inherited ones.
+//
+// One account's reading is what this is, and no more than that: a real
+// token also walks the account's other groups and stops early for them,
+// and nothing here claims to combine group rights the way a token would.
+//
 // An inherit-only entry does not apply to the object this list sits on,
 // only to what it hands down to; the copies the object received from
 // above arrive without the mark and keep counting.
 func holdsAny(held []heldEntry, account uintptr, wanted uint32) bool {
 	const trusteeIsSID = 0
-	var granted, refused uint32
+	var granted, undecided uint32 = 0, wanted
 	for _, one := range held {
-		if one.access.trustee.form != trusteeIsSID || one.access.permissions&wanted == 0 {
+		if one.access.trustee.form != trusteeIsSID || one.access.inheritance&InheritOnly != 0 {
 			continue
 		}
-		if one.access.inheritance&InheritOnly != 0 {
+		reached := one.access.permissions & undecided
+		if reached == 0 {
 			continue
 		}
 		if !sameSID(one.access.trustee.name, account) {
 			continue
 		}
 		if one.access.mode == denyAccess {
-			refused |= one.access.permissions & wanted
+			undecided &^= reached
 		}
 		if one.access.mode == grantAccess {
-			granted |= one.access.permissions & wanted
+			granted |= reached
+			undecided &^= reached
 		}
 	}
-	return granted&^refused != 0
+	return granted != 0
 }
 
 // heldBy reports whether account holds any of the wanted rights on path.
@@ -320,9 +340,9 @@ func holdsAny(held []heldEntry, account uintptr, wanted uint32) bool {
 // the fix that made --audit see inherited openness at all, and it must
 // survive this one.
 //
-// A refusal settles it wherever one matches, because that is how Windows
-// settles it: for a single token a matching refusal beats a matching
-// permission whatever order the list is in.
+// The list itself is read in order, one right at a time, so a permission
+// given early is not taken back by a refusal behind it -- holdsAny says
+// how, and what one account's reading of a list is not.
 func heldBy(path, account string, wanted uint32) (bool, error) {
 	value, err := sid.Parse(account)
 	if err != nil {
