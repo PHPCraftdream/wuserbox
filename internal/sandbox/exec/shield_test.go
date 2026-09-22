@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"testing"
 
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
 )
 
@@ -30,7 +31,15 @@ const nobodysGroup = "S-1-5-21-1111111111-2222222222-3333333333-727272"
 
 // TestMain lets `go test` re-exec this binary to run the probe in a process
 // of its own.
+//
+// It also makes the synthetic world's promise first, ahead of every role
+// dispatch, so it holds wherever this binary is re-executed: the trace
+// driver grants through the policy stack with a sandbox SID it made up,
+// and that grant has to treat the SID as an identifier that stands alone
+// rather than as a group that has to exist. The fail-closed half of that
+// contract is measured in the acl package, which never turns this on.
 func TestMain(m *testing.M) {
+	restore := grant.IdentitiesStandAloneForTest()
 	// The gated child of the launch-phase close test is this binary again,
 	// dispatched by argument; it must come ahead of the driver check below
 	// because the child inherits the driver's environment, driver variable
@@ -55,7 +64,9 @@ func TestMain(m *testing.M) {
 	if os.Getenv(traceDriverEnv) == "1" {
 		os.Exit(runTraceDriver())
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	restore()
+	os.Exit(code)
 }
 
 // runProbe calls Stub exactly as --init's own probe does: a group, a read

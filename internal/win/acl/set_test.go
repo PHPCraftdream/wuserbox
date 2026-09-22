@@ -363,7 +363,7 @@ func TestAProtectedObjectInsideAGrantedTreeStaysProtected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Isolate(root, unusedAccount, []ACE{
+	if err := Isolate(root, IdentifierAlone(unusedAccount), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)

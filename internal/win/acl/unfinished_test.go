@@ -31,7 +31,7 @@ func TestAGrantThatCannotFinishGrantsNothing(t *testing.T) {
 	}
 	t.Cleanup(func() { setSDDL(t, child, `D:P(A;OICI;FA;;;`+owner+`)`) })
 
-	isolateErr := Isolate(root, unusedAccount, []ACE{
+	isolateErr := Isolate(root, IdentifierAlone(unusedAccount), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil)
 	if isolateErr == nil {
@@ -79,7 +79,7 @@ func TestAGrantThatCannotFinishChangesNothingAtAll(t *testing.T) {
 	setSDDL(t, late, `D:P(XA;;FA;;;WD;(@USER.Title=="nobody"))`)
 	t.Cleanup(func() { setSDDL(t, late, `D:P(A;OICI;FA;;;`+owner+`)`) })
 
-	if err := Isolate(root, unusedAccount, []ACE{
+	if err := Isolate(root, IdentifierAlone(unusedAccount), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err == nil {
 		t.Fatal("a grant that could not finish reported success")
@@ -122,7 +122,7 @@ func TestASweepDoesNotCostTheOwnerTheirOwnWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Isolate(root, unusedAccount, []ACE{
+	if err := Isolate(root, IdentifierAlone(unusedAccount), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func TestAnObjectWithNoListAtAllIsNarrowedToo(t *testing.T) {
 		t.Fatal("a list-less directory was not writable by Everyone, so this proves nothing")
 	}
 
-	if err := Isolate(root, unusedAccount, []ACE{
+	if err := Isolate(root, IdentifierAlone(unusedAccount), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
@@ -208,7 +208,7 @@ func TestGrantingADirectoryWithNoListKeepsItsOwner(t *testing.T) {
 		t.Fatal("a list-less directory was not writable by Everyone, so this proves nothing")
 	}
 
-	if err := Isolate(root, unusedAccount, []ACE{
+	if err := Isolate(root, IdentifierAlone(unusedAccount), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
@@ -264,7 +264,7 @@ func TestASweepNarrowsAuthenticatedUsersToo(t *testing.T) {
 		t.Fatal("Authenticated Users could not write there to begin with, so this proves nothing")
 	}
 
-	if err := Isolate(root, unusedAccount, []ACE{
+	if err := Isolate(root, IdentifierAlone(unusedAccount), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)

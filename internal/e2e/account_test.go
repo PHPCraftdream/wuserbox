@@ -285,7 +285,12 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == teardownSlouchFlag {
 		os.Exit(teardownSlouch())
 	}
-	os.Exit(m.Run())
+	// The stub subprocesses exit above and never reach this, so the promise
+	// stays a property of the test process alone.
+	restore := grant.IdentitiesStandAloneForTest()
+	code := m.Run()
+	restore()
+	os.Exit(code)
 }
 
 // throughTheStub builds the command line that reaches the program by way of

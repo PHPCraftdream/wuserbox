@@ -14,10 +14,17 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/cli/usage"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
+	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 )
 
 // TestMain loads the rules parser before any test moves the environment, so
 // the native library it keeps open is not cached under a temporary directory.
+//
+// TestMain also makes the synthetic world's promise for the whole binary: the
+// sandbox SIDs these tests grant with are made up, so the operations they
+// drive must treat them as identifiers that stand alone rather than as
+// groups that have to exist (the fail-closed half of that contract is
+// measured in the acl package, which never turns this on).
 func TestMain(m *testing.M) {
 	warm, err := os.CreateTemp("", "wuserbox-warm-*.ktav")
 	if err == nil {
@@ -28,7 +35,10 @@ func TestMain(m *testing.M) {
 		os.Remove(warm.Name())
 		os.Unsetenv(config.EnvPath)
 	}
-	os.Exit(m.Run())
+	restore := grant.IdentitiesStandAloneForTest()
+	code := m.Run()
+	restore()
+	os.Exit(code)
 }
 
 func useRules(t *testing.T, rules *config.Config) string {

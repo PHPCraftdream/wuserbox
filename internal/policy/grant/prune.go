@@ -55,7 +55,7 @@ func Prune(account, path string, held []string) error {
 				keep[key] = true
 			}
 		}
-		pass, err := acl.BeginStripOwn(account)
+		pass, err := acl.BeginStripOwn(identityOf(account))
 		if err != nil {
 			return err
 		}

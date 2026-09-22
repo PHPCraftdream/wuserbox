@@ -9,7 +9,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
-// Isolate hands account the access described by entries, and pins the whole
+// Isolate hands the identity the access described by entries, and pins the whole
 // permission list of path while doing it, so that nothing above can let
 // anybody else write to what is inside.
 //
@@ -56,8 +56,8 @@ import (
 // sandbox owns whose list is its own is spared only there: a list the sandbox
 // could have written is no evidence of an operator's decision, and owner.go
 // carries the reasoning.
-func Isolate(path, account string, entries []ACE, reach uint32, pinned []string) error {
-	sandbox, err := identitiesFor(account)
+func Isolate(path string, subject Identity, entries []ACE, reach uint32, pinned []string) error {
+	sandbox, err := identitiesFor(subject)
 	if err != nil {
 		return err
 	}

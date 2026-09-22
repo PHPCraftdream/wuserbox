@@ -201,7 +201,7 @@ func TestTakingAGrantBackCapsWhatTheOwnerHolds(t *testing.T) {
 	// the sweep and the revoke, which is the ordinary order of a production
 	// run and the case StripOwn's old job never reached -- a file like this
 	// holds no entry naming the account at all.
-	if err := Isolate(target, owner, []ACE{
+	if err := Isolate(target, IdentifierAlone(owner), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 		{Access: operators, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err != nil {
@@ -230,7 +230,7 @@ func TestTakingAGrantBackCapsWhatTheOwnerHolds(t *testing.T) {
 	// account, playing both roles) -- capping it in a first call and only
 	// then trying to change its list in a second would refuse the second
 	// outright, the same way any owner-capped object refuses a later change.
-	if err := TakeBack(target, owner, nil); err != nil {
+	if err := TakeBack(target, IdentifierAlone(owner), nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -280,7 +280,7 @@ func TestTakingAGrantBackNarrowsAnUnexpectedExplicitGrant(t *testing.T) {
 		t.Fatal("the broad Everyone grant was not present before TakeBack")
 	}
 
-	if err := TakeBack(probe, owner, nil); err != nil {
+	if err := TakeBack(probe, IdentifierAlone(owner), nil); err != nil {
 		t.Fatal(err)
 	}
 	if EveryoneWritable(probe) {
@@ -324,7 +324,7 @@ func TestTakingAGrantBackNarrowsAnUnexpectedExplicitGrantBesideInheritedAccess(t
 	if !EveryoneWritable(probe) {
 		t.Fatal("the broad Everyone grant was not present before TakeBack")
 	}
-	if err := TakeBack(probe, owner, nil); err != nil {
+	if err := TakeBack(probe, IdentifierAlone(owner), nil); err != nil {
 		t.Fatal(err)
 	}
 	if EveryoneWritable(probe) {
@@ -361,7 +361,7 @@ func TestTakingBackRepairsACappedObjectWithAnUnexpectedExplicitGrant(t *testing.
 		t.Fatal("the broad Everyone grant was not present before TakeBack")
 	}
 
-	if err := TakeBack(probe, owner, nil); err != nil {
+	if err := TakeBack(probe, IdentifierAlone(owner), nil); err != nil {
 		t.Fatal(err)
 	}
 	if EveryoneWritable(probe) {
@@ -389,7 +389,7 @@ func TestTakingAGrantBackSparesWhatTheRecordPins(t *testing.T) {
 	normalizeOwner(t, target, owner)
 	setSDDL(t, target, `D:P(A;OICI;0x1301BF;;;`+owner+`)`)
 
-	if err := Isolate(target, owner, []ACE{
+	if err := Isolate(target, IdentifierAlone(owner), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 		{Access: operators, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err != nil {
@@ -406,7 +406,7 @@ func TestTakingAGrantBackSparesWhatTheRecordPins(t *testing.T) {
 	}
 	normalizeOwner(t, pinned, owner)
 
-	if err := TakeBack(target, owner, []string{pinned}); err != nil {
+	if err := TakeBack(target, IdentifierAlone(owner), []string{pinned}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -454,7 +454,7 @@ func TestTakingAGrantBackTakesDownWhatTheSandboxHandedItself(t *testing.T) {
 	normalizeOwner(t, target, owner)
 	setSDDL(t, target, `D:P(A;OICI;0x1301BF;;;`+owner+`)`)
 
-	if err := Isolate(target, owner, []ACE{
+	if err := Isolate(target, IdentifierAlone(owner), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 		{Access: operators, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err != nil {
@@ -474,7 +474,7 @@ func TestTakingAGrantBackTakesDownWhatTheSandboxHandedItself(t *testing.T) {
 	// writes while it holds every right, with nothing inherited and no mark.
 	setSDDL(t, self, `D:P(A;;FA;;;`+owner+`)`)
 
-	if err := TakeBack(target, owner, nil); err != nil {
+	if err := TakeBack(target, IdentifierAlone(owner), nil); err != nil {
 		t.Fatal(err)
 	}
 

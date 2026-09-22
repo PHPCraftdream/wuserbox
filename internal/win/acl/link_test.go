@@ -41,7 +41,7 @@ func TestAGrantDoesNotReachThroughAJunction(t *testing.T) {
 	// what is found there afterwards says which direction it came from. Asking
 	// only whether the outside entry survived would pass either way.
 	const newcomer = "S-1-5-21-1111111111-2222222222-3333333333-543211"
-	if err := Isolate(root, newcomer, writable, InheritObjects|InheritContainers, nil); err != nil {
+	if err := Isolate(root, IdentifierAlone(newcomer), writable, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !UsersWritable(outside) {
@@ -84,7 +84,7 @@ func TestAGrantRefusesAFileWithASecondNameOutside(t *testing.T) {
 		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
 	}
 
-	err := Isolate(granted, unusedAccount, []ACE{
+	err := Isolate(granted, IdentifierAlone(unusedAccount), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil)
 	if err == nil {
@@ -205,7 +205,7 @@ func TestAGrantRefusesAHardLinkAcrossFilesystemDistinctUnicodeDirectories(t *tes
 		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
 	}
 
-	err = Isolate(inside, unusedAccount, []ACE{
+	err = Isolate(inside, IdentifierAlone(unusedAccount), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil)
 	if err == nil {
@@ -234,7 +234,7 @@ func TestAllowLinksHandsTheTreeOverAnyway(t *testing.T) {
 		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
 	}
 
-	if err := Isolate(granted, unusedAccount, []ACE{
+	if err := Isolate(granted, IdentifierAlone(unusedAccount), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatalf("--allow-links did not let the grant through: %v", err)
@@ -271,7 +271,7 @@ func TestAGrantAllowsALinkThatStaysInsideTheTree(t *testing.T) {
 		t.Skipf("this machine would not make a hard link: %v\n%s", err, out)
 	}
 
-	if err := Isolate(granted, unusedAccount, []ACE{
+	if err := Isolate(granted, IdentifierAlone(unusedAccount), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatalf("a tree whose links all stay inside it was refused: %v", err)
@@ -312,7 +312,7 @@ func TestALinkInsideATreeNamedInShortFormIsStillInside(t *testing.T) {
 		t.Skip("this volume does not keep short names, so there is no second spelling to test")
 	}
 
-	if err := Isolate(short, unusedAccount, []ACE{
+	if err := Isolate(short, IdentifierAlone(unusedAccount), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatalf("a tree named in short form was refused for containing a link to itself: %v", err)

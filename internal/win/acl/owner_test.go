@@ -119,7 +119,7 @@ func TestIsolateCapsWhatTheOwnerOfAFileHoldsImplicitly(t *testing.T) {
 	setSDDL(t, guarded, `D:P(A;;0x1200A9;;;`+owner+`)`)
 
 	ro := []ACE{{Access: AccessReadExecute, Inheritance: InheritNone}}
-	if err := Isolate(guarded, owner, ro, InheritNone, nil); err != nil {
+	if err := Isolate(guarded, IdentifierAlone(owner), ro, InheritNone, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -170,7 +170,7 @@ func TestTakingBackRepairsAnExtraOwnerRightsGrant(t *testing.T) {
 	}
 	normalizeOwner(t, probe, owner)
 	setSDDL(t, probe, `D:P(A;;0x1200A9;;;S-1-3-4)(A;;0x40000;;;S-1-3-4)`)
-	if err := TakeBack(probe, owner, nil); err != nil {
+	if err := TakeBack(probe, IdentifierAlone(owner), nil); err != nil {
 		t.Fatal(err)
 	}
 	if !holds(t, probe, "OWNER RIGHTS", "(RX)") {
@@ -258,7 +258,7 @@ func TestIsolateRepairsAnExtraTrusteeOnAnAlreadyCappedOwnedChild(t *testing.T) {
 		{Access: AccessReadExecute, Inheritance: InheritObjects | InheritContainers},
 		{Access: 0x40, Inheritance: InheritNone}, // the operator's cleanup door
 	}
-	if err := Isolate(handed, owner, entries, InheritObjects|InheritContainers, nil); err != nil {
+	if err := Isolate(handed, IdentifierAlone(owner), entries, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if EveryoneWritable(extra) {
@@ -319,7 +319,7 @@ func TestASweepCapsWhatTheSandboxOwnsInsideTheTree(t *testing.T) {
 		{Access: AccessReadExecute, Inheritance: InheritObjects | InheritContainers},
 		{Access: 0x40, Inheritance: InheritNone}, // delete what is inside
 	}
-	if err := Isolate(handed, owner, entries, InheritObjects|InheritContainers, nil); err != nil {
+	if err := Isolate(handed, IdentifierAlone(owner), entries, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -374,7 +374,7 @@ func TestAWritableGrantKeepsWorkingUnderTheCap(t *testing.T) {
 	}
 	normalizeOwner(t, made, owner)
 
-	if err := Isolate(made, owner, []ACE{
+	if err := Isolate(made, IdentifierAlone(owner), []ACE{
 		{Access: AccessModify, Inheritance: InheritNone},
 	}, InheritNone, nil); err != nil {
 		t.Fatal(err)
@@ -412,7 +412,7 @@ func TestIsolateLeavesAnObjectTheOperatorOwnsAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Isolate(handed, unusedAccount, []ACE{
+	if err := Isolate(handed, IdentifierAlone(unusedAccount), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
@@ -431,7 +431,7 @@ func TestIsolateLeavesAnObjectTheOperatorOwnsAlone(t *testing.T) {
 // that is not identifier text at all -- measured, ConvertStringSidToSidW
 // answers 1337 ERROR_INVALID_SID for a plain account name.
 func TestIsolateRefusesAnAccountItCannotResolve(t *testing.T) {
-	if err := Isolate(t.TempDir(), "nobody in particular", []ACE{
+	if err := Isolate(t.TempDir(), SandboxGroup("nobody in particular"), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err == nil {
 		t.Fatal("a grant went out under an account that could not be resolved")
@@ -495,14 +495,14 @@ func TestASweepReachesWhatItWroteWhenTheGrantNarrows(t *testing.T) {
 	}
 	t.Cleanup(func() { reclaim(t, made); reclaim(t, handed) })
 
-	if err := Isolate(handed, owner, writable, InheritObjects|InheritContainers, nil); err != nil {
+	if err := Isolate(handed, IdentifierAlone(owner), writable, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(made, []byte(written), 0o644); err != nil {
 		t.Fatalf("a writable grant stopped working: %v", err)
 	}
 
-	if err := Isolate(handed, owner, readable, InheritObjects|InheritContainers, nil); err != nil {
+	if err := Isolate(handed, IdentifierAlone(owner), readable, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if holds(t, made, name, "(M)") {
@@ -521,7 +521,7 @@ func TestASweepReachesWhatItWroteWhenTheGrantNarrows(t *testing.T) {
 	// And widened again, it is writable again: the rewrite runs whichever way
 	// the grant moves, so the narrowing is not a door that only opens one
 	// way.
-	if err := Isolate(handed, owner, writable, InheritObjects|InheritContainers, nil); err != nil {
+	if err := Isolate(handed, IdentifierAlone(owner), writable, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(made, []byte("writable again"), 0o644); err != nil {

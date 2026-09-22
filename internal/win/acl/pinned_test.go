@@ -194,7 +194,7 @@ func TestASealedObjectTheRecordHoldsIsLeftAlone(t *testing.T) {
 	// the hand-down on purpose, so every object this grant caps keeps the
 	// delete path the tests end with; a pinned directory is skipped with its
 	// whole subtree, so kept rides along untouched inside it.
-	if err := Isolate(handed, owner, []ACE{
+	if err := Isolate(handed, IdentifierAlone(owner), []ACE{
 		{Access: AccessReadExecute, Inheritance: InheritObjects | InheritContainers},
 		{Access: 0x40, Inheritance: InheritObjects | InheritContainers}, // delete what is inside, handed down
 	}, InheritObjects|InheritContainers, []string{sealed, sealedFile}); err != nil {
@@ -282,7 +282,7 @@ func TestWithoutTheRecordASweepReachesWhatTheSandboxSealed(t *testing.T) {
 		_ = os.RemoveAll(handed)
 	})
 
-	if err := Isolate(handed, owner, []ACE{
+	if err := Isolate(handed, IdentifierAlone(owner), []ACE{
 		{Access: AccessReadExecute, Inheritance: InheritObjects | InheritContainers},
 		{Access: 0x40, Inheritance: InheritObjects | InheritContainers}, // delete what is inside, handed down
 	}, InheritObjects|InheritContainers, nil); err != nil {
@@ -382,7 +382,7 @@ func TestPinnedEntriesUseFilesystemIdentityNotUnicodeFold(t *testing.T) {
 		{Access: AccessReadExecute, Inheritance: InheritObjects | InheritContainers},
 		{Access: 0x40, Inheritance: InheritObjects | InheritContainers},
 	}
-	if err := Isolate(target, owner, entries, InheritObjects|InheritContainers, []string{pinned}); err != nil {
+	if err := Isolate(target, IdentifierAlone(owner), entries, InheritObjects|InheritContainers, []string{pinned}); err != nil {
 		t.Fatal(err)
 	}
 	rewriteWorks(t, pinnedFile, owner)
@@ -419,7 +419,7 @@ func TestPinnedEntriesUseFilesystemIdentityNotUnicodeFold(t *testing.T) {
 		normalizeOwner(t, path, owner)
 		setSDDL(t, path, `D:P(A;;FA;;;`+owner+`)`)
 	}
-	if err := TakeBack(revoked, owner, []string{revokedPinned}); err != nil {
+	if err := TakeBack(revoked, IdentifierAlone(owner), []string{revokedPinned}); err != nil {
 		t.Fatal(err)
 	}
 	rewriteWorks(t, revokedPinnedFile, owner)
@@ -431,7 +431,7 @@ func TestPinnedEntriesUseFilesystemIdentityNotUnicodeFold(t *testing.T) {
 // cheapest account that cannot be resolved is one that is not identifier
 // text at all.
 func TestTheIdentitiesFailClosedWhenTheAccountIsNotSIDText(t *testing.T) {
-	sandbox, err := identitiesFor("nobody in particular")
+	sandbox, err := identitiesFor(SandboxGroup("nobody in particular"))
 	if err == nil {
 		t.Fatal("an account that is not identifier text resolved to something")
 	}
@@ -445,10 +445,11 @@ func TestTheIdentitiesFailClosedWhenTheAccountIsNotSIDText(t *testing.T) {
 // NetLocalGroupGetMembers answers 1376 ERROR_NO_SUCH_ALIAS for the bare name
 // of a plain account and 2220 NERR_GroupNotFound for a qualified one -- and
 // the one identifier is the whole answer. The synthetic identifier's own
-// lookup answers NoneMapped, which the resolver reads the same way: nothing
-// anywhere maps to it, so nothing exists to have a group. The fail-closed
-// half is covered by the test above and by the real-group test in
-// internal/e2e.
+// lookup answers NoneMapped, which the resolver accepts because the test
+// hands it over as an identifier that stands alone: nothing anywhere maps
+// to it, so nothing exists to have a group. The fail-closed halves are
+// covered by the test above and by
+// TestTheIdentitiesKnowALookupThatFailedFromOneThatSaidNo.
 func TestTheIdentitiesOfAnAccountThatNamesNoGroupAreItself(t *testing.T) {
 	user, err := sid.CurrentUser()
 	if err != nil {
@@ -459,7 +460,7 @@ func TestTheIdentitiesOfAnAccountThatNamesNoGroupAreItself(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sandbox, err := identitiesFor(account)
+		sandbox, err := identitiesFor(IdentifierAlone(account))
 		if err != nil {
 			t.Fatalf("%s: %v", account, err)
 		}
@@ -504,10 +505,12 @@ func snapshotSweepFixture(t *testing.T) (handed, pinnedDir, pinnedFile, made, pl
 }
 
 // sweepIdentities resolves, once, the identities a direct call of sweep
-// needs, and gives them back when the test ends.
+// needs, and gives them back when the test ends. Tests here never claim a
+// local group behind the account, so it is handed over as an identifier
+// that stands alone.
 func sweepIdentities(t *testing.T, account string) *identities {
 	t.Helper()
-	sandbox, err := identitiesFor(account)
+	sandbox, err := identitiesFor(IdentifierAlone(account))
 	if err != nil {
 		t.Fatal(err)
 	}

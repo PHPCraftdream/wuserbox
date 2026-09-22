@@ -165,8 +165,12 @@ func TestHomeTopHoldsWhereTheMachineHandsOutNothing(t *testing.T) {
 	if err := box.state.Add(top, grant.HomeTop); err != nil {
 		t.Fatal(err)
 	}
+	// Everyone and Users stand for themselves here: self-standing
+	// identifiers the sandbox's group is being narrowed against, not a
+	// group of their own, so they are handed over as identifiers that
+	// stand alone.
 	for _, who := range []string{sid.Everyone, sid.Users} {
-		if err := acl.StripOwn(top, who); err != nil {
+		if err := acl.StripOwn(top, acl.IdentifierAlone(who)); err != nil {
 			t.Fatal(err)
 		}
 	}

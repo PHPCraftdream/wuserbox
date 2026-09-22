@@ -90,7 +90,7 @@ func TestAGrantRefusesWhenTheLinkEnumerationFailsPartway(t *testing.T) {
 	restore := pathid.FailNextNameForTest(errors.New("the injected enumeration failure"))
 	defer restore()
 
-	err := acl.Isolate(granted, closeTestAccount, []acl.ACE{
+	err := acl.Isolate(granted, acl.IdentifierAlone(closeTestAccount), []acl.ACE{
 		{Access: acl.AccessModify, Inheritance: acl.InheritObjects | acl.InheritContainers},
 	}, acl.InheritObjects|acl.InheritContainers, nil)
 	if err == nil {
