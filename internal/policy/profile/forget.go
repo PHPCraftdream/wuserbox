@@ -159,7 +159,11 @@ func forget(root *os.Root, previously []config.Entry, current []config.Entry) er
 // gone from the profile, which is answered and spared the same way. forget
 // holds one stretch of resolver instruments across the clears that took
 // nothing and drops it on the first one that did, because the stretch's
-// cached answers describe the names as the clears found them.
+// cached answers describe the names as the clears found them. An error
+// means the take-back could not finish -- the question of whether the
+// copy stood at all went unanswered -- and the entry stays on the record
+// for the run that comes after: an answer nobody got is never read as
+// nothing to take.
 func clearEntry(root *os.Root, stale string, entry config.Entry) (bool, error) {
 	// A reserved path is inert to the take-back whatever the entry
 	// carried: the record may name the hive outright, bare or with
@@ -186,9 +190,19 @@ func clearEntry(root *os.Root, stale string, entry config.Entry) (bool, error) {
 		}
 		// RemoveAll answers nil for a name that is not there, and the
 		// stretch's question needs the two told apart: asked here, where
-		// the existence answer is the removal answer.
-		if _, readable := lookAt(root, stale); !readable {
-			return false, nil
+		// the existence answer is the removal answer. The volume's own
+		// nothing is the only nothing that reads as gone: a name an
+		// ordinary program still holds, or one this run's rights cannot
+		// open, is a question the take-back could not finish, and
+		// answering it as an absence reports success over a copy left
+		// standing under a record that no longer names it. The error
+		// stops the take-back with the record standing, and the next run
+		// asks again.
+		if _, err := root.Lstat(stale); err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return false, err
 		}
 		if err := root.RemoveAll(stale); err != nil {
 			return false, err
@@ -200,9 +214,19 @@ func clearEntry(root *os.Root, stale string, entry config.Entry) (bool, error) {
 	// opens directories through the root, and the root refuses to open one
 	// that leads out of the profile, which would fail the whole clearing
 	// over a link that is safe to remove and nothing else.
-	info, readable := lookAt(root, stale)
-	if !readable {
-		return false, nil
+	// The same distinction the bare branch draws: the volume's own
+	// nothing means the entry never landed or is already gone, and the
+	// take-back answers a no-op; anything else is a question this run
+	// could not finish, and walking or removing on the strength of an
+	// answer nobody got would report success over a copy it never
+	// looked at. The error goes up with the record standing for the
+	// next run to ask again.
+	info, err := root.Lstat(stale)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
 	}
 	if !info.IsDir() || info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
 		if err := root.RemoveAll(stale); err != nil {

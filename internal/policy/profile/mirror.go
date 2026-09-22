@@ -190,13 +190,20 @@ func (s *copySink) prepareDir(root *os.Root, dst string) error {
 // whether dst stood as a plain directory when it was done: false covers
 // both a name that had to be taken to make room and a name that was never
 // there, the two shapes the MkdirAll beside it acts on, and both are the
-// destination's structure changing.
+// destination's structure changing. A look that could not finish at all is
+// neither of those and is an error rather than a plain: the volume's own
+// nothing is the only nothing this walk may read as room to make the
+// directory in, and going on to MkdirAll over a name it never understood
+// would report that call's failure in words about a name nothing here
+// examined. Stopping leaves the destination as it stood for the next run
+// to ask again.
 func clearWhatIsNotADirectory(root *os.Root, dst string) (plain bool, err error) {
-	info, readable := lookAt(root, dst)
-	// Nothing there, or nothing this can read: MkdirAll answers next, and
-	// its answer is the one worth reporting.
-	if !readable {
-		return false, nil
+	info, err := root.Lstat(dst)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
 	}
 	if info.IsDir() && info.Mode()&(os.ModeSymlink|os.ModeIrregular) == 0 {
 		return true, nil
@@ -204,8 +211,16 @@ func clearWhatIsNotADirectory(root *os.Root, dst string) (plain bool, err error)
 	return false, root.RemoveAll(dst)
 }
 
-// lookAt is Lstat where not finding something is an answer rather than a
-// failure.
+// lookAt is Lstat with the readable shape the walks' cautious questions
+// ask, and every caller here treats unreadable as the cautious answer --
+// no skip, the structure question marked changed, the removal or creation
+// below attempted anyway, and the one that cannot be done is the error the
+// caller reports. A caller that would read unreadable as absent must ask
+// the error itself, the way clearEntry and clearWhatIsNotADirectory do: a
+// name the volume refuses to describe -- an ordinary program's exclusive
+// hold on it, most commonly -- is not a name the volume reports gone, and
+// reading one as the other is how a take-back reports success over a copy
+// it never looked at.
 func lookAt(root *os.Root, name string) (os.FileInfo, bool) {
 	info, err := root.Lstat(name)
 	return info, err == nil
