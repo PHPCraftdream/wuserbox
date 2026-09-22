@@ -9,6 +9,7 @@
 package acl
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -69,6 +70,28 @@ func putBack(t *testing.T, h syscall.Handle, text string) {
 	}
 }
 
+// describeOwner is diagnostic only, called after the control check above it
+// has already failed: it says who the object's owner actually is, resolved
+// to a name, against the SID this account claims as its own, so a failure
+// here says more than "the closed directory's list could be read" does on
+// its own -- an owner the OWNER RIGHTS deny above does not name would read
+// it back regardless of the list, and this is the one place that would show.
+func describeOwner(t *testing.T, path, expectedSID string) string {
+	t.Helper()
+	var ownerSID, descriptor uintptr
+	if r, _, err := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
+		seFileObject, ownerInfo, uintptr(unsafe.Pointer(&ownerSID)), 0, 0, 0,
+		uintptr(unsafe.Pointer(&descriptor))); r != 0 {
+		return fmt.Sprintf("and the object's own owner could not be read either: %v", err)
+	}
+	defer w32.Free(descriptor)
+	name, nameErr := sid.Name(ownerSID)
+	if nameErr != nil {
+		name = "<unresolved>"
+	}
+	return fmt.Sprintf("object owner: %s; this account's own SID: %s", name, expectedSID)
+}
+
 // TestAnAuditPassReadsEachObjectOnceAndGivesItsIdentifiersBack answers the
 // audit question for a small tree -- one ordinary directory, one whose
 // permission list this account is refused -- and counts what the answers
@@ -102,7 +125,7 @@ func TestAnAuditPassReadsEachObjectOnceAndGivesItsIdentifiersBack(t *testing.T) 
 	// Both fixtures have to be what they claim before the counted pass
 	// starts, or the counts prove nothing.
 	if _, err := heldBy(closed, sid.Everyone, changing); err == nil {
-		t.Fatal("the closed directory's list could be read, so this proves nothing")
+		t.Fatalf("the closed directory's list could be read, so this proves nothing (%s)", describeOwner(t, closed, owner))
 	}
 	if _, err := heldBy(root, sid.Everyone, changing); err != nil {
 		t.Fatalf("the ordinary directory's list could not be read, so this proves nothing: %v", err)
