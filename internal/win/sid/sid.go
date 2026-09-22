@@ -4,6 +4,7 @@ package sid
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"syscall"
 	"unsafe"
 
@@ -11,10 +12,20 @@ import (
 )
 
 var (
-	procLookupAccountName     = w32.Advapi32.NewProc("LookupAccountNameW")
-	procLookupAccountSid      = w32.Advapi32.NewProc("LookupAccountSidW")
-	procConvertSidToStringSid = w32.Advapi32.NewProc("ConvertSidToStringSidW")
+	procLookupAccountName                   = w32.Advapi32.NewProc("LookupAccountNameW")
+	procLookupAccountSid                    = w32.Advapi32.NewProc("LookupAccountSidW")
+	procConvertSidToStringSid textConverter = w32.Advapi32.NewProc("ConvertSidToStringSidW")
 )
+
+// textConverter is the one call this package makes of Windows to turn an
+// identifier into text, behind an interface so the refusal tests can stand
+// in for it: no account on any machine produces a real refusal on demand,
+// and a stubbed converter does. syscall.LazyProc's Call has exactly this
+// shape, so the proc itself satisfies it and the production value is the
+// real thing still.
+type textConverter interface {
+	Call(a ...uintptr) (r1, r2 uintptr, lastErr error)
+}
 
 // NoneMapped is the refusal LookupAccountSidW reports for an identifier no
 // account or group anywhere answers to: the SID is well formed, the lookup
@@ -49,12 +60,21 @@ func Lookup(account string) (Value, error) {
 	return value, nil
 }
 
-// String renders the identifier in S-1-5-… form.
+// String renders the identifier in S-1-5-… form. The value itself crosses to
+// the formatter and is the owner it holds: the bytes stay alive until Windows
+// is done reading them, not merely until the address &v[0] became a number.
+// A refused conversion comes back as the same empty string an empty Value
+// gives -- String has no error to hand up -- and the fallible callers that
+// need the reason ask format directly.
 func (v Value) String() string {
 	if len(v) == 0 {
 		return ""
 	}
-	return format(uintptr(unsafe.Pointer(&v[0])))
+	text, err := format(unsafe.Pointer(&v[0]), v)
+	if err != nil {
+		return ""
+	}
+	return text
 }
 
 // Name resolves a SID pointer back to the bare account name, without the
@@ -95,12 +115,22 @@ func Name(pointer uintptr) (string, error) {
 	return syscall.UTF16ToString(name), nil
 }
 
-// format renders a SID that Windows owns.
-func format(pointer uintptr) string {
+// format renders the identifier Windows keeps at pointer, the reason a
+// conversion failed included. pointer travels typed, and owner -- the Go
+// memory the identifier lives in -- travels beside it, because a uintptr
+// holds nothing down: the buffer a caller read the identifier from can be
+// collected the moment nothing points at it any more, and the allocations
+// this call makes on the way are exactly where the compiler stops keeping
+// it. The conversion to a number happens in the call expression itself, the
+// shape the unsafe rules demand for memory a system call reads, and the
+// KeepAlive after it holds precisely that owner until the answer is back.
+func format(pointer unsafe.Pointer, owner []byte) (string, error) {
 	var text *uint16
-	if r, _, _ := procConvertSidToStringSid.Call(pointer, uintptr(unsafe.Pointer(&text))); r == 0 {
-		return ""
+	r, _, callErr := procConvertSidToStringSid.Call(uintptr(pointer), uintptr(unsafe.Pointer(&text)))
+	runtime.KeepAlive(owner)
+	if r == 0 {
+		return "", fmt.Errorf("formatting the identifier: %w", callErr)
 	}
 	defer w32.Free(uintptr(unsafe.Pointer(text)))
-	return w32.GoString(text)
+	return w32.GoString(text), nil
 }
