@@ -676,7 +676,25 @@ func TestEveryConsoleHostOfARunIsClosedToTheSandboxedProgram(t *testing.T) {
 		}
 		commandLine := syscall.EscapeArg(exe) + " " + conhostProwlFlag + " " + syscall.EscapeArg(resultFile)
 		legLine := box.throughTheStub(t, stub, commandLine)
+		// The stub's last words go to its stderr, and a run carries that
+		// stderr only when the caller's own streams are consoles -- under
+		// `go test` they are pipes, so runAsAccount builds no bridge for it
+		// and whatever the stub said before dying is lost exactly where the
+		// failure happened. RunAsAccount takes the child's output handles
+		// from os.Stdout and os.Stderr synchronously inside the call, so
+		// pointing os.Stderr at a file for exactly the length of the call
+		// is enough for the stub and everything it starts to write there,
+		// while the test's own output stays untouched. No defer inside the
+		// loop: the swap is undone and the file closed before the next leg.
+		stubStderr, err := os.Create(filepath.Join(work, "stub-stderr-"+leg.slug+".txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wasStderr := os.Stderr
+		os.Stderr = stubStderr
 		code, runErr := proc.RunAsAccount(box.account, box.password, legLine, work, leg.env())
+		os.Stderr = wasStderr
+		stubStderr.Close()
 		if runErr != nil {
 			t.Fatalf("%s: starting the conhost prowl as %s: %v", leg.name, box.account, runErr)
 		}
@@ -686,9 +704,28 @@ func TestEveryConsoleHostOfARunIsClosedToTheSandboxedProgram(t *testing.T) {
 			// account, stub, restricted token, back across the logon
 			// boundary -- and cannot be taken away, which is why the prowl
 			// answers in it and the test reads the file only to say why.
+			//
+			// Exit code 90 is never one of the prowl's verdicts -- 42
+			// through 46 are the five the prowl ends on. 90 is
+			// account_test.go's TestMain answering for exec.Stub having
+			// returned an error, the stub's own refusal or breakage, so the
+			// doors were never measured at all and the number must not be
+			// read as an open-door count. The stub's own words on its way
+			// out are the only diagnosis that exists for that shape, and
+			// the file captured above is where they now live: this reads
+			// them back when the verdict is bad -- the same split as the
+			// prowl's exit code and its result file, and the same
+			// diagnostic discipline as shield.go's thread-refusal words.
+			// The check itself is unchanged, only what a failure is able
+			// to say.
 			diagnosis, _ := os.ReadFile(resultFile)
-			t.Fatalf("%s: the conhost prowl ended with exit code %d; what it wrote: %s",
-				leg.name, code, diagnosis)
+			stubWords, readErr := os.ReadFile(filepath.Join(work, "stub-stderr-"+leg.slug+".txt"))
+			stubSaid := string(stubWords)
+			if readErr != nil {
+				stubSaid = fmt.Sprintf("unreadable: %v", readErr)
+			}
+			t.Fatalf("%s: the conhost prowl ended with exit code %d; what it wrote: %s; what the stub's stderr carried: %s",
+				leg.name, code, diagnosis, stubSaid)
 		}
 		raw, err := os.ReadFile(resultFile)
 		if err != nil {
