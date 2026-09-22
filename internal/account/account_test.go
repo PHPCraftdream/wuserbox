@@ -374,3 +374,69 @@ func TestInsideSandboxGivesBackTheIdentifierItParses(t *testing.T) {
 		t.Errorf("five questions gave %d identifiers back, want all five parsed", got)
 	}
 }
+
+// The comment is two facts in one string, and every reader of it -- the
+// membership identity check, the new owner check -- gets the half it asked
+// for. A directory can hold every character a project path needs and none
+// of the separator, and an account that predates owners entirely has to
+// read back as a directory with nobody recorded behind it.
+func TestOwnerCommentSplitsBackIntoProjectAndOperator(t *testing.T) {
+	const stranger = "S-1-5-21-3623811015-3361044348-30300820-2026"
+	for _, tc := range []struct {
+		comment        string
+		project, owner string
+	}{
+		{OwnerComment(`C:\projects\shared one`, stranger), `C:\projects\shared one`, stranger},
+		{`C:\projects\legacy`, `C:\projects\legacy`, ""},
+		{"", "", ""},
+	} {
+		project, owner := splitComment(tc.comment)
+		if project != tc.project || owner != tc.owner {
+			t.Errorf("splitComment(%q) = (%q, %q), want (%q, %q)", tc.comment, project, owner, tc.project, tc.owner)
+		}
+	}
+}
+
+// Written through NetUserAdd and read back through NetUserGetInfo: the
+// split the pure test above pins has to survive the accounts database
+// between the two calls, which is the only part of this that could
+// surprise.
+func TestCommentCarriesTheProjectAndOwnerTheOperatorWrote(t *testing.T) {
+	requireAdmin(t)
+	const project = `C:\projects\selftest`
+	const operator = "S-1-5-21-3623811015-3361044348-30300820-1013"
+
+	password, err := GeneratePassword()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned := Prefix + "0wned1dea" // nine characters after the prefix: under the twenty Windows allows
+	if err := Add(owned, OwnerComment(project, operator), password); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = Delete(owned) })
+
+	got, exists, err := Comment(owned)
+	if err != nil || !exists {
+		t.Fatalf("reading the comment back: exists=%v err=%v", exists, err)
+	}
+	if got != project {
+		t.Errorf("Comment() = %q, want the directory %q alone", got, project)
+	}
+	recorded, exists, err := Owner(owned)
+	if err != nil || !exists {
+		t.Fatalf("reading the owner back: exists=%v err=%v", exists, err)
+	}
+	if recorded != operator {
+		t.Errorf("Owner() = %q, want the operator %q", recorded, operator)
+	}
+
+	plain := Prefix + "0ldn1dea"
+	if err := Add(plain, project, password); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = Delete(plain) })
+	if owner, exists, err := Owner(plain); err != nil || !exists || owner != "" {
+		t.Errorf("Owner() of a plain comment = (%q, %v, %v), want no owner", owner, exists, err)
+	}
+}

@@ -199,6 +199,10 @@ func build(name, dir string, o Options) (*state.State, error) {
 // group the user's own profile grants read to. Requires administrator
 // rights, the same as creating the group itself.
 //
+// Every account made here also carries, in its comment, the SID of the
+// operator who made it, so the replacement path below can later tell this
+// operator's lost record from another operator's account that still works.
+//
 // The record is saved right after the account is created, before anything
 // else here or later in build can fail: NetUserAdd has already committed
 // that password to the account by then, and nothing regenerates it, so a
@@ -210,11 +214,20 @@ func ensureAccount(s *state.State, groupName, dir string) (err error) {
 	done := trace.Current().Phase("account_creation_or_reuse",
 		trace.Field{Key: "sandbox", Value: groupName})
 	defer func() { done(err) }()
+	// One answer, asked for twice: the account records this SID as its
+	// creator when it is made here, and the replacement below reads the
+	// same SID back before it will take an existing account away.
+	// Elevation does not change it, so the operator asking and the operator
+	// recorded are the same person however the run was raised.
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		return err
+	}
 	name, err := accountName(s, groupName, dir)
 	if err != nil {
 		return err
 	}
-	if err := replaceUnopenableAccount(s, name, groupName, dir); err != nil {
+	if err := replaceUnopenableAccount(s, name, groupName, dir, owner); err != nil {
 		return err
 	}
 	if s.Account == "" && s.Secret != "" && resolves(name) {
@@ -231,7 +244,7 @@ func ensureAccount(s *state.State, groupName, dir string) (err error) {
 		if err != nil {
 			return err
 		}
-		if err := acct.Add(name, dir, password); err != nil {
+		if err := acct.Add(name, acct.OwnerComment(dir, owner), password); err != nil {
 			return err
 		}
 		sealed, err := acct.Protect(password)
@@ -259,10 +272,6 @@ func ensureAccount(s *state.State, groupName, dir string) (err error) {
 	// EnsureReadGroup's own caller already extends, since the alternative is
 	// refusing to build the sandbox at all over one grant that was always
 	// allowed to be missing.
-	owner, err := sid.CurrentUser()
-	if err != nil {
-		return err
-	}
 	if readGroup := group.ReadGroupFor(owner); resolves(readGroup) {
 		wanted = append(wanted, readGroup)
 	}
@@ -325,12 +334,23 @@ func accountBelongs(name, groupName, dir string) (bool, error) {
 // sandbox is a dead end that every later `--init` walks past, because the
 // account it looks for is right there.
 //
+// An empty secret on its own is not proof that the account is the one being
+// asked about. A group and its account name the project, not the operator,
+// so a second operator running init on the same project arrives at exactly
+// this shape: no secret on their side, the account present, belonging to
+// the group. Deleting it there would take away a live sandbox whose
+// password only the other operator's record still holds, so the account's
+// comment has to name the operator asking before anything is taken away.
+// Made by the same operator, the replacement goes ahead; made by another,
+// or recording no creator at all, init stops with the reason and the
+// account is left standing.
+//
 // The thin profile goes with it. Its directory and its registry hive both
 // carry permissions naming the SID about to stop existing, and a hive the
 // new account cannot open is a sandbox that starts and then cannot write
 // its own settings. It is rebuilt from nothing a moment later by
 // ensureProfile, and holds only copies in the first place.
-func replaceUnopenableAccount(s *state.State, name, groupName, dir string) error {
+func replaceUnopenableAccount(s *state.State, name, groupName, dir, operator string) error {
 	if s.Secret != "" || !resolves(name) {
 		return nil // the password to open it is kept, or there is no account
 	}
@@ -341,11 +361,67 @@ func replaceUnopenableAccount(s *state.State, name, groupName, dir string) error
 	if !ok {
 		return fmt.Errorf("account %s is not owned by sandbox group %s; refusing to delete it", name, groupName)
 	}
-	if err := acct.Delete(name); err != nil {
+	return replaceAccountTheOperatorOwns(s, name, groupName, operator, acct.Owner, acct.Delete)
+}
+
+// replaceAccountTheOperatorOwns is the taking-away half of
+// replaceUnopenableAccount, split from it so the ownership decision can be
+// tested without the accounts it refuses to touch: ownerOf stands in for
+// the accounts database and del for NetUserDel, and a test hands in fakes
+// that count the deletions rather than making any.
+func replaceAccountTheOperatorOwns(s *state.State, name, groupName, operator string,
+	ownerOf func(name string) (owner string, exists bool, err error),
+	del func(name string) error,
+) error {
+	recorded, exists, err := ownerOf(name)
+	if err != nil {
+		return fmt.Errorf("cannot read who created account %s: %w", name, err)
+	}
+	if !exists {
+		return fmt.Errorf("account %s disappeared before its creator could be read; refusing to delete it", name)
+	}
+	switch classifyOwner(recorded, operator) {
+	case ownerSelf:
+	case ownerForeign:
+		return fmt.Errorf("account %s records another operator (%s) as its creator; refusing to delete it", name, recorded)
+	case ownerUnestablished:
+		return fmt.Errorf("account %s records no operator as its creator; refusing to delete it", name)
+	}
+	if err := del(name); err != nil {
 		return err
 	}
 	s.Account = ""
 	return os.RemoveAll(ProfileDir(groupName))
+}
+
+// ownerProof is what an account's comment proves about the operator asking
+// to replace it.
+type ownerProof int
+
+const (
+	// ownerSelf: the account's comment names the operator asking.
+	ownerSelf ownerProof = iota
+	// ownerForeign: it names somebody else, whose own record still holds
+	// the only copy of the password.
+	ownerForeign
+	// ownerUnestablished: it names nobody -- an account made before
+	// creators were recorded, or by anything that did not go through
+	// OwnerComment -- so creatorship cannot be proved either way.
+	ownerUnestablished
+)
+
+// classifyOwner compares the creator an account records with the operator
+// the current process runs as. Both are SID strings, which Windows spells
+// one way; the fold is there so a spelling difference alone cannot turn an
+// operator's own account into somebody else's.
+func classifyOwner(recorded, operator string) ownerProof {
+	if recorded == "" {
+		return ownerUnestablished
+	}
+	if strings.EqualFold(recorded, operator) {
+		return ownerSelf
+	}
+	return ownerForeign
 }
 
 // leaveLegacyReadGroup takes this sandbox's account out of the one read

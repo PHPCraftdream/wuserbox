@@ -142,6 +142,20 @@ by what it holds is a boundary somebody will lean on where it does not.
   than the one it would answer. Until there is a reason to build that, the
   answer is not to run two operators' commands into the same directory at
   once.
+* **A sandbox for a project belongs to whoever built it first.** The group
+  and the account a sandbox runs as name the project, not the operator, and
+  both are machine-wide: a second operator running init on the same project
+  finds the first one's group and account already there, and no record of
+  the account's password on their side. An empty record alone does not make
+  the account theirs to replace. Every account records, in its comment, the
+  SID of the operator who created it, and an init that finds an account it
+  cannot open replaces it only when that SID is the caller's own -- another
+  operator's account, or one that records no creator (accounts from older
+  builds), is left standing and init stops saying why. Recovering your own
+  lost record works exactly as it did. Sharing one project between two
+  operators therefore means removing the sandbox with `wuserbox --rm` first
+  and letting one of them build it again, not running init from both
+  accounts.
 * **Revoking does not reach a file that is already open.** Windows checks
   permissions when a file is opened and not again afterwards, so a sandbox that
   already had something open keeps writing through that handle until it closes
