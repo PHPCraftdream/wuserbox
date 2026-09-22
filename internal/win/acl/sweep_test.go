@@ -206,3 +206,50 @@ func TestAHandDownNamesTheObjectItLandsOn(t *testing.T) {
 		})
 	}
 }
+
+// TestGenerationsBelowCountsTheHopsTheRootSpelled asks the counter directly,
+// on names alone, the way the review measured it: the volume root, spelled
+// with the separator normalization keeps, whose child used to be refused for
+// not carrying a second one; the ordinary directory root; the UNC share root
+// in both spellings; and the answers that must stay refusals -- the root
+// itself, which a hand-down has nowhere to land on, and the neighbor whose
+// name merely begins with the root's.
+func TestGenerationsBelowCountsTheHopsTheRootSpelled(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		root    string
+		path    string
+		want    int
+		wantErr bool
+	}{
+		{"child of the drive root", `Q:\`, `Q:\child.txt`, 1, false},
+		{"grandchild of the drive root", `Q:\`, `Q:\docs\child.txt`, 2, false},
+		{"child of a directory root", `Q:\dir`, `Q:\dir\child.txt`, 1, false},
+		{"grandchild of a directory root", `Q:\dir`, `Q:\dir\sub\child.txt`, 2, false},
+		{"child of a terminated directory root", `Q:\dir\`, `Q:\dir\child.txt`, 1, false},
+		{"child of the UNC share root", `\\server\share\`, `\\server\share\child.txt`, 1, false},
+		{"grandchild of the UNC share root", `\\server\share\`, `\\server\share\docs\child.txt`, 2, false},
+		{"child of the UNC share root without its separator", `\\server\share`, `\\server\share\child.txt`, 1, false},
+		{"the directory root itself", `Q:\dir`, `Q:\dir`, 0, true},
+		{"the drive root itself", `Q:\`, `Q:\`, 0, true},
+		{"a neighbor sharing the prefix", `Q:\dir`, `Q:\dir2\child.txt`, 0, true},
+		{"a neighbor under a terminated root", `Q:\dir\`, `Q:\dir2\child.txt`, 0, true},
+		{"a path on another volume", `Q:\dir`, `R:\dir\child.txt`, 0, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			generations, err := generationsBelow(test.root, test.path)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("%s came out %d generations below %s, want a refusal", test.path, generations, test.root)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("%s below %s: %v", test.path, test.root, err)
+			}
+			if generations != test.want {
+				t.Fatalf("%s sits %d generations below %s, want %d", test.path, generations, test.root, test.want)
+			}
+		})
+	}
+}
