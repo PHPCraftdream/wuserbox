@@ -42,7 +42,8 @@ func TestTheCopyStopsWhenItHasCarriedEnough(t *testing.T) {
 	// Empty maps rather than nil: the file that finishes before the
 	// refusal still gets its fingerprint recorded, and a nil map would
 	// panic on the write.
-	_, err = mirror(filepath.Join(home, "big"), "big", "", root, info, &left, newWalk(config.Entry{Path: "big"}), map[string]Print{}, map[string]Print{})
+	var scratch []byte
+	_, err = mirror(filepath.Join(home, "big"), "big", "", root, info, &left, newWalk(config.Entry{Path: "big"}), map[string]Print{}, map[string]Print{}, &scratch)
 	if err == nil {
 		t.Fatal("a copy past its budget was allowed to finish")
 	}
@@ -201,10 +202,14 @@ func TestACopyPastItsBudgetRefusesWhenTheSourceGrowsAfterItWasMeasured(t *testin
 // shapes the write-nothing-past rule can be caught holding in.
 func TestTheBoundedCopyWritesNotOneBytePastItsLimit(t *testing.T) {
 	var out bytes.Buffer
+	// One scratch for all five cases: sharing it also proves a fresh copy
+	// starts clean rather than inheriting the last file's bytes, which the
+	// assertions on out would catch.
+	scratch := make([]byte, scratchLen)
 
 	// More offered at once than the limit allows: refusal, and the
 	// destination holds nothing, not one byte of the oversized chunk.
-	n, err := copyBounded(&out, strings.NewReader(strings.Repeat("z", 60)), 40)
+	n, err := copyBounded(&out, strings.NewReader(strings.Repeat("z", 60)), 40, scratch)
 	if err == nil {
 		t.Fatal("a copy with more to give than its budget was allowed to finish")
 	}
@@ -215,7 +220,7 @@ func TestTheBoundedCopyWritesNotOneBytePastItsLimit(t *testing.T) {
 	// More offered a byte at a time: the limit fills exactly, and the byte
 	// past it is refused without being written.
 	out.Reset()
-	n, err = copyBounded(&out, iotest.OneByteReader(strings.NewReader(strings.Repeat("z", 60))), 40)
+	n, err = copyBounded(&out, iotest.OneByteReader(strings.NewReader(strings.Repeat("z", 60))), 40, scratch)
 	if err == nil {
 		t.Fatal("a copy past its budget was allowed to finish")
 	}
@@ -225,7 +230,7 @@ func TestTheBoundedCopyWritesNotOneBytePastItsLimit(t *testing.T) {
 
 	// Fewer than the limit: an ordinary short copy, and it succeeds whole.
 	out.Reset()
-	n, err = copyBounded(&out, strings.NewReader("short"), 40)
+	n, err = copyBounded(&out, strings.NewReader("short"), 40, scratch)
 	if err != nil {
 		t.Fatalf("a copy under its budget was refused: %v", err)
 	}
@@ -235,7 +240,7 @@ func TestTheBoundedCopyWritesNotOneBytePastItsLimit(t *testing.T) {
 
 	// Exactly the limit: the boundary is inclusive, and the copy succeeds.
 	out.Reset()
-	n, err = copyBounded(&out, strings.NewReader(strings.Repeat("z", 40)), 40)
+	n, err = copyBounded(&out, strings.NewReader(strings.Repeat("z", 40)), 40, scratch)
 	if err != nil {
 		t.Fatalf("a copy exactly its budget was refused: %v", err)
 	}
@@ -246,11 +251,80 @@ func TestTheBoundedCopyWritesNotOneBytePastItsLimit(t *testing.T) {
 	// No limit and nothing to copy: zero-length files are ordinary, and
 	// copying nothing is succeeding.
 	out.Reset()
-	n, err = copyBounded(&out, strings.NewReader(""), 0)
+	n, err = copyBounded(&out, strings.NewReader(""), 0, scratch)
 	if err != nil {
 		t.Fatalf("an empty copy at a zero budget was refused: %v", err)
 	}
 	if n != 0 || out.Len() != 0 {
 		t.Errorf("an empty copy moved %d bytes and the destination holds %d, want nothing at all", n, out.Len())
+	}
+}
+
+// TestOneScratchBufferServesTheWholeCopyNotEachFile pins the sharing the
+// bounded copy was given its buffer for, and both of its limits. Several
+// files across two entries are carried on one pass, and the buffer is built
+// once for the lot -- not once per file, and not once per entry -- while a
+// pass whose every file is skipped by its print builds none at all, and the
+// pass after that builds its own: the buffer holds fragments of the files it
+// carried, so nothing of one run's sources may outlive the run that moved
+// them.
+func TestOneScratchBufferServesTheWholeCopyNotEachFile(t *testing.T) {
+	home, dest := useProfile(t, []string{"first", "second"})
+	write(t, filepath.Join(home, "first", "a.txt"), "alpha")
+	write(t, filepath.Join(home, "first", "b.txt"), "beta")
+	write(t, filepath.Join(home, "first", "deep", "c.txt"), "gamma")
+	write(t, filepath.Join(home, "second", "d.txt"), "delta")
+
+	root, err := os.OpenRoot(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	var made int
+	previous := newScratch
+	newScratch = func() []byte { made++; return make([]byte, scratchLen) }
+	defer func() { newScratch = previous }()
+
+	entries := []config.Entry{{Path: "first"}, {Path: "second"}}
+	copied, prints, err := copyEntries(home, root, entries, nil, Ceiling, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(copied) != 2 {
+		t.Fatalf("the pass reported %v, want both entries", pathsOf(copied))
+	}
+	if made != 1 {
+		t.Errorf("four files across two entries built %d scratch buffers, want one for the whole copy", made)
+	}
+	// Sharing one buffer between files must not let one file's bytes
+	// reach into the next file's copy.
+	for path, want := range map[string]string{
+		"first/a.txt": "alpha", "first/b.txt": "beta",
+		"first/deep/c.txt": "gamma", "second/d.txt": "delta",
+	} {
+		if got := read(t, filepath.Join(dest, filepath.FromSlash(path))); got != want {
+			t.Errorf("%s copied as %q, want %q", path, got, want)
+		}
+	}
+
+	// A pass that moves nothing builds nothing: every print still holds
+	// and every copy still stands, so no buffer is ever reached for.
+	made = 0
+	if _, _, err := copyEntries(home, root, entries, nil, Ceiling, prints); err != nil {
+		t.Fatal(err)
+	}
+	if made != 0 {
+		t.Errorf("a pass that skipped every file built %d scratch buffers, want none", made)
+	}
+
+	// And the next real pass builds its own rather than keeping the last
+	// run's: the prints are dropped, the files move again, and the count
+	// says the buffer was born again with them.
+	if _, _, err := copyEntries(home, root, entries, nil, Ceiling, nil); err != nil {
+		t.Fatal(err)
+	}
+	if made != 1 {
+		t.Errorf("a fresh copy operation built %d scratch buffers, want exactly its own one", made)
 	}
 }
