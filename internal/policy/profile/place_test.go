@@ -314,8 +314,8 @@ func TestSameEntryPlaceSharesOneLookBetweenItsTwoSpellings(t *testing.T) {
 // and its stop leaves the wrapper installed, and the wrapper answers as
 // the constructor it wrapped, so nothing downstream can tell. The stop
 // reports how many resolvers were built and the opens and reads and
-// resolutions and children and scans they paid for together.
-func countingResolvers() func() (resolvers, opens, reads, resolutions, children, scans int) {
+// resolutions and children and scans and visits they paid for together.
+func countingResolvers() func() (resolvers, opens, reads, resolutions, children, scans, visits int) {
 	var held []*placeResolver
 	previous := newPlaceResolver
 	newPlaceResolver = func(root *os.Root) *placeResolver {
@@ -323,7 +323,7 @@ func countingResolvers() func() (resolvers, opens, reads, resolutions, children,
 		held = append(held, resolver)
 		return resolver
 	}
-	return func() (resolvers, opens, reads, resolutions, children, scans int) {
+	return func() (resolvers, opens, reads, resolutions, children, scans, visits int) {
 		newPlaceResolver = previous
 		resolvers = len(held)
 		for _, resolver := range held {
@@ -332,9 +332,10 @@ func countingResolvers() func() (resolvers, opens, reads, resolutions, children,
 			resolutions += resolver.resolutions
 			children += resolver.children
 			scans += resolver.scans
+			visits += resolver.visits
 		}
 		held = nil
-		return resolvers, opens, reads, resolutions, children, scans
+		return resolvers, opens, reads, resolutions, children, scans, visits
 	}
 }
 
@@ -435,7 +436,7 @@ func TestAWarmCopyPaysResolverWorkOncePerEntryNotOncePerPair(t *testing.T) {
 	stop := countingResolvers()
 	defer stop()
 	copied := fill(t, dest)
-	resolvers, opens, reads, resolutions, children, scans := stop()
+	resolvers, opens, reads, resolutions, children, scans, _ := stop()
 	totalResolvers, totalOpens, totalReads := resolvers, opens, reads
 	totalResolutions, totalChildren, totalScans := resolutions, children, scans
 	if resolvers != 1 {
@@ -509,7 +510,7 @@ func TestAWarmCopyPaysResolverWorkOncePerEntryNotOncePerPair(t *testing.T) {
 	// them because there is nothing left to copy.
 	stop = countingResolvers()
 	copied = fill(t, dest)
-	resolvers, opens, reads, resolutions, children, scans = stop()
+	resolvers, opens, reads, resolutions, children, scans, _ = stop()
 	totalResolvers, totalOpens, totalReads = totalResolvers+resolvers, totalOpens+opens, totalReads+reads
 	totalResolutions, totalChildren, totalScans = totalResolutions+resolutions, totalChildren+children, totalScans+scans
 	if resolvers != 1 {
@@ -562,7 +563,7 @@ func TestAWarmCopyPaysResolverWorkOncePerEntryNotOncePerPair(t *testing.T) {
 	}
 	stop = countingResolvers()
 	copied = fill(t, dest)
-	resolvers, opens, reads, resolutions, children, scans = stop()
+	resolvers, opens, reads, resolutions, children, scans, _ = stop()
 	totalResolvers, totalOpens, totalReads = totalResolvers+resolvers, totalOpens+opens, totalReads+reads
 	totalResolutions, totalChildren, totalScans = totalResolutions+resolutions, totalChildren+children, totalScans+scans
 	if resolvers != 2 {
@@ -724,7 +725,7 @@ func TestAWarmForgetCountsChildrenOncePerStretchNotOncePerQuestion(t *testing.T)
 	// the root shared by every question in it.
 	stop := countingResolvers()
 	copied := fill(t, dest)
-	resolvers, opens, reads, resolutions, children, scans := stop()
+	resolvers, opens, reads, resolutions, children, scans, _ := stop()
 	if resolvers != 1 {
 		t.Errorf("the warm respelled run built %d resolvers, want one: one stretch of instruments for forget's "+
 			"whole pass, and copyEntries found every source on the volume and never built one", resolvers)
@@ -1004,7 +1005,7 @@ func TestAMixedWarmCopyKeepsItsStretchAcrossTheMirrorsThatChangedNothing(t *test
 
 			stop := countingResolvers()
 			copied := fill(t, dest)
-			resolvers, opens, reads, resolutions, children, scans := stop()
+			resolvers, opens, reads, resolutions, children, scans, _ := stop()
 
 			if resolvers != 1 {
 				t.Errorf("the mixed warm run over %d entries built %d resolvers, want one: the missing sources share one stretch of instruments, and the mirrors between them changed no name the stretch describes", k, resolvers)
@@ -1064,7 +1065,7 @@ func TestARewriteKeepsTheStretchAndACreatedNameEndsIt(t *testing.T) {
 
 	stop := countingResolvers()
 	copied := fill(t, dest)
-	resolvers, opens, reads, resolutions, children, scans := stop()
+	resolvers, opens, reads, resolutions, children, scans, _ := stop()
 	if resolvers != 1 {
 		t.Errorf("the run whose one mirror rewrote standing bytes built %d resolvers, want one: the bytes are not the names the stretch describes", resolvers)
 	}
@@ -1109,7 +1110,7 @@ func TestARewriteKeepsTheStretchAndACreatedNameEndsIt(t *testing.T) {
 
 	stop = countingResolvers()
 	copied = fill(t, dest2)
-	resolvers, opens, reads, resolutions, children, scans = stop()
+	resolvers, opens, reads, resolutions, children, scans, _ = stop()
 	if resolvers != 2 {
 		t.Errorf("the run whose mirror made the lost name again built %d resolvers, want two: a name made is structure, the stretch dies on it, and the vouch after it builds fresh instruments", resolvers)
 	}
@@ -1162,7 +1163,7 @@ func TestAClearThatTookNothingBackKeepsTheStretchAndOneThatClearedRetractsItsAns
 	if err := forget(root, previous, current); err != nil {
 		t.Fatal(err)
 	}
-	resolvers, opens, reads, resolutions, children, scans := stop()
+	resolvers, opens, reads, resolutions, children, scans, visits := stop()
 	_ = root.Close()
 
 	if resolvers != 1 {
@@ -1180,23 +1181,28 @@ func TestAClearThatTookNothingBackKeepsTheStretchAndOneThatClearedRetractsItsAns
 	if scans != 0 {
 		t.Errorf("the nothing-taken pass scanned the profile root's siblings %d times, want none: every spelling is exact, so no alias branch runs", scans)
 	}
+	if visits != 0 {
+		t.Errorf("the nothing-taken pass pulled %d book entries in retractions, want none: no clear took anything back, so no retraction ran", visits)
+	}
 	if got := read(t, filepath.Join(dest, "k0")); got != "kept" {
 		t.Errorf("the surviving entry was disturbed by the clears beside it: %q", got)
 	}
 
 	// Something taken: b0 and b1 left the list and their copies stand. The
 	// first clear removes a real name, and retract takes back the answers
-	// it made false -- b0's witnessed resolution and the root snapshot
-	// that held it -- while the stretch itself stands: b1's question then
-	// re-reads the root the clear emptied, the one enumeration a real
-	// clear costs, and k0 is never asked again at all, its resolution and
-	// its seat in the presence set the survivors the retraction kept. One
-	// resolver, three resolutions, where the replaced shape -- the stretch
-	// dying on every real clear -- built again and re-indexed k0 once per
-	// clear. This half is the invariant: a retract that dropped more than
-	// the clear had made false, or a clearEntry that stopped answering
-	// true, would leave this stretch answering from a stale place or
-	// paying for its survivors twice.
+	// it made false -- b0's witnessed resolution, and b0's rows in the
+	// root's books -- while the stretch itself stands: b1's question then
+	// reads the root's amended listing, the taken name out of the index
+	// and the survivors standing, and no enumeration is paid for it at
+	// all. k0 is never asked again, its resolution and its seat in the
+	// presence set the survivors the retraction kept. One resolver, one
+	// enumeration, three resolutions, where the replaced shape -- the
+	// stretch dying on every real clear -- built again and re-indexed k0
+	// once per clear, and the round-6 shape paid a re-enumeration of the
+	// root after each real clear on top. This half is the invariant: a
+	// retract that dropped more than the clear had made false, or kept a
+	// listing the clear had changed, would leave this stretch answering
+	// from a stale place or paying for its survivors twice.
 	dest = t.TempDir()
 	write(t, filepath.Join(dest, "b0"), "stale")
 	write(t, filepath.Join(dest, "b1"), "stale")
@@ -1211,23 +1217,26 @@ func TestAClearThatTookNothingBackKeepsTheStretchAndOneThatClearedRetractsItsAns
 	if err := forget(root, previous, current); err != nil {
 		t.Fatal(err)
 	}
-	resolvers, opens, reads, resolutions, children, scans = stop()
+	resolvers, opens, reads, resolutions, children, scans, visits = stop()
 	_ = root.Close()
 
 	if resolvers != 1 {
 		t.Errorf("the pass whose first clear removed a name built %d resolvers, want one: the real clear retracts the answers it made false and the stretch survives it, where the shape the review of 2026-09-26 (P3-1) replaced ended the stretch and made the next question build fresh instruments", resolvers)
 	}
-	if opens != 2 || reads != 2 {
-		t.Errorf("the real-clear pass opened %d directories and read %d of them, want two of each: the stretch's build, and the one re-ask of the root the clear emptied, paid by b1's question -- retract takes the holding directory's snapshot back with the place", opens, reads)
+	if opens != 1 || reads != 1 {
+		t.Errorf("the real-clear pass opened %d directories and read %d of them, want one of each: the stretch's build, the pass's only enumeration -- retract amends the holding directory's listing in place, where the round-6 shape took the snapshot back and made b1's question re-read the root the clear emptied", opens, reads)
 	}
 	if resolutions != 3 {
 		t.Errorf("the real-clear pass resolved %d spellings, want three: k0 indexed once at the build and never asked again, b0 and b1 asked once each -- the survivors' resolutions are what retract keeps, where the replaced shape paid for k0 once per real clear", resolutions)
 	}
-	if children != 5 {
-		t.Errorf("the real-clear pass processed %d children, want five: the root's three entries at the build and the two that stand when b1's question re-reads it after b0's clear", children)
+	if children != 3 {
+		t.Errorf("the real-clear pass processed %d children, want three: the root's three entries at the build, the pass's only enumeration, where the round-6 shape paid a second enumeration's two after b0's clear", children)
 	}
 	if scans != 0 {
 		t.Errorf("the real-clear pass scanned the profile root's siblings %d times, want none: every spelling is exact, so no alias branch runs", scans)
+	}
+	if visits != 2 {
+		t.Errorf("the real-clear pass pulled %d book entries in retractions, want two: each real clear takes back exactly the witnessed spelling it made false, and nothing besides -- no alias answers stand to take, and no snapshot sits beneath the places taken", visits)
 	}
 	if _, err := os.Stat(filepath.Join(dest, "b0")); !os.IsNotExist(err) {
 		t.Errorf("the stale b0 survived its clear: %v", err)

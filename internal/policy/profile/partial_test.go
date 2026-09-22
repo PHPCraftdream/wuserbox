@@ -32,17 +32,23 @@ import (
 // built one per real clear, and one resolution per spelling -- k+k/2 --
 // where the replaced shape re-indexed the keep half once per clear.
 //
-// The opens and reads are not one, and that is the honest part of the
-// shape: retract takes back the holding directory's snapshot along with the
-// place, so the first question after each clear that has to walk asks the
-// root again -- k/2+1 enumerations in all, the children counted shrinking
-// as the clears land, k, k-1, and so on down to the keep half. What the
-// replaced shape paid per clear was not one enumeration but the whole
-// index: every survivor re-resolved, the list re-walked, the square. One
-// alias scan serves the pass: the build's first respelled spelling fills
-// the snapshot's byCanonical index, and every question after it -- the
-// build's own second spelling, and the record's exact matches -- reads an
-// index.
+// The opens and reads are one, and that is this round's honest part: the
+// round-6 shape took the holding directory's snapshot back with the place
+// and paid one re-enumeration per real clear -- k/2+1 enumerations in all,
+// the children counted shrinking as the clears land, k, k-1, and so on
+// down to the keep half, the square the review of 2026-09-27 (P3-1) still
+// measured in the children counter. This shape amends the holding
+// directory's listing in place -- the taken name's rows leave the
+// snapshot's books, the survivors' stand -- so the pass pays one
+// enumeration in all, the build's, and the children counter holds k where
+// the round-6 shape's held the shrinking sum. The retraction itself is
+// counted in visits: the book entries each clear pulls, the taken
+// spelling's witnesses and the alias answers asked in the directory that
+// held it, k in all across the pass, where the scanned loops examined
+// every book whole on every clear. One alias scan serves the pass: the
+// build's first respelled spelling fills the snapshot's byCanonical
+// index, and every question after it -- the build's own second spelling,
+// and the record's exact matches -- reads an index.
 func TestAForgetThatTakesHalfTheRecordBackRetractsItsAnswersNotRebuilds(t *testing.T) {
 	for _, k := range []int{4, 8} {
 		t.Run(fmt.Sprintf("k%d", k), func(t *testing.T) {
@@ -75,7 +81,7 @@ func TestAForgetThatTakesHalfTheRecordBackRetractsItsAnswersNotRebuilds(t *testi
 			}
 			stop := countingResolvers()
 			copied := fill(t, dest)
-			resolvers, opens, reads, resolutions, children, scans := stop()
+			resolvers, opens, reads, resolutions, children, scans, visits := stop()
 
 			if resolvers != 1 {
 				t.Errorf("the pass that took half the record back built %d resolvers, want one: the real clears retract the answers each made false and the stretch survives them, where the shape the review of 2026-09-26 (P3-1) replaced ended the stretch on the first clear and rebuilt for every clear after it", resolvers)
@@ -83,20 +89,17 @@ func TestAForgetThatTakesHalfTheRecordBackRetractsItsAnswersNotRebuilds(t *testi
 			if resolutions != k+k/2 {
 				t.Errorf("the pass resolved %d spellings, want %d -- the keep half indexed once at the stretch's build and every recorded entry asked of the volume once each, the survivors' resolutions kept through the clears where the replaced shape paid for them once per real clear", resolutions, k+k/2)
 			}
-			if opens != k/2+1 || reads != k/2+1 {
-				t.Errorf("the pass opened %d directories and read %d of them, want %d of each: the stretch's build and one re-ask of the root per real clear, the directory the clear emptied -- retract takes its snapshot back with the place, and the next question that must walk reads what then stands", opens, reads, k/2+1)
+			if opens != 1 || reads != 1 {
+				t.Errorf("the pass opened %d directories and read %d of them, want one of each: the stretch's build, the pass's only enumeration -- retract amends the holding directory's listing in place, the taken name's rows out and the survivors' standing, where the round-6 shape took the snapshot back and paid one re-enumeration of the root per real clear", opens, reads)
 			}
-			// The children the re-asks process: k at the build, one fewer per
-			// landed clear, down to the keep half.
-			wantChildren := 0
-			for i := 0; i <= k/2; i++ {
-				wantChildren += k - i
-			}
-			if children != wantChildren {
-				t.Errorf("the pass processed %d children, want %d -- the root's entries shrinking as the clears land, %d at the build and one fewer each time a name goes, the arithmetic the replaced shape paid twice over plus a whole re-index per clear", children, wantChildren, k)
+			if children != k {
+				t.Errorf("the pass processed %d children, want %d -- the build's one enumeration, the pass's only one, where the round-6 shape's children grew with the square the review of 2026-09-27 (P3-1) measured", children, k)
 			}
 			if scans != 1 {
 				t.Errorf("the alias branch scanned the root's siblings %d times, want one: the build's first respelled spelling filled the snapshot's byCanonical index, and the questions after it -- the second keep spelling and the record's exact matches -- read an index", scans)
+			}
+			if visits != k {
+				t.Errorf("the pass pulled %d book entries in retractions, want %d -- each real clear takes back exactly what it made false: the taken spelling's witnesses and the alias answers asked in the directory that held it, and nothing besides, where the scanned loops examined every entry of every book on every clear", visits, k)
 			}
 			// The certificate that the cheaper shape answers the same: the
 			// record follows the new spellings, the taken half is really
@@ -127,7 +130,10 @@ func TestAForgetThatTakesHalfTheRecordBackRetractsItsAnswersNotRebuilds(t *testi
 // pass asks is an alias question, and the two real clears fall between
 // alias questions: E0 and E1 are taken on their answers, and E2 and E3
 // are spared by holds against the presence set, each answered after a
-// clear out of a fresh enumeration of the directory the clears changed.
+// clear out of the directory the clears changed -- its listing amended in
+// place, the taken names' rows out of the books, the alias memos the
+// retraction took back re-asked of the volume and answered out of the
+// amended index.
 // A stretch that kept its alias answers, or its listing, across the
 // clears would be answering out of a directory that no longer stands.
 func TestAnAliasSpelledStretchSurvivesItsRealClearsByRetraction(t *testing.T) {
@@ -172,7 +178,7 @@ func TestAnAliasSpelledStretchSurvivesItsRealClearsByRetraction(t *testing.T) {
 	}
 	stop := countingResolvers()
 	copied := fill(t, dest)
-	resolvers, opens, reads, resolutions, children, scans := stop()
+	resolvers, opens, reads, resolutions, children, scans, visits := stop()
 
 	if resolvers != 1 {
 		t.Errorf("the pass whose two real clears sat between alias-spelled questions built %d resolvers, want one: each clear retracts the answers it made false and the stretch -- the presence set with it -- answers the questions after, one stretch across both real clears, the retractions keeping the survivors' index where the replaced shape rebuilt per clear", resolvers)
@@ -180,14 +186,17 @@ func TestAnAliasSpelledStretchSurvivesItsRealClearsByRetraction(t *testing.T) {
 	if resolutions != 6 {
 		t.Errorf("the pass resolved %d spellings, want six: the keep half indexed once at the build and the record's four caps spellings asked once each -- two taken on their answers, two spared by the presence set", resolutions)
 	}
-	if opens != 3 || reads != 3 {
-		t.Errorf("the pass opened %d directories and read %d of them, want three of each: the build, then one re-enumeration of the root after each real clear -- retract takes the holding directory's snapshot back with the place, and the next alias question reads what then stands", opens, reads)
+	if opens != 1 || reads != 1 {
+		t.Errorf("the pass opened %d directories and read %d of them, want one of each: the build, the pass's only enumeration -- retract amends the holding directory's listing in place, and the alias questions after each clear re-ask the volume through the amended index instead of a fresh enumeration of it", opens, reads)
 	}
-	if children != 9 {
-		t.Errorf("the pass processed %d children, want nine: four at the build, three after E0's clear, two after E1's -- the directory shrinking under the questions, not the square the replaced shape paid re-indexing the survivors", children)
+	if children != 4 {
+		t.Errorf("the pass processed %d children, want four: the build's one enumeration, where the round-6 shape paid the build and a re-enumeration after each real clear", children)
 	}
-	if scans != 3 {
-		t.Errorf("the alias branch scanned the root's siblings %d times, want three -- one per fresh enumeration of the directory the clears changed: E0's question scanned the build's listing, E1's and E2's scanned the listings the clears made, and E3 read E2's index", scans)
+	if scans != 1 {
+		t.Errorf("the alias branch scanned the root's siblings %d times, want one: the build's scan fills the byCanonical index, and the questions after each clear -- the alias memos the retraction took back -- read the amended index, the taken names' rows out of it", scans)
+	}
+	if visits != 4 {
+		t.Errorf("the pass pulled %d book entries in retractions, want four: E0's clear takes back its witnessed spelling and the alias answer then standing in the directory that held it, E1's takes its own the same way -- its alias answer was asked and filed after E0's clear -- and nothing besides", visits)
 	}
 	if got := pathsOf(copied); !reflect.DeepEqual(got, []string{"e2", "e3"}) {
 		t.Errorf("the record came back as %v, want [e2 e3]: the kept half under the spellings the list asked for", got)
@@ -299,5 +308,11 @@ func TestRetractTakesBackExactlyTheAnswersTheClearMadeFalse(t *testing.T) {
 		t.Errorf("the alias book holds no answer for ./E0, want the recorded miss the re-ask left")
 	} else if miss.ok {
 		t.Errorf("the alias book's ./E0 answer claims a place at %q, want the recorded miss: the volume answered nothing after the clear", miss.canonical)
+	}
+	// And the books hand the retraction exactly what the clear made
+	// false: the taken spelling's witnessed answer and the two alias
+	// answers asked in the directory that held it, nothing besides.
+	if resolver.visits != 3 {
+		t.Errorf("the retraction pulled %d book entries, want three: E0's witnessed spelling and the two alias answers asked in the directory that held it, where the scanned loops examined every book whole", resolver.visits)
 	}
 }

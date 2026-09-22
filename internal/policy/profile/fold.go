@@ -210,6 +210,10 @@ type placeResult struct {
 // canonical, it keeps what the scan managed: a sibling the scan could not
 // canonicalize has no entry here, and the next alias question about that
 // spelling asks the volume again.
+//
+// retract's point update is the one hand that amends these books after
+// the fact: the taken child's rows leave byName, canonical and
+// byCanonical, and what stays is what the volume still holds.
 type dirSnapshot struct {
 	children    []os.DirEntry
 	byName      map[string]string
@@ -254,8 +258,10 @@ type canonicalChild struct {
 // record back re-index the surviving half once per clear, and now retract
 // the answers each clear made false instead -- the taken place's snapshot
 // and every snapshot beneath it, its spellings' witnessed resolutions,
-// the alias book's say in the directory that held it -- and keep the
-// rest, so the stretch outlives its clears. A rewrite
+// the alias book's say in the directory that held it, and the taken
+// name's rows in the holding directory's own listing when the volume
+// witnesses the name gone -- and keep the rest, so the stretch outlives
+// its clears. A rewrite
 // of the bytes of a file that already stood, and a clear that found
 // nothing to take back, are not mutations in this sense: they change no
 // name any cached answer describes, and the stretch outlives them, which
@@ -265,17 +271,18 @@ type canonicalChild struct {
 // for the moment of asking, and a cache carried across CLI runs would
 // answer a later question with an earlier disk.
 //
-// opens, reads, resolutions, children and scans are the measurement the
-// review's close tests hold the resolver to: every open of a directory
+// opens, reads, resolutions, children, scans and visits are the measurement
+// the review's close tests hold the resolver to: every open of a directory
 // made to enumerate it, every ReadDir, every spelling resolved that the
 // places memo had not already answered, the number of children those
 // ReadDirs actually processed, and the sibling scans the alias branch ran
-// that its byCanonical index did not save. The last three are the counters
-// the earlier review's opens and reads could not stand in for -- a warm
-// pass can look linear by those and still pay per pair -- and they are
-// what pins the stretch shape. The alias branch's opens of stored
-// spellings are resolution, not enumeration, and are not counted. The
-// numbers are read, never used to decide.
+// that its byCanonical index did not save, with visits the book entries a
+// retraction pulled. The last four are the counters the earlier review's
+// opens and reads could not stand in for -- a warm pass can look linear by
+// those and still pay per pair -- and they are what pins the stretch shape.
+// The alias branch's opens of stored spellings are resolution, not
+// enumeration, and are not counted. The numbers are read, never used to
+// decide.
 type placeResolver struct {
 	root   *os.Root
 	dirs   map[string]dirSnapshot
@@ -290,18 +297,39 @@ type placeResolver struct {
 	// volume again could only make it repeat itself. The branch's opens are
 	// resolution, not enumeration, and stay uncounted.
 	alias map[string]placeResult
-	opens int
-	reads int
-	// resolutions, children and scans are the stretch-shaped counters the
-	// opens and reads above could not answer: how many spellings were
-	// really walked rather than answered from the places memo, how many
-	// directory children the enumerations processed, and how often the
-	// alias branch paid its sibling scan instead of reading the snapshot's
-	// byCanonical index. Like the two above they are read by the counting
-	// tests and used to decide nothing.
+	// The reverse books, retract's index into the three above: which
+	// snapshot keys hang beneath which, which spellings' witnessed
+	// answers name which canonical place, which alias answers were asked
+	// in which directory. The scanned loops a retraction once walked --
+	// every book, every real clear -- are answered out of these instead:
+	// the retraction pulls the entries the books hand it, the taken
+	// place's own and everything registered beneath it, and never sees
+	// the rest. Every key in them is a walk product, one namespace of
+	// stored names, so ancestry is recorded exactly and no fold is
+	// needed to read it.
+	dirChildren map[string]map[string]bool
+	placeAt     map[string]map[string]bool
+	aliasIn     map[string]map[string]bool
+	opens       int
+	reads       int
+	// resolutions, children, scans and visits are the stretch-shaped
+	// counters the opens and reads above could not answer: how many
+	// spellings were really walked rather than answered from the places
+	// memo, how many directory children the enumerations processed, how
+	// often the alias branch paid its sibling scan instead of reading the
+	// snapshot's byCanonical index, and visits the book entries a
+	// retraction pulled out of the reverse books. Like the others they
+	// are read by the counting tests and used to decide nothing.
 	resolutions int
 	children    int
 	scans       int
+	// visits is the retraction-shaped counter beside scans: the book
+	// entries one retraction pulled -- snapshot keys, witnessed
+	// spellings, alias answers -- where the scanned loops it replaced
+	// examined every entry of every book on every real clear. Like the
+	// others it is read by the counting tests and used to decide
+	// nothing.
+	visits int
 }
 
 // newPlaceResolver is a variable so the counting test can hold the
@@ -311,10 +339,13 @@ var newPlaceResolver = defaultPlaceResolver
 
 func defaultPlaceResolver(root *os.Root) *placeResolver {
 	return &placeResolver{
-		root:   root,
-		dirs:   make(map[string]dirSnapshot),
-		places: make(map[string]placeResult),
-		alias:  make(map[string]placeResult),
+		root:        root,
+		dirs:        make(map[string]dirSnapshot),
+		places:      make(map[string]placeResult),
+		alias:       make(map[string]placeResult),
+		dirChildren: make(map[string]map[string]bool),
+		placeAt:     make(map[string]map[string]bool),
+		aliasIn:     make(map[string]map[string]bool),
 	}
 }
 
@@ -329,7 +360,24 @@ func (r *placeResolver) place(path string) (string, bool) {
 	r.resolutions++
 	canonical, ok := r.canonicalEntryPath(path)
 	r.places[key] = placeResult{canonical: canonical, ok: ok}
+	if ok {
+		r.notePlace(key, canonical)
+	}
 	return canonical, ok
+}
+
+// notePlace files a witnessed spelling under the canonical place its
+// answer named, so a retraction can take back exactly the answers that
+// named the taken place or something beneath it. Misses are not filed: a
+// deletion never makes a name the volume once did not have, so a
+// not-found answer keeps its truth through any clear.
+func (r *placeResolver) notePlace(spelling, canonical string) {
+	named := r.placeAt[canonical]
+	if named == nil {
+		named = make(map[string]bool)
+		r.placeAt[canonical] = named
+	}
+	named[spelling] = true
 }
 
 // samePlace is the comparison sameEntryPlace puts to a fresh resolver, and
@@ -355,6 +403,7 @@ func (r *placeResolver) snapshot(dir string) (dirSnapshot, bool) {
 	file, err := r.root.Open(dir)
 	if err != nil {
 		r.dirs[dir] = dirSnapshot{}
+		r.noteDir(dir)
 		return dirSnapshot{}, false
 	}
 	r.reads++
@@ -362,6 +411,7 @@ func (r *placeResolver) snapshot(dir string) (dirSnapshot, bool) {
 	_ = file.Close()
 	if err != nil {
 		r.dirs[dir] = dirSnapshot{}
+		r.noteDir(dir)
 		return dirSnapshot{}, false
 	}
 	byName := make(map[string]string, len(children))
@@ -376,8 +426,62 @@ func (r *placeResolver) snapshot(dir string) (dirSnapshot, bool) {
 		ok:          true,
 	}
 	r.dirs[dir] = snap
+	r.noteDir(dir)
 	r.children += len(children)
 	return snap, true
+}
+
+// noteDir files a snapshot key beneath its parent's in the reverse book,
+// so a retraction can walk the keys beneath a taken place without
+// scanning the snapshot table. Every key the resolver snapshots is
+// filed, the shut ones included: they stand or fall with the rest.
+func (r *placeResolver) noteDir(dir string) {
+	above := filepath.Dir(dir)
+	below := r.dirChildren[above]
+	if below == nil {
+		below = make(map[string]bool)
+		r.dirChildren[above] = below
+	}
+	below[dir] = true
+}
+
+// dropDir takes one snapshot key back out of the books: the snapshot
+// itself, the alias answers filed in it, and its seat beneath its own
+// parent key. Its registered children are left to the caller -- retract
+// walks the taken place's subtree and drops each key in turn, each
+// unfiles itself here on the way out, deepest first.
+func (r *placeResolver) dropDir(dir string) {
+	r.visits++
+	delete(r.dirs, dir)
+	for opened := range r.aliasIn[dir] {
+		delete(r.alias, opened)
+		r.visits++
+	}
+	delete(r.aliasIn, dir)
+	if above := r.dirChildren[filepath.Dir(dir)]; above != nil {
+		delete(above, dir)
+		if len(above) == 0 {
+			delete(r.dirChildren, filepath.Dir(dir))
+		}
+	}
+	if below := r.dirChildren[dir]; len(below) == 0 {
+		delete(r.dirChildren, dir)
+	}
+}
+
+// noteAlias files the alias branch's answer under the directory its walk
+// stood in -- the walked key the joined path the branch opened hangs
+// from -- so a retraction can take back every answer asked in the
+// directory that held the taken place, and in everything beneath it,
+// without reading the alias book whole.
+func (r *placeResolver) noteAlias(dir, opened string, answer placeResult) {
+	r.alias[opened] = answer
+	asked := r.aliasIn[dir]
+	if asked == nil {
+		asked = make(map[string]bool)
+		r.aliasIn[dir] = asked
+	}
+	asked[opened] = true
 }
 
 // canonicalEntryPath resolves the stored directory-entry spelling without
@@ -415,13 +519,13 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 			} else {
 				opened, err := r.root.Open(aliasPath)
 				if err != nil {
-					r.alias[aliasPath] = placeResult{}
+					r.noteAlias(current, aliasPath, placeResult{})
 					return "", false
 				}
 				openedPath, err := pathid.Canonical(opened.Name())
 				_ = opened.Close()
 				if err != nil {
-					r.alias[aliasPath] = placeResult{}
+					r.noteAlias(current, aliasPath, placeResult{})
 					return "", false
 				}
 				// A sibling scan here already ran for an earlier alias
@@ -433,9 +537,9 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 				if indexed, seen := snap.byCanonical[openedPath]; seen {
 					if indexed.unique {
 						chosen = indexed.name
-						r.alias[aliasPath] = placeResult{canonical: chosen, ok: true}
+						r.noteAlias(current, aliasPath, placeResult{canonical: chosen, ok: true})
 					} else {
-						r.alias[aliasPath] = placeResult{}
+						r.noteAlias(current, aliasPath, placeResult{})
 						return "", false
 					}
 				} else {
@@ -483,11 +587,11 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 					// links therefore match only the name Windows actually resolved,
 					// rather than merging every name for the same file identity.
 					if answer, seen := snap.byCanonical[openedPath]; !seen || !answer.unique {
-						r.alias[aliasPath] = placeResult{}
+						r.noteAlias(current, aliasPath, placeResult{})
 						return "", false
 					}
 					chosen = snap.byCanonical[openedPath].name
-					r.alias[aliasPath] = placeResult{canonical: chosen, ok: true}
+					r.noteAlias(current, aliasPath, placeResult{canonical: chosen, ok: true})
 				}
 			}
 		}
@@ -509,26 +613,50 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 // square was the wrong price for the wrong scope: a clear changes the
 // answers about the place it worked on and the directory that held it, and
 // about nothing else -- the surviving names are exactly where they were.
-// retract drops what the clear made into lies -- the taken place's
-// snapshot and every snapshot beneath it, the witnessed resolutions that
-// landed within it, the alias book's entries in the directory that held it
-// and under the place -- and keeps the rest, so the stretch outlives its
-// clears and the next stale entry is answered out of the index the build
-// already paid for.
+//
+// Finding the answers a clear made false is the reverse books' work. The
+// scanned loops this shape replaced walked the snapshot table, the places
+// memo and the alias book whole on every real clear, folding every key to
+// ask whether it sat under the taken place -- and every book is keyed by
+// walk products, one namespace of stored names, so the ancestry the folds
+// were groping for is already recorded exactly: dirChildren files each
+// snapshot key beneath the key its walk came from, placeAt files each
+// witnessed spelling under the canonical place its answer named, aliasIn
+// files each alias answer under the directory its question stood in. A
+// retraction walks the taken place's registered subtree once, takes each
+// key's snapshot and the answers filed in it back, and never sees an
+// entry the clear did not touch -- visits is the counter that holds the
+// pass to that, where the scanned loops paid every book, every clear.
+//
+// One question the books cannot answer, the volume is asked: did the
+// clear take the name out of the directory that held it? A real clear
+// has two shapes. The ordinary one removed the name -- RemoveAll of the
+// entry, or the limits-bearing walk that spared nothing -- and the
+// holding directory's listing is the old one minus exactly the taken
+// name, so the snapshot is amended in place: the taken name's rows leave
+// byName and the canonical index, the survivors' rows stand. That is not
+// a stale listing kept for a smaller counter -- it is the listing the
+// volume holds now, witnessed at the same clear that took the name, and
+// a spelling the gone name would have answered is put to the volume
+// again at the alias branch's open and refused by it, exactly as a fresh
+// enumeration would have had it refused. The other shape left the
+// entry's own directory standing -- a limits-bearing clear that spared
+// something under it -- and then nothing narrower than the whole former
+// scope is witnessed: the holding directory's snapshot goes with the
+// place, the way it went before this shape, and the answer stays correct
+// whatever the clear did. Any Lstat answer but the volume's own nothing
+// takes the second shape; a deletion is never guessed narrower than it
+// was witnessed.
 //
 // The spelling is answered out of the memo a question asked a moment ago
 // filled: holds resolved the recorded entry to ask the volume about it,
 // and the canonical path the answer kept is the path the clear worked on.
 // A spelling the resolver never walked has no answer to retract -- false,
 // and the caller ends the stretch the old way, the answer that stays
-// correct whatever the clear did. The comparisons run folded, the way
-// foldedName folds: a fold errs toward joining, and an answer dropped that
-// could have kept costs one question asked again, where an answer kept
-// that the volume has since revoked costs the lie the stretch exists never
-// to tell. The presence set the place index serves is left as it stands:
-// membership needs a fresh witnessed resolution naming the place, and a
-// place the clear took answers nothing, so a stale member there can spare
-// nothing that is not there.
+// correct whatever the clear did. The presence set the place index serves
+// is left as it stands: membership needs a fresh witnessed resolution
+// naming the place, and a place the clear took answers nothing, so a
+// stale member there can spare nothing that is not there.
 func (r *placeResolver) retract(spelling string) bool {
 	got, memoed := r.places[cleanEntryPath(spelling)]
 	if !memoed || !got.ok {
@@ -536,37 +664,69 @@ func (r *placeResolver) retract(spelling string) bool {
 	}
 	removed := got.canonical
 	parent := filepath.Dir(removed)
-	removedFolded := foldedName(removed)
-	removedUnder := removedFolded + string(filepath.Separator)
-	parentFolded := foldedName(parent)
-	under := func(path string) bool {
-		folded := foldedName(path)
-		return folded == removedFolded || strings.HasPrefix(folded, removedUnder)
-	}
-	for dir := range r.dirs {
-		// The dirs keys are built out of the stored names the walks
-		// chose, so the parent's own key is the parent; the fold is for
-		// everything beneath the taken place.
-		if dir == parent || under(dir) {
-			delete(r.dirs, dir)
+	_, statErr := r.root.Lstat(removed)
+	gone := statErr != nil && os.IsNotExist(statErr)
+	// The keys beneath the taken place, its own first: the reverse
+	// book's walk down from it. A key is filed only where a walk filed
+	// it, and a walk reached a key only through every key above it, so
+	// this walk finds every snapshot the clear could have made stale
+	// and nothing else.
+	subtree := []string{removed}
+	for i := 0; i < len(subtree); i++ {
+		for child := range r.dirChildren[subtree[i]] {
+			subtree = append(subtree, child)
 		}
 	}
-	for asked, answer := range r.places {
-		// A miss stays: a deletion never makes a name the volume once
-		// did not have, so the not-found answers keep their truth.
-		if answer.ok && under(answer.canonical) {
+	// Deepest first, so a key's children have taken their own rows back
+	// by the time the key itself goes.
+	for i := len(subtree) - 1; i >= 0; i-- {
+		key := subtree[i]
+		if _, ok := r.dirs[key]; ok {
+			r.dropDir(key)
+		}
+		// The witnessed spellings that name the taken place or
+		// something beneath it. A miss would keep its truth here as
+		// everywhere, and none is filed to drop: a deletion never
+		// makes a name the volume once did not have.
+		for asked := range r.placeAt[key] {
 			delete(r.places, asked)
+			r.visits++
 		}
+		delete(r.placeAt, key)
 	}
-	for opened := range r.alias {
-		// The alias keys spell the path the branch opened, in whatever
-		// spelling asked the question, so both comparisons fold: the
-		// spellings under the taken place, and every spelling asked in
-		// the directory that held it -- any of those may have been
-		// answered with the name the clear removed.
-		if under(opened) || foldedName(filepath.Dir(opened)) == parentFolded {
+	if gone {
+		// The alias book's say in the directory that held it: every
+		// answer asked there may have been answered with the name the
+		// clear removed, so none survives the clear -- the scope the
+		// scanned loops gave them, paid now only in the entries the
+		// book hands over.
+		for opened := range r.aliasIn[parent] {
 			delete(r.alias, opened)
+			r.visits++
 		}
+		delete(r.aliasIn, parent)
+		// The holding directory's listing, amended in place: the
+		// taken name's rows leave the index, the survivors' stand.
+		// The children slice keeps the taken name -- a scan reads it
+		// only to open candidates by, and the volume refuses the gone
+		// one, exactly as an enumeration taken after the clear would
+		// have.
+		if snap, ok := r.dirs[parent]; ok && snap.ok {
+			taken := filepath.Base(removed)
+			delete(snap.byName, taken)
+			if takenPath, known := snap.canonical[taken]; known {
+				delete(snap.byCanonical, takenPath)
+				delete(snap.canonical, taken)
+			}
+			r.dirs[parent] = snap
+		}
+	} else if _, ok := r.dirs[parent]; ok {
+		// The name the clear worked on, or the question of whether it
+		// went, outlived the clear: nothing narrower than the former
+		// whole scope is witnessed, so the holding directory's
+		// snapshot goes with the place and the next question reads
+		// what then stands.
+		r.dropDir(parent)
 	}
 	return true
 }
