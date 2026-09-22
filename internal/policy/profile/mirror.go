@@ -43,8 +43,8 @@ type sink interface {
 //
 // The entry itself is never filtered: its limits say what is copied under
 // it, and an entry naming a file has nothing under it.
-func mirror(src, dst, rel string, root *os.Root, info os.FileInfo, left *int64, w *walk, prints, newPrints map[string]Print) (bool, error) {
-	s := &copySink{}
+func mirror(src, dst, rel string, root *os.Root, info os.FileInfo, left *int64, w *walk, prints, newPrints map[string]Print, scratch *[]byte) (bool, error) {
+	s := &copySink{scratch: scratch}
 	err := walkEntry(s, src, dst, rel, root, info, left, w, prints, newPrints)
 	return s.mutated, err
 }
@@ -150,6 +150,11 @@ func walkDir(sk sink, src, dst, rel string, root *os.Root, left *int64, w *walk,
 // walk left them.
 type copySink struct {
 	mutated bool
+	// scratch points at the copy-operation's shared buffer cell, not at a
+	// buffer this sink owns: mirror builds a fresh sink per entry, and the
+	// buffer outlives each of them, so the pass that owns the cell pays
+	// for the buffer once however many entries it runs.
+	scratch *[]byte
 }
 
 // prepareDir takes away whatever sits at dst when it is not a plain
@@ -269,7 +274,7 @@ func (s *copySink) file(src, dst string, root *os.Root, info os.FileInfo, left *
 			return nil
 		}
 	}
-	taken, changed, err := mirrorFile(src, dst, root, info.Size())
+	taken, changed, err := mirrorFile(src, dst, root, info.Size(), s.scratch)
 	if err != nil {
 		return err
 	}
@@ -300,6 +305,14 @@ func (s *copySink) file(src, dst string, root *os.Root, info os.FileInfo, left *
 // already measured, the way the volume would if something wrote it
 // between the two.
 var openSource = os.Open
+
+// scratchLen is the chunk a bounded copy reads through.
+const scratchLen = 32 << 10
+
+// newScratch is where a copy's scratch buffer is born, and it is a variable
+// for the same reason openSource is: the test that pins one buffer to one
+// copy operation has to be able to stand where the buffer is made and count.
+var newScratch = func() []byte { return make([]byte, scratchLen) }
 
 // mirrorFile carries one source file into its place at dst and answers with
 // the print of the file it copied.
@@ -337,7 +350,7 @@ var openSource = os.Open
 // resolver holds stays true. Where this call cannot rule a creation out it
 // reports one, because a stretch carried across an unreported name is the
 // one wrong direction this answer can take.
-func mirrorFile(src, dst string, root *os.Root, charged int64) (Print, bool, error) {
+func mirrorFile(src, dst string, root *os.Root, charged int64, scratch *[]byte) (Print, bool, error) {
 	var changed bool
 	in, err := openSource(src)
 	if err != nil {
@@ -402,7 +415,17 @@ func mirrorFile(src, dst string, root *os.Root, charged int64) (Print, bool, err
 	if err != nil {
 		return Print{}, false, err
 	}
-	if _, err := copyBounded(out, in, charged); err != nil {
+	// The first bytes actually to move are the first time this operation
+	// pays for a buffer: a run whose every file is skipped by its print
+	// never builds one. Built through the pointer the caller handed down,
+	// so every file of the operation reads through the same buffer, and
+	// never kept past the operation that owns it -- what the buffer holds
+	// between files is fragments of the credential and settings files
+	// this run carried in, and none of that outlives the copy.
+	if *scratch == nil {
+		*scratch = newScratch()
+	}
+	if _, err := copyBounded(out, in, charged, *scratch); err != nil {
 		_ = out.Close()
 		return Print{}, false, err
 	}
@@ -442,8 +465,14 @@ func mirrorFile(src, dst string, root *os.Root, charged int64) (Print, bool, err
 // source does; what the source does with the rest is the next run's
 // question, and the entry stays on the copied list to be cleared either
 // way.
-func copyBounded(out io.Writer, in io.Reader, limit int64) (int64, error) {
-	buf := make([]byte, 32<<10)
+func copyBounded(out io.Writer, in io.Reader, limit int64, buf []byte) (int64, error) {
+	// The scratch comes down from the caller -- one per copy operation,
+	// not one per file -- but a caller handing none still gets the
+	// standard chunk rather than a Read into a buffer of no length,
+	// which would never end.
+	if len(buf) == 0 {
+		buf = newScratch()
+	}
 	var total int64
 	for {
 		n, rerr := in.Read(buf)

@@ -268,6 +268,13 @@ const Ceiling = 64 << 20
 func copyEntries(home string, root *os.Root, entries, previously []config.Entry, left int64, prints map[string]Print) ([]config.Entry, map[string]Print, error) {
 	var copied []config.Entry
 	newPrints := make(map[string]Print, len(prints))
+	// One scratch buffer for the whole pass, built when the first file
+	// actually moves: a run that copies nothing -- every file skipped by
+	// its print or missing from the source -- never pays for one, and no
+	// run pays for one per file. What it holds between files are pieces
+	// of whatever transfer was mid-flight, so it dies with the pass and
+	// nothing of one run's sources is left holding over to the next call.
+	var scratch []byte
 	// The previous record's own spellings. This is the oracle for a source
 	// os.Stat cannot ask about, and the question it answers -- was this
 	// place copied by an earlier run? -- decides a deletion, so it is
@@ -331,7 +338,7 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 		// list, and what had landed stayed in the sandbox's profile for good
 		// because nothing left knew it was there.
 		copied = append(copied, entry)
-		changed, err := mirror(src, dst, "", root, info, &left, newWalk(entry), prints, newPrints)
+		changed, err := mirror(src, dst, "", root, info, &left, newWalk(entry), prints, newPrints, &scratch)
 		if err != nil {
 			return copied, newPrints, fmt.Errorf("copying %s: %w", entry.Path, err)
 		}
