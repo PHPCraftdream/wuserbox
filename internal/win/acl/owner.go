@@ -38,10 +38,10 @@
 package acl
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -109,90 +109,186 @@ func markFor(mark uintptr) explicitAccess {
 	return entry(mark, AccessReadExecute, InheritNone, grantAccess)
 }
 
-// sandboxIdentities lists every identifier the sandbox whose access is being
-// decided goes by: the account the entries are written to, and -- because
-// entries go out under a group's name while ownership accrues under the
-// account's name -- the identifier of every member of the local group that
-// identifier names. Files a sandbox creates are owned by its account, not by
-// its group, so a check on the group's identifier alone would match nothing
-// a sandbox owns.
+// identities is one operation's set of identifiers, and the memory that
+// keeps them answerable for exactly the operation's length: the identities
+// the sandbox whose access is being decided goes by, the fixed cast every
+// grant and revoke writes with, and every system-heap buffer any of them
+// stands on. One owner for one operation replaces two older arrangements --
+// member identifiers pinned process-wide so a list of bare uintptrs could
+// hold them for good, and a strip pass holding its own set -- because what
+// was wrong with both was the same: memory nobody owned ended up owned by
+// the process, and the process only ever grows.
+type identities struct {
+	account        uintptr // the identifier the grant names
+	everyone       uintptr // the crowd the narrowing takes from and hands back to
+	users          uintptr
+	authenticated  uintptr
+	holder         uintptr // the operator granting or taking back
+	ownerRights    uintptr // the cap that replaces what ownership implies
+	mark           uintptr // the hand-down mark
+	system         uintptr // the two that stand in for an absent list
+	administrators uintptr
+	// values are the identities the sandbox goes by, as SID pointers: the
+	// account first, then every member of the local group it names. They
+	// are the only ones the owner check and the explicit-ACE removal
+	// compare against, and nothing else may join them.
+	values []uintptr
+	// kept holds the Go memory the member identifiers live in, so the
+	// pointers in values answer for the whole operation. They are Go
+	// values, so falling out of reach at End is the whole of their
+	// retirement.
+	kept []sid.Value
+	// parsed holds every system-heap identifier the operation made -- the
+	// account, then the cast -- in the order it made them. The collector
+	// does not manage this memory, so End gives every piece back
+	// explicitly, once the operation's last Windows call is over.
+	parsed []uintptr
+}
+
+// parse turns SID text into a system-heap identifier the operation owns:
+// it stays answerable until End, and End is the only thing that gives it
+// back.
+func (p *identities) parse(text string) (uintptr, error) {
+	value, err := sid.Parse(text)
+	if err != nil {
+		return 0, err
+	}
+	p.parsed = append(p.parsed, value)
+	return value, nil
+}
+
+// cast parses, once, the fixed identifiers every grant and revoke writes
+// with: the crowd the narrowing takes from and hands back to, the operator
+// whose own access is never the thing being decided, the cap, the mark,
+// and the two that stand in for an absent list. The same eight answer for
+// the whole operation, so they are parsed in one place and freed at End
+// with the rest.
+func (p *identities) cast() error {
+	who, err := sid.CurrentUser()
+	if err != nil {
+		return err
+	}
+	if p.holder, err = p.parse(who); err != nil {
+		return err
+	}
+	if p.everyone, err = p.parse(sid.Everyone); err != nil {
+		return err
+	}
+	if p.users, err = p.parse(sid.Users); err != nil {
+		return err
+	}
+	if p.authenticated, err = p.parse(sid.Authenticated); err != nil {
+		return err
+	}
+	if p.ownerRights, err = p.parse(sid.OwnerRights); err != nil {
+		return err
+	}
+	if p.mark, err = p.parse(handDownMark); err != nil {
+		return err
+	}
+	if p.system, err = p.parse(sid.System); err != nil {
+		return err
+	}
+	if p.administrators, err = p.parse(sid.Administrators); err != nil {
+		return err
+	}
+	return nil
+}
+
+// End releases the operation: every system-heap identifier goes back to
+// Windows and the Go-held member identifiers fall out of reach with it.
+// An operation is finished with once End has been called, and a second End
+// is nothing.
+func (p *identities) End() {
+	for _, value := range p.parsed {
+		sid.Free(value)
+	}
+	p.parsed = nil
+	p.values = nil
+	p.kept = nil
+}
+
+// accountNameOf asks Windows what the account identifier names, the error
+// included. It is a variable so the lookup-failure tests can refuse an
+// answer without an account that actually refuses one, and it passes the
+// reason through untouched: whether the lookup says "this names nothing"
+// or "nobody knows" is the caller's decision to make, and it cannot make
+// it if the reason is dropped here -- which is what this used to do,
+// folding every failure into a false and falling back to a shorter list.
+var accountNameOf = func(value uintptr) (string, error) {
+	return sid.Name(value)
+}
+
+// identitiesFor resolves, once, everything an operation needs to know about
+// account: the identifier itself, and -- because entries go out under a
+// group's name while files a sandbox makes are owned by its account --
+// every member of the local group the identifier names.
 //
-// The group answers with names, and a name is not SID text. Measured on this
-// desk, non-elevated:
+// The lookup behind it answers one of three ways, and the three are not the
+// same answer. Where the identifier names a principal, the local group
+// behind it is asked for its members, and a member that cannot be resolved
+// fails the whole list -- a member of a group that exists must not come out
+// as a shorter list, which quietly protects less. Where the lookup answers
+// that no principal anywhere maps to the identifier -- sid.NoneMapped, the
+// refusal for a well-formed SID naming nothing, a synthetic identifier in
+// tests -- the one identifier is the whole, correct answer: nothing exists
+// to have a group, so there is none to ask, and the lookup itself says so.
+// Any other answer is a lookup that failed for reasons nobody here controls
+// -- a domain controller out of reach, an access refusal, a resolution that
+// ran out of time -- and an unknown result must not come out as a list at
+// all. It used to: the reason was dropped on the floor and the list fell
+// back to the group's identifier alone, so the owner comparisons and the
+// explicit-ACE removals downstream stopped recognizing what the sandbox
+// owns, and a narrowing or a revoke could finish successfully having
+// protected less than it promised. The operation refuses instead, before
+// anything has been read or written.
+//
+// The group answers with names, and a name is not SID text. Measured on
+// this desk, non-elevated:
 //
 //	ConvertStringSidToSidW("Computer") -> 1337 ERROR_INVALID_SID
 //	LookupAccountNameW("Computer")     -> S-1-5-21-716976243-447150123-4053037466-1001
 //	LookupAccountNameW("PC\Computer")  -> the same SID
 //
-// So a member's name parsed as SID text fails for every real member, and
-// swallowing that error left this list holding the group alone: the owner
-// check matched nothing and the cap never landed. Members are resolved with
-// LookupAccountNameW instead, and one that cannot be resolved fails the
-// whole list -- a member of a group that exists must not come out as a
-// shorter list, which quietly protects less.
-//
-// Where the identifier names no account at all -- a synthetic identifier in
-// tests -- LookupAccountNameW refuses, there is no group to ask, and the one
-// identifier is the whole answer. Where it names a plain account, the group
-// lookup answers that there is no such group and the answer is the same.
-func sandboxIdentities(account string) ([]uintptr, error) {
+// So a member's name parsed as SID text fails for every real member.
+// Members are resolved with LookupAccountNameW instead, and one that cannot
+// be resolved fails the whole list.
+func identitiesFor(account string) (*identities, error) {
 	identityResolutions.Add(1)
-	value, err := sid.Parse(account)
+	sandbox := &identities{}
+	value, err := sandbox.parse(account)
 	if err != nil {
+		sandbox.End()
 		return nil, err
 	}
-	identities := []uintptr{value}
-	// Whether value resolves to an account name at all is a fact, not an
-	// error: a synthetic identifier in tests resolves to none, there is no
-	// group to ask, and the one identifier already collected is the whole,
-	// correct answer.
-	name, named := accountNameOf(value)
-	if !named {
-		return identities, nil
+	sandbox.account = value
+	sandbox.values = []uintptr{value}
+	name, err := accountNameOf(value)
+	if err != nil {
+		if errors.Is(err, sid.NoneMapped) {
+			// Nothing anywhere maps to this identifier, and the lookup
+			// said so itself: the identifier stands alone, and the one
+			// already collected is the whole answer.
+			return sandbox, nil
+		}
+		sandbox.End()
+		return nil, fmt.Errorf("resolving %s: %w", account, err)
 	}
 	members, err := localGroupMembers(name)
 	if err != nil {
+		sandbox.End()
 		return nil, err
 	}
 	for _, member := range members {
 		resolved, err := sid.Lookup(member)
 		if err != nil {
+			sandbox.End()
 			return nil, fmt.Errorf("resolving %s, a member of %s: %w", member, name, err)
 		}
-		pin(resolved)
-		identities = append(identities, uintptr(unsafe.Pointer(&resolved[0])))
+		sandbox.kept = append(sandbox.kept, resolved)
+		sandbox.values = append(sandbox.values, uintptr(unsafe.Pointer(&resolved[0])))
 	}
-	return identities, nil
-}
-
-// accountNameOf answers whether value resolves to an account name at all,
-// which is the one question sandboxIdentities needs from sid.Name: a SID
-// with no name (a synthetic identifier in tests) is not a lookup failure to
-// propagate, it is the answer.
-func accountNameOf(value uintptr) (string, bool) {
-	name, err := sid.Name(value)
-	return name, err == nil
-}
-
-var (
-	pinnedMu sync.Mutex
-	// pinned keeps every identifier Lookup resolved from a group member's
-	// name alive for as long as the process lives. The identities list
-	// holds uintptrs, and a KeepAlive -- what setHiveSecurity in
-	// internal/account pins a value with -- lasts one call, while these
-	// pointers have to answer for owner checks across a whole tree walk.
-	// Keeping them here gives them the lifetime sid.Parse's results
-	// already have: never freed, because something is holding them.
-	pinned []sid.Value
-)
-
-// pin gives a Lookup result the lifetime Parse's results already have. The
-// mutex is because grants can be applied from several goroutines at once
-// (state.ApplyTogether).
-func pin(value sid.Value) {
-	pinnedMu.Lock()
-	defer pinnedMu.Unlock()
-	pinned = append(pinned, value)
+	return sandbox, nil
 }
 
 // Two counters, for the close test of a stripping pass and anyone diagnosing

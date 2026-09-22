@@ -6,7 +6,6 @@ import (
 	"slices"
 	"unsafe"
 
-	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
@@ -58,45 +57,12 @@ import (
 // could have written is no evidence of an operator's decision, and owner.go
 // carries the reasoning.
 func Isolate(path, account string, entries []ACE, reach uint32, pinned []string) error {
-	value, err := sid.Parse(account)
+	sandbox, err := identitiesFor(account)
 	if err != nil {
 		return err
 	}
-	everyone, err := sid.Parse(sid.Everyone)
-	if err != nil {
-		return err
-	}
-	users, err := sid.Parse(sid.Users)
-	if err != nil {
-		return err
-	}
-	authenticated, err := sid.Parse(sid.Authenticated)
-	if err != nil {
-		return err
-	}
-	owner, err := sid.CurrentUser()
-	if err != nil {
-		return err
-	}
-	holder, err := sid.Parse(owner)
-	if err != nil {
-		return err
-	}
-	limited, err := sid.Parse(sid.OwnerRights)
-	if err != nil {
-		return err
-	}
-	mark, err := sid.Parse(handDownMark)
-	if err != nil {
-		return err
-	}
-	// Entries go out under the group's name and ownership accrues under the
-	// account's, so the owner check has to know every name the sandbox goes
-	// by. A member of a production group that cannot be resolved refuses the
-	// grant here rather than shrinking the list: a shorter list matches
-	// fewer owners and quietly protects less.
-	sandbox, err := sandboxIdentities(account)
-	if err != nil {
+	defer sandbox.End()
+	if err := sandbox.cast(); err != nil {
 		return err
 	}
 
@@ -123,11 +89,7 @@ func Isolate(path, account string, entries []ACE, reach uint32, pinned []string)
 		// write their own directory afterwards, measured. What the absence gave
 		// everybody is written down instead, narrowed, and the grant is added
 		// to it.
-		seed, err := fromNothing(holder)
-		if err != nil {
-			return err
-		}
-		list = seed
+		list = sandbox.fromNothing()
 	}
 	// What was taken from the crowd, kept apart by how far each entry
 	// reached. Handing it all back with one reach is what a single accumulator
@@ -143,10 +105,10 @@ func Isolate(path, account string, entries []ACE, reach uint32, pinned []string)
 		// again would leave that refusal standing in front of the new
 		// permission, which is the whole reason a grant replaces rather than
 		// adds.
-		if matchesSandboxIdentity(one.trustee.name, sandbox) {
+		if matchesSandboxIdentity(one.trustee.name, sandbox.values) {
 			continue
 		}
-		if sharedWrite(one, everyone, users, authenticated) {
+		if sharedWrite(one, sandbox.everyone, sandbox.users, sandbox.authenticated) {
 			// Taken away, not replaced. Assigning read-and-execute here would
 			// hand reading to an entry that only covered writing, which is a
 			// widening dressed as a narrowing: measured, a directory whose
@@ -173,9 +135,9 @@ func Isolate(path, account string, entries []ACE, reach uint32, pinned []string)
 	// permission list that comes out in a different order on two identical
 	// runs is one more thing to rule out when something behaves differently.
 	for _, inheritance := range slices.Sorted(maps.Keys(taken)) {
-		list = append(list, entry(holder, taken[inheritance], inheritance, grantAccess))
+		list = append(list, entry(sandbox.holder, taken[inheritance], inheritance, grantAccess))
 	}
-	list = append(list, listFor(value, entries)...)
+	list = append(list, listFor(sandbox.account, entries)...)
 	// What is inside is put right before the grant itself is written, and the
 	// order is the whole of the care here.
 	//
@@ -195,8 +157,8 @@ func Isolate(path, account string, entries []ACE, reach uint32, pinned []string)
 	// second call: once the cap has landed the owner can no longer edit the
 	// list at all, so a cap that arrives late arrives never -- measured, and
 	// set out in owner.go.
-	if ownedByTheSandbox(ownerOf(descriptor), sandbox) {
-		list = append(list, ownerLimit(limited)...)
+	if ownedByTheSandbox(ownerOf(descriptor), sandbox.values) {
+		list = append(list, ownerLimit(sandbox.ownerRights)...)
 	}
 	// What this list will hand down once published. Objects the sandbox
 	// owns get it written in explicitly, because their lists, once written
@@ -215,13 +177,17 @@ func Isolate(path, account string, entries []ACE, reach uint32, pinned []string)
 	if err != nil {
 		return err
 	}
-	if err := sweep(path, everyone, users, authenticated, holder, limited, sandbox, hand, mark, spared); err != nil {
+	if err := sweep(path, sandbox, hand, spared); err != nil {
 		return err
 	}
 	return publish(path, list, true)
 }
 
-// fromNothing is the list that stands for an absent one, narrowed.
+// fromNothing is the list that stands for an absent one, narrowed. It is
+// built from the operation's own identifiers -- the holder, the system and
+// administrators it parsed once, and the narrowed Everyone -- so a grant on
+// a list-less directory no longer parses and leaks a fresh set of three
+// identifiers per object.
 //
 // It is built in one place because two callers need the same answer: the
 // sweep, writing it onto an object inside a granted tree, and the grant
@@ -229,22 +195,14 @@ func Isolate(path, account string, entries []ACE, reach uint32, pinned []string)
 // second was missed at first, and a grant on such a directory published a list
 // naming the sandbox alone -- the owner locked out of their own directory by
 // the act of granting it.
-func fromNothing(holder uintptr) ([]explicitAccess, error) {
+func (p *identities) fromNothing() []explicitAccess {
 	const subtree = InheritObjects | InheritContainers
 	const fullControl = 0x1F01FF
-	list := []explicitAccess{entry(holder, fullControl, subtree, grantAccess)}
-	for _, known := range []string{sid.System, sid.Administrators} {
-		value, err := sid.Parse(known)
-		if err != nil {
-			return nil, err
-		}
+	list := []explicitAccess{entry(p.holder, fullControl, subtree, grantAccess)}
+	for _, value := range []uintptr{p.system, p.administrators} {
 		list = append(list, entry(value, fullControl, subtree, grantAccess))
 	}
-	everyone, err := sid.Parse(sid.Everyone)
-	if err != nil {
-		return nil, err
-	}
-	return append(list, entry(everyone, fullControl&^changing, subtree, grantAccess)), nil
+	return append(list, entry(p.everyone, fullControl&^changing, subtree, grantAccess))
 }
 
 // giveAList writes a permission list onto an object that has none.
@@ -261,10 +219,6 @@ func fromNothing(holder uintptr) ([]explicitAccess, error) {
 // It is written as a change rather than as the whole list, so that whatever a
 // directory above hands down still arrives here afterwards, the same as for
 // every other object the sweep touches.
-func giveAList(path string, holder uintptr) error {
-	list, err := fromNothing(holder)
-	if err != nil {
-		return err
-	}
-	return apply(path, list, false)
+func giveAList(path string, sandbox *identities) error {
+	return apply(path, sandbox.fromNothing(), false)
 }

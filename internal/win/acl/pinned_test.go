@@ -431,12 +431,12 @@ func TestPinnedEntriesUseFilesystemIdentityNotUnicodeFold(t *testing.T) {
 // cheapest account that cannot be resolved is one that is not identifier
 // text at all.
 func TestTheIdentitiesFailClosedWhenTheAccountIsNotSIDText(t *testing.T) {
-	identities, err := sandboxIdentities("nobody in particular")
+	sandbox, err := identitiesFor("nobody in particular")
 	if err == nil {
 		t.Fatal("an account that is not identifier text resolved to something")
 	}
-	if len(identities) != 0 {
-		t.Errorf("an unresolvable account came out as a list of %d identities", len(identities))
+	if sandbox != nil {
+		t.Errorf("an unresolvable account came out as a list of %d identities", len(sandbox.values))
 	}
 }
 
@@ -444,8 +444,11 @@ func TestTheIdentitiesFailClosedWhenTheAccountIsNotSIDText(t *testing.T) {
 // a synthetic identifier name no local group, measured --
 // NetLocalGroupGetMembers answers 1376 ERROR_NO_SUCH_ALIAS for the bare name
 // of a plain account and 2220 NERR_GroupNotFound for a qualified one -- and
-// the one identifier is the whole answer. The fail-closed half is covered by
-// the test above and by the real-group test in internal/e2e.
+// the one identifier is the whole answer. The synthetic identifier's own
+// lookup answers NoneMapped, which the resolver reads the same way: nothing
+// anywhere maps to it, so nothing exists to have a group. The fail-closed
+// half is covered by the test above and by the real-group test in
+// internal/e2e.
 func TestTheIdentitiesOfAnAccountThatNamesNoGroupAreItself(t *testing.T) {
 	user, err := sid.CurrentUser()
 	if err != nil {
@@ -456,16 +459,17 @@ func TestTheIdentitiesOfAnAccountThatNamesNoGroupAreItself(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		identities, err := sandboxIdentities(account)
+		sandbox, err := identitiesFor(account)
 		if err != nil {
 			t.Fatalf("%s: %v", account, err)
 		}
-		if len(identities) != 1 {
-			t.Fatalf("%s came out as a list of %d identities, want the account alone", account, len(identities))
+		if len(sandbox.values) != 1 {
+			t.Fatalf("%s came out as a list of %d identities, want the account alone", account, len(sandbox.values))
 		}
-		if !sameSID(identities[0], pointer) {
+		if !sameSID(sandbox.values[0], pointer) {
 			t.Errorf("the one identity held for %s is not the account itself", account)
 		}
+		sandbox.End()
 	}
 }
 
@@ -499,38 +503,19 @@ func snapshotSweepFixture(t *testing.T) (handed, pinnedDir, pinnedFile, made, pl
 	return handed, pinnedDir, pinnedFile, made, plain
 }
 
-// sweepSIDs resolves, once, the identities a direct call of sweep needs.
-func sweepSIDs(t *testing.T) (everyone, users, authenticated, holder, limited, mark uintptr) {
+// sweepIdentities resolves, once, the identities a direct call of sweep
+// needs, and gives them back when the test ends.
+func sweepIdentities(t *testing.T, account string) *identities {
 	t.Helper()
-	owner, err := sid.CurrentUser()
+	sandbox, err := identitiesFor(account)
 	if err != nil {
 		t.Fatal(err)
 	}
-	holder, err = sid.Parse(owner)
-	if err != nil {
+	t.Cleanup(sandbox.End)
+	if err := sandbox.cast(); err != nil {
 		t.Fatal(err)
 	}
-	everyone, err = sid.Parse(sid.Everyone)
-	if err != nil {
-		t.Fatal(err)
-	}
-	users, err = sid.Parse(sid.Users)
-	if err != nil {
-		t.Fatal(err)
-	}
-	authenticated, err = sid.Parse(sid.Authenticated)
-	if err != nil {
-		t.Fatal(err)
-	}
-	limited, err = sid.Parse(sid.OwnerRights)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mark, err = sid.Parse(handDownMark)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return everyone, users, authenticated, holder, limited, mark
+	return sandbox
 }
 
 // TestASweepSnapshotsWhatTheNarrowingWillConsult drives a real sweep over a
@@ -549,11 +534,7 @@ func TestASweepSnapshotsWhatTheNarrowingWillConsult(t *testing.T) {
 	for _, path := range []string{handed, pinnedDir, pinnedFile, made, plain} {
 		normalizeOwner(t, path, owner)
 	}
-	everyone, users, authenticated, holder, limited, mark := sweepSIDs(t)
-	sandbox, err := sandboxIdentities(owner)
-	if err != nil {
-		t.Fatal(err)
-	}
+	sandbox := sweepIdentities(t, owner)
 	pinned, err := makePinnedPaths([]string{pinnedDir})
 	if err != nil {
 		t.Fatal(err)
@@ -565,7 +546,7 @@ func TestASweepSnapshotsWhatTheNarrowingWillConsult(t *testing.T) {
 	t.Cleanup(func() { reclaim(t, made); reclaim(t, plain) })
 
 	before, beforeReresolves := pinnedSnapshots.Load(), pinnedReresolves.Load()
-	if err := sweep(handed, everyone, users, authenticated, holder, limited, sandbox, nil, mark, pinned); err != nil {
+	if err := sweep(handed, sandbox, nil, pinned); err != nil {
 		t.Fatal(err)
 	}
 	if got := pinnedSnapshots.Load() - before; got != 4 {
@@ -601,13 +582,9 @@ func TestASweepSnapshotsNothingForObjectsTheSandboxDoesNotOwn(t *testing.T) {
 	for _, path := range []string{handed, pinnedDir, pinnedFile, made, plain} {
 		normalizeOwner(t, path, owner)
 	}
-	everyone, users, authenticated, holder, limited, mark := sweepSIDs(t)
 	// An identity that parses but matches nothing: no object in the fixture
 	// is owned by it, so the narrowing consults the keep-list for nothing.
-	stranger, err := sid.Parse(unusedAccount)
-	if err != nil {
-		t.Fatal(err)
-	}
+	sandbox := sweepIdentities(t, unusedAccount)
 	pinned, err := makePinnedPaths([]string{pinnedDir})
 	if err != nil {
 		t.Fatal(err)
@@ -618,7 +595,7 @@ func TestASweepSnapshotsNothingForObjectsTheSandboxDoesNotOwn(t *testing.T) {
 	}
 
 	before, beforeReresolves := pinnedSnapshots.Load(), pinnedReresolves.Load()
-	if err := sweep(handed, everyone, users, authenticated, holder, limited, []uintptr{stranger}, nil, mark, pinned); err != nil {
+	if err := sweep(handed, sandbox, nil, pinned); err != nil {
 		t.Fatal(err)
 	}
 	if got := pinnedSnapshots.Load() - before; got != 0 {

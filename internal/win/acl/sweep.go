@@ -19,7 +19,6 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
@@ -55,7 +54,7 @@ import (
 // and it decides which owned objects are spared: a path recorded there was
 // granted by the operator in their own right, and no list the sandbox could
 // have written may stand in for that decision (owner.go).
-func sweep(root string, everyone, users, authenticated, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) error {
+func sweep(root string, sandbox *identities, hand []explicitAccess, pinned pinnedPaths) error {
 	// Read the whole tree before changing any of it. Doing both in one pass
 	// left a failure halfway down with part of the tree already rewritten and
 	// the grant not written at all: narrowings nobody asked for and no record
@@ -63,10 +62,10 @@ func sweep(root string, everyone, users, authenticated, holder, owner uintptr, s
 	// can change underneath between the passes -- but it turns the ordinary
 	// reason for stopping, an entry of a kind that cannot be carried over,
 	// into a refusal before anything has moved.
-	if err := inspect(root, sandbox, pinned); err != nil {
+	if err := inspect(root, sandbox.values, pinned); err != nil {
 		return err
 	}
-	return narrowTree(root, everyone, users, authenticated, holder, owner, sandbox, hand, mark, pinned)
+	return narrowTree(root, sandbox, hand, pinned)
 }
 
 // narrowTree reads objects in parallel, but publishes ACL changes in the
@@ -76,13 +75,13 @@ func sweep(root string, everyone, users, authenticated, holder, owner uintptr, s
 // write are read again by narrowOwn immediately before the ordered write; the
 // reread is what preserves the parent-before-child dependency when a parent
 // changes inherited permissions.
-func narrowTree(root string, everyone, users, authenticated, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) error {
+func narrowTree(root string, sandbox *identities, hand []explicitAccess, pinned pinnedPaths) error {
 	_, err := orderedNarrow(root, dispatchWindow(),
 		func(path string) (narrowDecision, error) {
-			return classifyNarrow(path, everyone, users, authenticated, owner, sandbox, hand, mark, pinned)
+			return classifyNarrow(path, sandbox, hand, pinned)
 		},
 		func(path string) error {
-			return narrowOwn(path, everyone, users, authenticated, holder, owner, sandbox, hand, mark, pinned)
+			return narrowOwn(path, sandbox, hand, pinned)
 		})
 	return err
 }
@@ -276,7 +275,7 @@ const (
 // A write decision is deliberately conservative: the ordered writer rereads
 // the object before applying it, because a parent may have changed inherited
 // permissions since this read completed.
-func classifyNarrow(path string, everyone, users, authenticated, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) (narrowDecision, error) {
+func classifyNarrow(path string, sandbox *identities, hand []explicitAccess, pinned pinnedPaths) (narrowDecision, error) {
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
@@ -285,7 +284,7 @@ func classifyNarrow(path string, everyone, users, authenticated, owner uintptr, 
 		return narrowNoop, callFailed("reading the permissions of", path, r)
 	}
 	defer w32.Free(descriptor)
-	owned := ownedByTheSandbox(ownerOf(descriptor), sandbox)
+	owned := ownedByTheSandbox(ownerOf(descriptor), sandbox.values)
 	if dacl == nil {
 		return narrowApply, nil
 	}
@@ -294,7 +293,7 @@ func classifyNarrow(path string, everyone, users, authenticated, owner uintptr, 
 		return narrowNoop, fmt.Errorf("reading the permissions of %s: %w", path, err)
 	}
 	if !owned {
-		for _, who := range []uintptr{everyone, users, authenticated} {
+		for _, who := range []uintptr{sandbox.everyone, sandbox.users, sandbox.authenticated} {
 			for _, one := range held {
 				if one.inherited || !sameSID(one.access.trustee.name, who) {
 					continue
@@ -317,7 +316,7 @@ func classifyNarrow(path string, everyone, users, authenticated, owner uintptr, 
 		}
 		return narrowNoop, nil
 	}
-	if hearsFromAbove(held) || !alreadyCapped(held, hand, owner, mark) {
+	if hearsFromAbove(held) || !alreadyCapped(held, hand, sandbox.ownerRights, sandbox.mark) {
 		return narrowApply, nil
 	}
 	return narrowNoop, nil
@@ -354,7 +353,7 @@ func inspect(root string, sandbox []uintptr, pinned pinnedPaths) error {
 		}
 	}
 	return together(root, func(path string, entry fs.DirEntry) error {
-		_, owner, err := readable(path)
+		owned, err := readable(path, sandbox)
 		if err != nil {
 			return err
 		}
@@ -371,7 +370,7 @@ func inspect(root string, sandbox []uintptr, pinned pinnedPaths) error {
 		// nothing goes back to the file system and fails closed when the
 		// answer is no longer to be had, which is what a path the first pass
 		// never saw always did.
-		if len(pinned.keys) != 0 && ownedByTheSandbox(owner, sandbox) {
+		if len(pinned.keys) != 0 && owned {
 			if err := pinned.snapshot(path); err != nil {
 				return err
 			}
@@ -453,28 +452,43 @@ func walkTree(root string, visit func(string, fs.DirEntry) error) error {
 	})
 }
 
-// readable reports whether an object's permission list can be carried over,
-// and answers with the owner the descriptor names. The first pass asks both
-// of every one of them, in the one call: the keep-list's snapshot needs the
-// owner to know which paths the narrowing will still consult it about, and
-// asking separately would cost a second read of the same descriptor.
-func readable(path string) ([]heldEntry, uintptr, error) {
+// ownerDecision is the question readable answers about an object's owner:
+// whether the identifier that owns it is one of the sandbox's. It is a
+// variable so a test can stand on the seam between the comparison and the
+// free that follows it, which is exactly the stretch of road the
+// borrowed-pointer bug above lived on.
+var ownerDecision = ownedByTheSandbox
+
+// readable reports whether an object's permission list can be carried
+// over, and whether the sandbox the narrowing is for already owns the
+// object -- both answered while the one descriptor both answers come from
+// is still alive. The owner is a pointer into that descriptor's memory:
+// it used to travel out of this function as a bare uintptr, and the
+// comparison that consumed it ran after the deferred free had put the
+// memory back -- a use-after-free in Windows' own heap, no collector's
+// business. The answer now leaves as a bool or not at all, and the
+// comparison is made here, inside the borrowed pointer's one moment of
+// validity. The entries are walked for the carryable answer alone and
+// kept no longer than the question: nothing downstream of the reading
+// pass ever looks at them, and the narrowing pass reads the list again
+// for itself.
+func readable(path string, sandbox []uintptr) (bool, error) {
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
 		seFileObject, daclInfo|ownerInfo, 0, 0, uintptr(unsafe.Pointer(&dacl)), 0,
 		uintptr(unsafe.Pointer(&descriptor))); r != 0 {
-		return nil, 0, callFailed("reading the permissions of", path, r)
+		return false, callFailed("reading the permissions of", path, r)
 	}
 	defer w32.Free(descriptor)
+	owned := ownerDecision(ownerOf(descriptor), sandbox)
 	if dacl == nil {
-		return nil, ownerOf(descriptor), nil
+		return owned, nil
 	}
-	held, err := entriesOf(dacl)
-	if err != nil {
-		return nil, 0, fmt.Errorf("reading the permissions of %s: %w", path, err)
+	if err := carryable(dacl); err != nil {
+		return false, fmt.Errorf("reading the permissions of %s: %w", path, err)
 	}
-	return held, ownerOf(descriptor), nil
+	return owned, nil
 }
 
 // narrowOwn takes the changing rights of Everyone, BUILTIN\Users and
@@ -503,7 +517,7 @@ func readable(path string) ([]heldEntry, uintptr, error) {
 // that spares an owned object: a path the record names was granted in the
 // operator's own right, and a list the sandbox could have written is no
 // evidence of that (owner.go).
-func narrowOwn(path string, everyone, users, authenticated, holder, owner uintptr, sandbox []uintptr, hand []explicitAccess, mark uintptr, pinned pinnedPaths) error {
+func narrowOwn(path string, sandbox *identities, hand []explicitAccess, pinned pinnedPaths) error {
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
@@ -513,7 +527,7 @@ func narrowOwn(path string, everyone, users, authenticated, holder, owner uintpt
 	}
 	defer w32.Free(descriptor)
 
-	owned := ownedByTheSandbox(ownerOf(descriptor), sandbox)
+	owned := ownedByTheSandbox(ownerOf(descriptor), sandbox.values)
 	if dacl == nil {
 		// No permission list at all, which Windows reads as everybody having
 		// everything -- the widest an object gets. It has no entries, so
@@ -521,13 +535,9 @@ func narrowOwn(path string, everyone, users, authenticated, holder, owner uintpt
 		// carrying one stayed open to every sandbox on the machine after the
 		// tree was handed over. Measured, with a second sandbox writing there.
 		if !owned {
-			return giveAList(path, holder)
+			return giveAList(path, sandbox)
 		}
-		seed, err := fromNothing(holder)
-		if err != nil {
-			return err
-		}
-		return writeWhole(path, seed, nil, hand, owner, mark)
+		return writeWhole(path, sandbox.fromNothing(), nil, hand, sandbox.ownerRights, sandbox.mark)
 	}
 
 	held, err := entriesOf(dacl)
@@ -535,7 +545,7 @@ func narrowOwn(path string, everyone, users, authenticated, holder, owner uintpt
 		return fmt.Errorf("reading the permissions of %s: %w", path, err)
 	}
 	var update, handback []explicitAccess
-	for _, who := range []uintptr{everyone, users, authenticated} {
+	for _, who := range []uintptr{sandbox.everyone, sandbox.users, sandbox.authenticated} {
 		var kept []explicitAccess
 		narrowed := false
 		for _, one := range held {
@@ -549,7 +559,7 @@ func narrowOwn(path string, everyone, users, authenticated, holder, owner uintpt
 				// the owner keeps exactly what the crowd was holding here and
 				// nothing further.
 				handback = append(handback,
-					entry(holder, access.permissions&changing, access.inheritance, grantAccess))
+					entry(sandbox.holder, access.permissions&changing, access.inheritance, grantAccess))
 				access.permissions &^= changing
 				if access.permissions == 0 {
 					continue
@@ -571,7 +581,7 @@ func narrowOwn(path string, everyone, users, authenticated, holder, owner uintpt
 		}
 		return apply(path, append(update, handback...), false)
 	}
-	return capObject(path, held, update, handback, hand, owner, mark, pinned)
+	return capObject(path, held, update, handback, hand, sandbox.ownerRights, sandbox.mark, pinned)
 }
 
 // StripOwn takes away the entries an object holds itself for one account,
@@ -598,78 +608,25 @@ func StripOwn(path, account string) error {
 	return pass.Strip(path)
 }
 
-// A StripOwnPass is one account's identities, resolved once for a pass over
-// a tree, and the memory that keeps them answerable for exactly that long.
-//
-// Who the account goes by -- the identifier itself and every member of the
-// local group it names -- is an invariant of the pass rather than a property
-// of any one object, but resolving it costs a parse, a name lookup and a
-// group enumeration in SAM, so a resolve per object made a revoke over N
-// files O(N) SAM calls for the same answer every time. The pass owns what
-// its answer stands on: the member identifiers are Go values the pass
-// itself holds, with the process-global pin that used to keep them alive
-// gone from this path, and the parsed account identifier -- system memory,
-// which the collector does not manage -- is freed when the pass ends.
-// Nothing outlives End, and nothing is carried across passes: group
+// BeginStripOwn resolves, once, everything a pass needs to know about
+// account: the identifier itself, and -- because entries go out under a
+// group's name while files a sandbox makes are owned by its account --
+// every member of the local group the identifier names. The pass owns what
+// its answer stands on, the same way Isolate and TakeBack own theirs
+// (owner.go): the member identifiers are Go values the pass itself holds,
+// the parsed account identifier is system memory freed when the pass ends,
+// and nothing outlives End. Nothing is carried across passes: group
 // membership decides a revoke, so membership that changed since the last
 // pass must be asked again, which is why this is a context with a lifetime
 // and not a cache.
-type StripOwnPass struct {
-	values []uintptr   // the identities, as SID pointers
-	kept   []sid.Value // the member identifiers, Go memory held by the pass
-	parsed uintptr     // the account identifier, system memory, freed by End
-}
-
-// BeginStripOwn resolves, once, everything a pass needs to know about
-// account: the identifier itself, and -- because entries go out under a
-// group's name while files a sandbox makes are owned by its account -- every
-// member of the local group the identifier names. Where the identifier names
-// no account at all -- a synthetic identifier in tests -- there is no group
-// to ask, and the one identifier is the whole answer.
-func BeginStripOwn(account string) (*StripOwnPass, error) {
-	identityResolutions.Add(1)
-	parsed, err := sid.Parse(account)
-	if err != nil {
-		return nil, err
-	}
-	pass := &StripOwnPass{values: []uintptr{parsed}, parsed: parsed}
-	name, named := accountNameOf(parsed)
-	if !named {
-		return pass, nil
-	}
-	members, err := localGroupMembers(name)
-	if err != nil {
-		pass.End()
-		return nil, err
-	}
-	for _, member := range members {
-		resolved, err := sid.Lookup(member)
-		if err != nil {
-			pass.End()
-			return nil, fmt.Errorf("resolving %s, a member of %s: %w", member, name, err)
-		}
-		pass.kept = append(pass.kept, resolved)
-		pass.values = append(pass.values, uintptr(unsafe.Pointer(&resolved[0])))
-	}
-	return pass, nil
-}
-
-// End releases the pass: the system-heap identifier goes back to Windows and
-// the Go-held member identifiers fall out of reach with it. A pass is
-// finished with once End has been called.
-func (p *StripOwnPass) End() {
-	if p.parsed != 0 {
-		sid.Free(p.parsed)
-		p.parsed = 0
-	}
-	p.values = nil
-	p.kept = nil
+func BeginStripOwn(account string) (*identities, error) {
+	return identitiesFor(account)
 }
 
 // Strip takes the account's entries off one object, the same decision
 // StripOwn makes, asked of the identities the pass resolved once at its
 // start rather than of a fresh resolution.
-func (p *StripOwnPass) Strip(path string) error {
+func (p *identities) Strip(path string) error {
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),

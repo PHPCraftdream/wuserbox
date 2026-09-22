@@ -25,6 +25,13 @@ import (
 // identity asked about is what reading once is for.
 var descriptorReads atomic.Int64
 
+// entrySlices counts the lists entriesOf has built. It is for the close
+// test of the validation pass, which walks the same entries and builds
+// nothing, and for anyone measuring a walk: the preflight answer is two
+// facts -- carryable, and whose the object is -- and neither needs the
+// entries kept.
+var entrySlices atomic.Int64
+
 var procGetAce = w32.Advapi32.NewProc("GetAce")
 
 // aclHeader and aceHeader are what Windows puts in front of a permission list
@@ -85,6 +92,22 @@ func entriesOf(dacl *aclHeader) ([]heldEntry, error) {
 	if dacl == nil {
 		return nil, nil
 	}
+	entrySlices.Add(1)
+	held := make([]heldEntry, 0, dacl.count)
+	for i := uint16(0); i < dacl.count; i++ {
+		one, err := oneEntry(dacl, i)
+		if err != nil {
+			return nil, err
+		}
+		held = append(held, one)
+	}
+	return held, nil
+}
+
+// oneEntry reads the i-th entry of a permission list. The trustee points
+// into the list being read, so the answer stays usable only for as long
+// as the security descriptor holding it does.
+func oneEntry(dacl *aclHeader, i uint16) (heldEntry, error) {
 	const (
 		allowed          = 0
 		refused          = 1
@@ -94,38 +117,52 @@ func entriesOf(dacl *aclHeader) ([]heldEntry, error) {
 		trusteeIsUnknown = 5
 		headerAndMask    = 8 // the entry's own header, then the access it covers
 	)
-	held := make([]heldEntry, 0, dacl.count)
-	for i := uint16(0); i < dacl.count; i++ {
-		var ace *aceHeader
-		if r, _, err := procGetAce.Call(uintptr(unsafe.Pointer(dacl)), uintptr(i),
-			uintptr(unsafe.Pointer(&ace))); r == 0 {
-			return nil, fmt.Errorf("reading entry %d: %w", i, err)
-		}
-		mode := int32(grantAccess)
-		switch ace.kind {
-		case allowed:
-		case refused:
-			mode = denyAccess
-		default:
-			// Rewriting a list means writing back everything in it. An entry
-			// of a kind this cannot carry over would be dropped silently, and
-			// dropping a refusal is how a boundary quietly stops holding.
-			return nil, fmt.Errorf("entry %d is of a kind that cannot be carried over (%d)", i, ace.kind)
-		}
-		held = append(held, heldEntry{
-			inherited: ace.flags&inheritedAce != 0,
-			access: explicitAccess{
-				permissions: ace.mask,
-				mode:        mode,
-				inheritance: uint32(ace.flags) & inheritanceFlags,
-				trustee: trustee{
-					form: trusteeIsSID, kind: trusteeIsUnknown,
-					name: uintptr(unsafe.Pointer(ace)) + headerAndMask,
-				},
-			},
-		})
+	var ace *aceHeader
+	if r, _, err := procGetAce.Call(uintptr(unsafe.Pointer(dacl)), uintptr(i),
+		uintptr(unsafe.Pointer(&ace))); r == 0 {
+		return heldEntry{}, fmt.Errorf("reading entry %d: %w", i, err)
 	}
-	return held, nil
+	mode := int32(grantAccess)
+	switch ace.kind {
+	case allowed:
+	case refused:
+		mode = denyAccess
+	default:
+		// Rewriting a list means writing back everything in it. An entry
+		// of a kind this cannot carry over would be dropped silently, and
+		// dropping a refusal is how a boundary quietly stops holding.
+		return heldEntry{}, fmt.Errorf("entry %d is of a kind that cannot be carried over (%d)", i, ace.kind)
+	}
+	return heldEntry{
+		inherited: ace.flags&inheritedAce != 0,
+		access: explicitAccess{
+			permissions: ace.mask,
+			mode:        mode,
+			inheritance: uint32(ace.flags) & inheritanceFlags,
+			trustee: trustee{
+				form: trusteeIsSID, kind: trusteeIsUnknown,
+				name: uintptr(unsafe.Pointer(ace)) + headerAndMask,
+			},
+		},
+	}, nil
+}
+
+// carryable walks a permission list entry by entry and answers whether
+// every entry in it can be carried over, keeping none of them: rewriting
+// a list wants the entries themselves, but the validation pass -- the
+// reading pass that must stop a walk before anything has moved -- needs
+// only the refusal, and building a list per object to throw it away made
+// the pass allocate one slice per ACE for nothing.
+func carryable(dacl *aclHeader) error {
+	if dacl == nil {
+		return nil
+	}
+	for i := uint16(0); i < dacl.count; i++ {
+		if _, err := oneEntry(dacl, i); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // sameSID reports whether two identifiers are the same one.

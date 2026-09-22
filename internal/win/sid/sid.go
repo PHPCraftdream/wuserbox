@@ -2,6 +2,7 @@
 package sid
 
 import (
+	"errors"
 	"fmt"
 	"syscall"
 	"unsafe"
@@ -14,6 +15,17 @@ var (
 	procLookupAccountSid      = w32.Advapi32.NewProc("LookupAccountSidW")
 	procConvertSidToStringSid = w32.Advapi32.NewProc("ConvertSidToStringSidW")
 )
+
+// NoneMapped is the refusal LookupAccountSidW reports for an identifier no
+// account or group anywhere answers to: the SID is well formed, the lookup
+// ran, and nothing maps to it. It is exported because it is the one lookup
+// answer that says the identifier stands alone, which is a fact a caller can
+// build on; every other refusal says only that nobody knows.
+const NoneMapped = syscall.Errno(1332)
+
+// errInsufficientBuffer is the by-design refusal of a sizing call: the call
+// failed, and what it failed with is the size the next call needs.
+const errInsufficientBuffer = syscall.Errno(122)
 
 // Value is a binary security identifier held in Go memory.
 type Value []byte
@@ -58,10 +70,19 @@ func (v Value) String() string {
 // English-language install; account.BuiltinUsersName is why this exists.
 func Name(pointer uintptr) (string, error) {
 	var nameLen, domainLen, use uint32
-	procLookupAccountSid.Call(0, pointer, 0, uintptr(unsafe.Pointer(&nameLen)),
+	r, _, callErr := procLookupAccountSid.Call(0, pointer, 0, uintptr(unsafe.Pointer(&nameLen)),
 		0, uintptr(unsafe.Pointer(&domainLen)), uintptr(unsafe.Pointer(&use)))
+	if r == 0 && !errors.Is(callErr, errInsufficientBuffer) {
+		// The sizing call is refused by design; a refusal of any other kind
+		// is the lookup's own answer, and it is the reason the lookup failed
+		// -- a fact the caller needs, because "the domain was out of reach"
+		// and "this identifier names nothing" are different decisions. It
+		// used to be discarded here, and every failure came out as the same
+		// not-found.
+		return "", fmt.Errorf("resolving the account name: %w", callErr)
+	}
 	if nameLen == 0 {
-		return "", fmt.Errorf("resolving the account name: not found")
+		return "", errors.New("resolving the account name: the lookup named no account")
 	}
 	name := make([]uint16, nameLen)
 	domain := make([]uint16, domainLen+1)

@@ -73,6 +73,11 @@ func Set(path, account string, entries []ACE) error {
 	if err != nil {
 		return err
 	}
+	// The list about to be published is this identifier's last reader:
+	// SetEntriesInAcl copies what it needs and SetNamedSecurityInfo writes
+	// the finished list, both inside the publish call, so the lifetime ends
+	// when this function returns.
+	defer sid.Free(value)
 	return publish(path, listFor(value, entries), false)
 }
 
@@ -179,6 +184,8 @@ func Deny(path, account string, access uint32) error {
 	if err != nil {
 		return err
 	}
+	// Same lifetime as Set: nothing reads the identifier past the apply below.
+	defer sid.Free(value)
 	return apply(path, []explicitAccess{entry(value, access, InheritNone, denyAccess)}, false)
 }
 
@@ -190,6 +197,8 @@ func Remove(path, account string) error {
 	if err != nil {
 		return err
 	}
+	// Same lifetime as Set: nothing reads the identifier past the apply below.
+	defer sid.Free(value)
 	return apply(path, []explicitAccess{entry(value, 0, InheritNone, setAccess)}, false)
 }
 

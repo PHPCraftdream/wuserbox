@@ -40,35 +40,12 @@ import (
 // Unlike the sweep, the walk takes the root itself too: the sweep skips it
 // because Isolate publishes it, and nothing publishes here.
 func TakeBack(root, account string, pinned []string) error {
-	if _, err := sid.Parse(account); err != nil {
-		return err
-	}
-	operator, err := sid.CurrentUser()
+	sandbox, err := identitiesFor(account)
 	if err != nil {
 		return err
 	}
-	operatorSID, err := sid.Parse(operator)
-	if err != nil {
-		return err
-	}
-	systemSID, err := sid.Parse(sid.System)
-	if err != nil {
-		return err
-	}
-	administratorsSID, err := sid.Parse(sid.Administrators)
-	if err != nil {
-		return err
-	}
-	limited, err := sid.Parse(sid.OwnerRights)
-	if err != nil {
-		return err
-	}
-	mark, err := sid.Parse(handDownMark)
-	if err != nil {
-		return err
-	}
-	sandbox, err := sandboxIdentities(account)
-	if err != nil {
+	defer sandbox.End()
+	if err := sandbox.cast(); err != nil {
 		return err
 	}
 	spared, err := makePinnedPaths(pinned)
@@ -104,7 +81,7 @@ func TakeBack(root, account string, pinned []string) error {
 			}
 			return nil
 		}
-		return takeBack(name, sandbox, limited, mark, operatorSID, systemSID, administratorsSID)
+		return takeBack(name, sandbox)
 	})
 }
 
@@ -113,7 +90,7 @@ func TakeBack(root, account string, pinned []string) error {
 // onto it, once, in the same update -- measured on the narrowing side, once
 // the cap has landed the owner can no longer edit the list at all, so a cap
 // that arrives late arrives never (owner.go).
-func takeBack(path string, sandbox []uintptr, limited, mark, operator, system, administrators uintptr) error {
+func takeBack(path string, sandbox *identities) error {
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
@@ -127,10 +104,10 @@ func takeBack(path string, sandbox []uintptr, limited, mark, operator, system, a
 	if err != nil {
 		return fmt.Errorf("reading the permissions of %s: %w", path, err)
 	}
-	owned := ownedByTheSandbox(ownerOf(descriptor), sandbox)
+	owned := ownedByTheSandbox(ownerOf(descriptor), sandbox.values)
 	var clear []explicitAccess
 	for _, one := range held {
-		if one.inherited || !matchesSandboxIdentity(one.access.trustee.name, sandbox) {
+		if one.inherited || !matchesSandboxIdentity(one.access.trustee.name, sandbox.values) {
 			continue
 		}
 		already := false
@@ -165,8 +142,8 @@ func takeBack(path string, sandbox []uintptr, limited, mark, operator, system, a
 		// narrow every unexpected changing grant before a new restricted
 		// process can open the object. Keeping the old incremental update here
 		// left an explicit Everyone:Full Control beside the inherited grant.
-		carried, _ := carryRevokeEntries(held, sandbox, operator, system, administrators)
-		return writeWhole(path, carried, nil, nil, limited, mark)
+		carried, _ := carryRevokeEntries(held, sandbox.values, sandbox.holder, sandbox.system, sandbox.administrators)
+		return writeWhole(path, carried, nil, nil, sandbox.ownerRights, sandbox.mark)
 	}
 
 	// The object's list is its own: written whole by an earlier sweep, whose
@@ -186,19 +163,19 @@ func takeBack(path string, sandbox []uintptr, limited, mark, operator, system, a
 		// deliberately relies on; a sandbox can write an Everyone:Full
 		// Control entry before revoke, and that entry must not survive the
 		// cap merely because it is explicit.
-		carried, _ := carryRevokeEntries(held, sandbox, operator, system, administrators)
-		return writeWhole(path, append(clear, carried...), nil, nil, limited, mark)
+		carried, _ := carryRevokeEntries(held, sandbox.values, sandbox.holder, sandbox.system, sandbox.administrators)
+		return writeWhole(path, append(clear, carried...), nil, nil, sandbox.ownerRights, sandbox.mark)
 	}
-	if capPresent(held, limited) {
+	if capPresent(held, sandbox.ownerRights) {
 		// A cap by itself is not proof that the list is safe: an earlier
 		// revoke could have accepted an owner-rights entry while an
 		// unexpected explicit broad grant stood beside it. Normalize that
 		// list before treating the fast path as finished.
-		carried, changed := carryRevokeEntries(held, sandbox, operator, system, administrators)
+		carried, changed := carryRevokeEntries(held, sandbox.values, sandbox.holder, sandbox.system, sandbox.administrators)
 		if !changed {
 			return nil
 		}
-		return writeWhole(path, carried, nil, nil, limited, mark)
+		return writeWhole(path, carried, nil, nil, sandbox.ownerRights, sandbox.mark)
 	}
 	// Nothing of the account's was on it and there is no list to carry: a
 	// list with no entries refuses everybody everything, which is one step
@@ -211,7 +188,7 @@ func takeBack(path string, sandbox []uintptr, limited, mark, operator, system, a
 	// account on the machine holding everything through it, and capping a
 	// list-less object the sandbox owns writes a whole list of its own
 	// because leaving the absence in force would leave it so.
-	return writeWhole(path, nil, nil, nil, limited, mark)
+	return writeWhole(path, nil, nil, nil, sandbox.ownerRights, sandbox.mark)
 }
 
 // revokeCarry decides which explicit permissions may survive a revoke on an
