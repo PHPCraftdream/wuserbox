@@ -13,19 +13,14 @@ func everyone() Value {
 	return Value{1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0}
 }
 
-// refusing stands in for ConvertSidToStringSidW with the one answer the real
-// call cannot be made to give on demand: a plain refusal.
-type refusing struct{ err error }
-
-func (r refusing) Call(_ ...uintptr) (uintptr, uintptr, error) { return 0, 0, r.err }
-
 // refuseTheConversion swaps the formatter's Windows call for one that fails
-// with reason, and puts the real one back when the test is over.
+// with reason -- the one answer the real call cannot be made to give on
+// demand -- and puts the real one back when the test is over.
 func refuseTheConversion(t *testing.T, reason error) {
 	t.Helper()
-	real := procConvertSidToStringSid
-	t.Cleanup(func() { procConvertSidToStringSid = real })
-	procConvertSidToStringSid = refusing{err: reason}
+	real := convertSidToStringSid
+	t.Cleanup(func() { convertSidToStringSid = real })
+	convertSidToStringSid = func(_ unsafe.Pointer, _ []byte) (*uint16, error) { return nil, reason }
 }
 
 // This pins the half of format's contract the empty-Value case cannot reach:

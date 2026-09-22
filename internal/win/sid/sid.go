@@ -12,19 +12,42 @@ import (
 )
 
 var (
-	procLookupAccountName                   = w32.Advapi32.NewProc("LookupAccountNameW")
-	procLookupAccountSid                    = w32.Advapi32.NewProc("LookupAccountSidW")
-	procConvertSidToStringSid textConverter = w32.Advapi32.NewProc("ConvertSidToStringSidW")
+	procLookupAccountName     = w32.Advapi32.NewProc("LookupAccountNameW")
+	procLookupAccountSid      = w32.Advapi32.NewProc("LookupAccountSidW")
+	procConvertSidToStringSid = w32.Advapi32.NewProc("ConvertSidToStringSidW")
 )
 
-// textConverter is the one call this package makes of Windows to turn an
-// identifier into text, behind an interface so the refusal tests can stand
-// in for it: no account on any machine produces a real refusal on demand,
-// and a stubbed converter does. syscall.LazyProc's Call has exactly this
-// shape, so the proc itself satisfies it and the production value is the
-// real thing still.
-type textConverter interface {
-	Call(a ...uintptr) (r1, r2 uintptr, lastErr error)
+// convertSidToStringSid is the one call this package makes of Windows to
+// turn an identifier into text, behind a variable of this concrete func
+// type so the refusal tests can stand in for it: no account on any machine
+// produces a real refusal on demand, and a stubbed converter does. It is a
+// func type, not an interface with a variadic Call, and on purpose: the
+// production value turns both addresses into numbers inside the argument
+// list of one concrete LazyProc.Call, the one shape the compiler treats the
+// unsafe rules' third case by, while an interface method would carry them
+// as plain numbers across an ordinary indirect call -- and a number does
+// not follow the stack when the Go code it crosses moves it, so Windows
+// would write the answer where the slot used to be.
+type textConverter func(pointer unsafe.Pointer, owner []byte) (*uint16, error)
+
+var convertSidToStringSid textConverter = callConvertSidToStringSid
+
+// callConvertSidToStringSid is the production converter: the real
+// ConvertSidToStringSidW. This is where the addresses become numbers -- in
+// the argument list of this one concrete call, the shape the unsafe rules
+// demand for memory a system call reads or writes, because the compiler
+// knows the callee and holds both the memory they name and their values
+// still across it. owner is the Go memory the identifier lives in: the
+// KeepAlive after the call holds it until Windows is done reading it, not
+// merely until the address inside pointer became a number.
+func callConvertSidToStringSid(pointer unsafe.Pointer, owner []byte) (*uint16, error) {
+	var text *uint16
+	r, _, callErr := procConvertSidToStringSid.Call(uintptr(pointer), uintptr(unsafe.Pointer(&text)))
+	runtime.KeepAlive(owner)
+	if r == 0 {
+		return nil, callErr
+	}
+	return text, nil
 }
 
 // NoneMapped is the refusal LookupAccountSidW reports for an identifier no
@@ -117,19 +140,15 @@ func Name(pointer uintptr) (string, error) {
 
 // format renders the identifier Windows keeps at pointer, the reason a
 // conversion failed included. pointer travels typed, and owner -- the Go
-// memory the identifier lives in -- travels beside it, because a uintptr
-// holds nothing down: the buffer a caller read the identifier from can be
-// collected the moment nothing points at it any more, and the allocations
-// this call makes on the way are exactly where the compiler stops keeping
-// it. The conversion to a number happens in the call expression itself, the
-// shape the unsafe rules demand for memory a system call reads, and the
-// KeepAlive after it holds precisely that owner until the answer is back.
+// memory the identifier lives in -- travels beside it, down to the
+// converter that turns both into numbers; a uintptr holds nothing down, so
+// neither stops being tracked before that call, and the converter's
+// KeepAlive holds precisely that owner until the answer is back. A refused
+// conversion arrives with the reason it traveled with and nothing to free.
 func format(pointer unsafe.Pointer, owner []byte) (string, error) {
-	var text *uint16
-	r, _, callErr := procConvertSidToStringSid.Call(uintptr(pointer), uintptr(unsafe.Pointer(&text)))
-	runtime.KeepAlive(owner)
-	if r == 0 {
-		return "", fmt.Errorf("formatting the identifier: %w", callErr)
+	text, err := convertSidToStringSid(pointer, owner)
+	if err != nil {
+		return "", fmt.Errorf("formatting the identifier: %w", err)
 	}
 	defer w32.Free(uintptr(unsafe.Pointer(text)))
 	return w32.GoString(text), nil
