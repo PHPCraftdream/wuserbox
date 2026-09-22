@@ -78,6 +78,19 @@ func reclaimTree(t *testing.T, root string) {
 		t.Logf("%s is left behind: reclaiming it needs a privilege this desk's token does not hold (%v)", root, err)
 		t.Skip("recovering a fully revoked, self-owned grant root needs SeRestorePrivilege, which an administrator token holds and this one does not")
 	}
+	// Whatever happens from here, the token goes back the way it was found.
+	// A restore privilege left standing is not this test's state to keep: it
+	// is granted by the kernel outright on the backup-intent open every list
+	// read goes through, READ_CONTROL included, so every later question this
+	// package's binary asks about a closed list is answered by the privilege
+	// and not by the list -- which is exactly how the audit pass's
+	// closed-directory control failed on CI, where the runner's own
+	// administrator token holds the privilege and the enable above succeeds.
+	// This desk does not hold the privilege at all (the skip above is where
+	// the story ends here), but the runner does, so the disable is what
+	// keeps the control measuring the list. Disabled, not removed: the next
+	// reclaimTree needs to enable it again.
+	defer func() { _ = disableTestPrivilege("SeRestorePrivilege") }()
 	if out, err := quietexec.Command("icacls", root, "/reset", "/T", "/C").CombinedOutput(); err != nil {
 		t.Fatalf("icacls /reset with SeRestorePrivilege enabled: %v\n%s", err, out)
 	}
@@ -131,6 +144,32 @@ func enableTestPrivilege(name string) error {
 	var errno syscall.Errno
 	if errors.As(err, &errno) && errno == errNotAllAssigned {
 		return fmt.Errorf("enabling %s: not held by this token (administrator required)", name)
+	}
+	return nil
+}
+
+// disableTestPrivilege puts back what enableTestPrivilege took: the same
+// AdjustTokenPrivileges call with the enabled attribute cleared, which leaves
+// the privilege held but off again -- the state this process's token was
+// found in. A privilege the token does not hold has nothing to disable and
+// answers the same not-assigned error the enable reports; here that is the
+// ordinary case, not a failure.
+func disableTestPrivilege(name string) error {
+	var token syscall.Token
+	if err := syscall.OpenProcessToken(syscall.Handle(^uintptr(0)),
+		syscall.TOKEN_ADJUST_PRIVILEGES|syscall.TOKEN_QUERY, &token); err != nil {
+		return fmt.Errorf("opening the process token: %w", err)
+	}
+	defer func() { _ = token.Close() }()
+	var id reclaimLUID
+	if r, _, err := procReclaimLookupPrivilegeValue.Call(0, uintptr(unsafe.Pointer(w32.UTF16(name))),
+		uintptr(unsafe.Pointer(&id))); r == 0 {
+		return fmt.Errorf("looking up %s: %w", name, err)
+	}
+	priv := reclaimTokenPrivileges{count: 1, privileges: [1]reclaimLUIDAndAttributes{{luid: id}}}
+	r, _, err := procReclaimAdjustTokenPrivileges.Call(uintptr(token), 0, uintptr(unsafe.Pointer(&priv)), 0, 0, 0)
+	if r == 0 {
+		return fmt.Errorf("disabling %s: %w", name, err)
 	}
 	return nil
 }
