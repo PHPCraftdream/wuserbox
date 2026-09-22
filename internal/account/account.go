@@ -127,6 +127,7 @@ func InsideSandbox() bool {
 	if err != nil {
 		return true
 	}
+	defer sid.Free(value)
 	name, err := sid.Name(value)
 	if err != nil {
 		return true

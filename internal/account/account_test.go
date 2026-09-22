@@ -353,3 +353,24 @@ func TestAnOrdinaryDesktopIsNotInsideASandbox(t *testing.T) {
 		t.Error("an ordinary desktop process is reported as inside a sandbox")
 	}
 }
+
+// InsideSandbox parses this process's own identifier once per question when
+// the token is not restricted, and the collector does not own what Parse
+// hands back, so repeated questions must not grow native memory. A
+// restricted token is answered before any identifier is parsed; the
+// sandboxed half of the question is covered end to end instead.
+func TestInsideSandboxGivesBackTheIdentifierItParses(t *testing.T) {
+	if token.IsRestricted() {
+		t.Skip("a restricted token is answered before any identifier is parsed; the sandboxed case is covered end to end")
+	}
+	parses, frees := sid.Parses(), sid.Frees()
+	for i := 0; i < 5; i++ {
+		_ = InsideSandbox()
+	}
+	if got := sid.Parses() - parses; got != 5 {
+		t.Errorf("five questions parsed %d identifiers, want one each", got)
+	}
+	if got := sid.Frees() - frees; got != 5 {
+		t.Errorf("five questions gave %d identifiers back, want all five parsed", got)
+	}
+}

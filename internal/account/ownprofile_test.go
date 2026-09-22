@@ -186,3 +186,22 @@ func TestMakingAProfileRejectsAnExternalHardLinkBeforePermissioningIt(t *testing
 		t.Fatalf("refused profile changed the external object's content: before %q, after %q", beforeContent, afterContent)
 	}
 }
+
+// The two identifiers setHiveSecurity parses -- SYSTEM and the
+// administrators -- are system memory for exactly as long as building the
+// permission list takes, and a key the write is refused on must not keep
+// them. A handle nothing owns turns the write away without any privilege at
+// all: both identifiers are parsed, the list is built, and nothing stays
+// behind on the way out.
+func TestSetHiveSecurityGivesBackTheIdentifiersItParsesWhenTheKeyIsRefused(t *testing.T) {
+	parses, frees := sid.Parses(), sid.Frees()
+	if err := setHiveSecurity(0, me(t)); err == nil {
+		t.Fatal("a key no process owns was permissioned anyway")
+	}
+	if got := sid.Parses() - parses; got != 2 {
+		t.Errorf("the refused write parsed %d identifiers, want two", got)
+	}
+	if got := sid.Frees() - frees; got != 2 {
+		t.Errorf("the refused write gave %d identifiers back, want both parsed", got)
+	}
+}

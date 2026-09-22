@@ -154,5 +154,6 @@ func BuiltinUsersName() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	defer sid.Free(pointer)
 	return sid.Name(pointer)
 }
