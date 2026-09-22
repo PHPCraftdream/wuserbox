@@ -1133,16 +1133,19 @@ func TestARewriteKeepsTheStretchAndACreatedNameEndsIt(t *testing.T) {
 	}
 }
 
-// TestAClearThatTookNothingBackKeepsTheStretchAndOneThatClearedEndsIt pins
-// the same line on the take-back, where clearEntry's own answer is the
-// question: stale entries whose copies are already gone from the profile
-// answer false, take nothing back, and share one stretch of instruments --
-// the shape that used to rebuild after every clear, whatever the clear had
-// done -- while a clear that really removed a name ends the stretch, and
-// the question after it asks a fresh resolver. forget is called directly,
-// with the record and the list a run would hand it, so the counted bill is
-// the take-back's alone.
-func TestAClearThatTookNothingBackKeepsTheStretchAndOneThatClearedEndsIt(t *testing.T) {
+// TestAClearThatTookNothingBackKeepsTheStretchAndOneThatClearedRetractsItsAnswers
+// pins the same line on the take-back, where clearEntry's own answer is
+// the question: stale entries whose copies are already gone from the
+// profile answer false, take nothing back, and share one stretch of
+// instruments -- the shape that used to rebuild after every clear, whatever
+// the clear had done -- while a clear that really removed a name retracts
+// the answers it made false and the stretch stands on them, the scoped
+// take-back the review of 2026-09-26 (P3-1),
+// docs/reviews/security-performance-review-2026-09-26-round6.md, replaced
+// the wholesale death with. forget is called directly, with the record and
+// the list a run would hand it, so the counted bill is the take-back's
+// alone.
+func TestAClearThatTookNothingBackKeepsTheStretchAndOneThatClearedRetractsItsAnswers(t *testing.T) {
 	// Nothing taken: a0 and a1 left the list and their copies are already
 	// gone from the profile; k0 stays named and stands. Both clears find
 	// an empty place, and one stretch answers both questions.
@@ -1182,11 +1185,18 @@ func TestAClearThatTookNothingBackKeepsTheStretchAndOneThatClearedEndsIt(t *test
 	}
 
 	// Something taken: b0 and b1 left the list and their copies stand. The
-	// first clear removes a real name, the stretch dies on it, and the
-	// second question builds a fresh resolver -- two, where the
-	// nothing-taken pass above held one. This half is the invariant: a
-	// clearEntry that stopped answering true would leave this stretch
-	// carrying its answers across a real deletion.
+	// first clear removes a real name, and retract takes back the answers
+	// it made false -- b0's witnessed resolution and the root snapshot
+	// that held it -- while the stretch itself stands: b1's question then
+	// re-reads the root the clear emptied, the one enumeration a real
+	// clear costs, and k0 is never asked again at all, its resolution and
+	// its seat in the presence set the survivors the retraction kept. One
+	// resolver, three resolutions, where the replaced shape -- the stretch
+	// dying on every real clear -- built again and re-indexed k0 once per
+	// clear. This half is the invariant: a retract that dropped more than
+	// the clear had made false, or a clearEntry that stopped answering
+	// true, would leave this stretch answering from a stale place or
+	// paying for its survivors twice.
 	dest = t.TempDir()
 	write(t, filepath.Join(dest, "b0"), "stale")
 	write(t, filepath.Join(dest, "b1"), "stale")
@@ -1204,17 +1214,17 @@ func TestAClearThatTookNothingBackKeepsTheStretchAndOneThatClearedEndsIt(t *test
 	resolvers, opens, reads, resolutions, children, scans = stop()
 	_ = root.Close()
 
-	if resolvers != 2 {
-		t.Errorf("the pass whose first clear removed a name built %d resolvers, want two: the real clear ends the stretch, and the question after it builds fresh instruments", resolvers)
+	if resolvers != 1 {
+		t.Errorf("the pass whose first clear removed a name built %d resolvers, want one: the real clear retracts the answers it made false and the stretch survives it, where the shape the review of 2026-09-26 (P3-1) replaced ended the stretch and made the next question build fresh instruments", resolvers)
 	}
 	if opens != 2 || reads != 2 {
-		t.Errorf("the real-clear pass opened %d directories and read %d of them, want two of each: one indexing before the first clear and one after it", opens, reads)
+		t.Errorf("the real-clear pass opened %d directories and read %d of them, want two of each: the stretch's build, and the one re-ask of the root the clear emptied, paid by b1's question -- retract takes the holding directory's snapshot back with the place", opens, reads)
 	}
-	if resolutions != 4 {
-		t.Errorf("the real-clear pass resolved %d spellings, want four: k0 indexed once per stretch, b0 and b1 asked once each", resolutions)
+	if resolutions != 3 {
+		t.Errorf("the real-clear pass resolved %d spellings, want three: k0 indexed once at the build and never asked again, b0 and b1 asked once each -- the survivors' resolutions are what retract keeps, where the replaced shape paid for k0 once per real clear", resolutions)
 	}
 	if children != 5 {
-		t.Errorf("the real-clear pass processed %d children, want five: the root's three entries before the first clear and two after it", children)
+		t.Errorf("the real-clear pass processed %d children, want five: the root's three entries at the build and the two that stand when b1's question re-reads it after b0's clear", children)
 	}
 	if scans != 0 {
 		t.Errorf("the real-clear pass scanned the profile root's siblings %d times, want none: every spelling is exact, so no alias branch runs", scans)

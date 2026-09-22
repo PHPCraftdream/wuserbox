@@ -154,10 +154,12 @@ func FoldedEntryPath(path string) string {
 // with a whole loop of comparisons to ask -- forget over its recorded
 // entries, copyEntries over its missing sources -- hold one placeIndex
 // across each mutation-free stretch of the loop instead of a resolver per
-// question, and the stretch still stops at what happens inside the loop:
-// forget clears and copyEntries copies between two of these, and an answer
-// held across that would describe directories this very operation has
-// since changed.
+// question, and the stretch still answers for what happens inside the
+// loop: copyEntries ends its stretch at the mirror that made, took or
+// replaced a name, and forget's clears retract the answers the cleared
+// place and the directory that held it carried -- an answer kept across a
+// change the operation itself made is the lie the stretch exists never to
+// tell.
 func sameEntryPlace(root *os.Root, first, second string) bool {
 	return newPlaceResolver(root).samePlace(first, second)
 }
@@ -242,13 +244,18 @@ type canonicalChild struct {
 // of its caller's loop and never spans the mutation that ends it. A
 // DedupeEntries call compares and writes nothing, so one resolver spans
 // all of its comparisons; forget and copyEntries hold one across each
-// mutation-free stretch of their loops -- forget over every recorded
+// mutation-bearing stretch of their loops -- forget over every recorded
 // entry it compares against one unchanged current list, copyEntries over
-// every missing source it vouches against one unchanged record -- and
-// both throw the resolver and the presence index it serves away the
-// moment a real mutation happens -- forget's clearEntry that took
-// something back, copyEntries' mirror that made, took, or replaced a name
-// -- building the next stretch's only when a question needs it. A rewrite
+// every missing source it vouches against one unchanged record.
+// copyEntries throws the resolver and the presence index it serves away
+// the moment its mirror makes, takes or replaces a name, building the
+// next stretch's only when a question needs it; forget's clears used to
+// end the stretch the same way, which made a pass that takes half the
+// record back re-index the surviving half once per clear, and now retract
+// the answers each clear made false instead -- the taken place's snapshot
+// and every snapshot beneath it, its spellings' witnessed resolutions,
+// the alias book's say in the directory that held it -- and keep the
+// rest, so the stretch outlives its clears. A rewrite
 // of the bytes of a file that already stood, and a clear that found
 // nothing to take back, are not mutations in this sense: they change no
 // name any cached answer describes, and the stretch outlives them, which
@@ -492,6 +499,78 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 	return current, true
 }
 
+// retract takes back the answers a resolver holds about one place the
+// operation has itself taken away, and it is how forget's stretch survives
+// its own clears. A clear that took something back used to end the whole
+// stretch: every cached answer was suspect, so the next question rebuilt
+// the lot -- the place index, every spelling's resolution, every snapshot
+// -- and a pass that took half the record back indexed the surviving half
+// once per clear, the square the review of 2026-09-26 (P3-1) measured. The
+// square was the wrong price for the wrong scope: a clear changes the
+// answers about the place it worked on and the directory that held it, and
+// about nothing else -- the surviving names are exactly where they were.
+// retract drops what the clear made into lies -- the taken place's
+// snapshot and every snapshot beneath it, the witnessed resolutions that
+// landed within it, the alias book's entries in the directory that held it
+// and under the place -- and keeps the rest, so the stretch outlives its
+// clears and the next stale entry is answered out of the index the build
+// already paid for.
+//
+// The spelling is answered out of the memo a question asked a moment ago
+// filled: holds resolved the recorded entry to ask the volume about it,
+// and the canonical path the answer kept is the path the clear worked on.
+// A spelling the resolver never walked has no answer to retract -- false,
+// and the caller ends the stretch the old way, the answer that stays
+// correct whatever the clear did. The comparisons run folded, the way
+// foldedName folds: a fold errs toward joining, and an answer dropped that
+// could have kept costs one question asked again, where an answer kept
+// that the volume has since revoked costs the lie the stretch exists never
+// to tell. The presence set the place index serves is left as it stands:
+// membership needs a fresh witnessed resolution naming the place, and a
+// place the clear took answers nothing, so a stale member there can spare
+// nothing that is not there.
+func (r *placeResolver) retract(spelling string) bool {
+	got, memoed := r.places[cleanEntryPath(spelling)]
+	if !memoed || !got.ok {
+		return false
+	}
+	removed := got.canonical
+	parent := filepath.Dir(removed)
+	removedFolded := foldedName(removed)
+	removedUnder := removedFolded + string(filepath.Separator)
+	parentFolded := foldedName(parent)
+	under := func(path string) bool {
+		folded := foldedName(path)
+		return folded == removedFolded || strings.HasPrefix(folded, removedUnder)
+	}
+	for dir := range r.dirs {
+		// The dirs keys are built out of the stored names the walks
+		// chose, so the parent's own key is the parent; the fold is for
+		// everything beneath the taken place.
+		if dir == parent || under(dir) {
+			delete(r.dirs, dir)
+		}
+	}
+	for asked, answer := range r.places {
+		// A miss stays: a deletion never makes a name the volume once
+		// did not have, so the not-found answers keep their truth.
+		if answer.ok && under(answer.canonical) {
+			delete(r.places, asked)
+		}
+	}
+	for opened := range r.alias {
+		// The alias keys spell the path the branch opened, in whatever
+		// spelling asked the question, so both comparisons fold: the
+		// spellings under the taken place, and every spelling asked in
+		// the directory that held it -- any of those may have been
+		// answered with the name the clear removed.
+		if under(opened) || foldedName(filepath.Dir(opened)) == parentFolded {
+			delete(r.alias, opened)
+		}
+	}
+	return true
+}
+
 // placeIndex is one mutation-free stretch's instruments: one resolver and
 // the canonical-presence set of the names every question in the stretch is
 // asked against. forget builds one stretch for its whole loop when the run
@@ -499,13 +578,17 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 // missing sources it meets between two mirrors, and both answer every
 // question of the stretch out of the set and the resolver's memos rather
 // than out of a fresh walk per question -- that is what makes the unchanged
-// run linear where the shapes before it paid once per pair. The stretch
-// dies with its last real mutation -- forget's clearEntry that took
-// something back, copyEntries' mirror that made, took, or replaced a name
-// -- because a cached answer held across one of those would describe
-// directories the operation has since changed; the next question that
-// needs the volume builds a fresh stretch rather than asking a stale
-// instrument, and a stretch that never meets a mutation is never rebuilt.
+// run linear where the shapes before it paid once per pair. copyEntries'
+// stretch dies with its last real mutation -- the mirror that made, took,
+// or replaced a name -- because a cached answer held across one of those
+// would describe directories the operation has since changed; the next
+// question that needs the volume builds a fresh stretch rather than asking
+// a stale instrument, and a stretch that never meets a mutation is never
+// rebuilt. forget's stretch no longer dies at its clears: retract takes
+// back the answers each clear made false -- the cleared place's, and the
+// directory that held it -- and keeps the index of the names the list
+// still holds, so a pass that takes half the record back answers the
+// other half out of the one build.
 // The mutation is the name's, not the byte's: a mirror that rewrote a
 // standing file's bytes changed no listing and no canonical answer, and
 // ends nothing.
