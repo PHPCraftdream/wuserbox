@@ -160,9 +160,15 @@ func Isolate(path string, subject Identity, entries []ACE, reach uint32, pinned 
 	if ownedByTheSandbox(ownerOf(descriptor), sandbox.values) {
 		list = append(list, ownerLimit(sandbox.ownerRights)...)
 	}
-	// What this list will hand down once published. Objects the sandbox
-	// owns get it written in explicitly, because their lists, once written
-	// individually, no longer hear from above (owner.go).
+	// What this list will hand down once published. The entries go to the
+	// sweep as the root holds them, and the sweep writes each one onto an
+	// owned object as that object would have held it, by kind and by
+	// generation (handDown in sweep.go): a whole write that copied the
+	// root's representation as it sits would hand a file an INHERIT_ONLY
+	// entry, which grants a file nothing, and a NO_PROPAGATE entry a second
+	// start one level deeper than the deed. Objects the sandbox owns get it
+	// written in explicitly, because their lists, once written individually,
+	// no longer hear from above (owner.go).
 	var hand []explicitAccess
 	for _, one := range list {
 		if one.inheritance != InheritNone {

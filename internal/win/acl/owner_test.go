@@ -356,6 +356,160 @@ func TestASweepCapsWhatTheSandboxOwnsInsideTheTree(t *testing.T) {
 	}
 }
 
+// TestAHomeTopReapplyKeepsTheFilesTheSandboxMadeWritable is the HomeTop
+// lifecycle: the deed lets the sandbox create a file directly in the granted
+// directory and keeps it writable, and the grant is reapplied while the file
+// is there. The first sweep's whole write used to carry the root's entries
+// onto owned children as the root holds them, and an INHERIT_ONLY copy grants
+// a file nothing -- the flag says the entry is about what the object hands
+// down, and a file hands down nothing -- so the file the sandbox had been
+// writing through real inheritance came out read-only for its owner after
+// the reapply. The hand-down lands as each object would have held it, and
+// the reapplied grant must leave the file writable, the deed's scope exactly
+// where it was, and the door for files made afterwards open.
+func TestAHomeTopReapplyKeepsTheFilesTheSandboxMadeWritable(t *testing.T) {
+	root := t.TempDir()
+	owner, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// icacls prints resolved account names, not identifier text, so what the
+	// holds helper searches for is the name of this account.
+	pointer, err := sid.Parse(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := sid.Name(pointer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handed := filepath.Join(root, "handed")
+	if err := os.Mkdir(handed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	normalizeOwner(t, handed, owner)
+	// The list is written outright first, so that only these entries answer
+	// below: the machine's temporary directory hands every desk a different
+	// crowd, and a crowd entry narrowed here would come back through the
+	// handback naming this same account, answering for the write the deed is
+	// supposed to grant.
+	setSDDL(t, handed, `D:P(A;OICI;0x1301BF;;;`+owner+`)`)
+	// What the reapply will meet, all of it predating the grant: sub
+	// inherits the controlled list, and the files in and under it ride real
+	// inheritance until the first sweep writes them whole. deeper.txt is a
+	// generation past where the deed stops; sib.txt is outside handed
+	// altogether, a neighbor the grant was never asked for.
+	sub := filepath.Join(handed, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(sub, "nested.txt")
+	if err := os.WriteFile(nested, []byte("nested"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deeper := filepath.Join(sub, "deeper.txt")
+	if err := os.WriteFile(deeper, []byte("deeper"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sib := filepath.Join(root, "sib.txt")
+	if err := os.WriteFile(sib, []byte("sib"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{sub, nested, deeper, sib} {
+		normalizeOwner(t, path, owner)
+	}
+	made := filepath.Join(handed, "made.txt")
+	fresh := filepath.Join(handed, "fresh.txt")
+	t.Cleanup(func() {
+		reclaim(t, fresh)
+		reclaim(t, made)
+		reclaim(t, nested)
+		reclaim(t, deeper)
+		reclaim(t, sub)
+		reclaim(t, handed)
+	})
+
+	// The deed as grant.HomeTop writes it, plus the operator's rights: one
+	// account stands for both here, the same stand-in
+	// TestASweepReachesWhatItWroteWhenTheGrantNarrows spells out, and
+	// without them the cap on this directory would refuse the second apply
+	// its own publish.
+	const operators = 0x80000 | 0x40000 // take ownership, rewrite the list
+	entries := []ACE{
+		{Access: AccessCreateFiles, Inheritance: InheritNone},
+		{Access: AccessModify, Inheritance: InheritObjects | InheritOnly | InheritNoPropagate},
+		{Access: operators, Inheritance: InheritObjects | InheritContainers},
+	}
+	const reach = InheritObjects | InheritNoPropagate
+	if err := Isolate(handed, IdentifierAlone(owner), entries, reach, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// The deed: creating a file directly in the granted directory works, and
+	// the grant stays in force for the file it let the sandbox make -- the
+	// Modify rides real inheritance down onto the file as an effective
+	// entry.
+	if err := os.WriteFile(made, []byte("first"), 0o644); err != nil {
+		t.Fatalf("the deed did not let the sandbox create a file in the granted directory: %v", err)
+	}
+	normalizeOwner(t, made, owner)
+	if err := os.WriteFile(made, []byte("second"), 0o644); err != nil {
+		t.Fatalf("the grant stopped working for the file it let the sandbox make: %v", err)
+	}
+
+	// The reapply the review is about: the same grant, run again over a tree
+	// the first run already handed over.
+	if err := Isolate(handed, IdentifierAlone(owner), entries, reach, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// The regression: the reapply's whole write used to put the root's own
+	// INHERIT_ONLY copy on this file, which grants a file nothing, leaving
+	// the owner cap's reading alone where writing used to be. The hand-down
+	// lands effective now, and the file keeps being written.
+	if err := os.WriteFile(made, []byte("third"), 0o644); err != nil {
+		t.Fatalf("the reapplied grant took the file back from the sandbox that made it: %v", err)
+	}
+	if got, err := os.ReadFile(made); err != nil || string(got) != "third" {
+		t.Fatalf("the content of %s did not read back: %q (%v)", made, got, err)
+	}
+	// The cap survived the fix: the write above comes from the entry, not
+	// from what ownership implies.
+	if !holds(t, made, "OWNER RIGHTS", "(RX)") {
+		t.Fatal("the owner-rights cap is not on the list of a file the sandbox made")
+	}
+
+	// The deed's scope, not widened: the directory directly under a home-top
+	// root holds no modify of its own -- a copy made as the root holds it
+	// would leave the root's inherit-only entry sitting there as an
+	// inheritable one, handing the write down to files a level deeper than
+	// the deed stops -- and a file a level deeper stays capped read-only.
+	if holds(t, sub, name, "(M)") {
+		t.Fatal("a directory directly under a home-top root holds a modify of its own")
+	}
+	if err := os.WriteFile(deeper, []byte("tampered"), 0o644); err == nil {
+		t.Fatal("a file a level deeper than the deed stops was rewritten")
+	}
+	if holds(t, nested, name, "(M)") {
+		t.Fatal("a file a level deeper than the deed stops holds a modify")
+	}
+	// Not extended past the tree either: nothing outside handed was swept or
+	// capped.
+	if holds(t, sib, "OWNER RIGHTS", "") {
+		t.Fatal("a file outside the granted directory was swept or capped")
+	}
+
+	// And the deed still works for files made after the reapply: creating
+	// one in the granted directory, and rewriting it too, its inherited
+	// modify being the effective kind real inheritance lands on files.
+	if err := os.WriteFile(fresh, []byte("fresh"), 0o644); err != nil {
+		t.Fatalf("the reapplied grant lost the right to create files: %v", err)
+	}
+	if err := os.WriteFile(fresh, []byte("fresher"), 0o644); err != nil {
+		t.Fatalf("the reapplied grant lost the write on a file made after it: %v", err)
+	}
+}
+
 // TestAWritableGrantKeepsWorkingUnderTheCap is the grant half of the question.
 // A writable grant gets the cap too -- an object the sandbox owns gets it
 // whatever the grant says -- and nothing the grant is for stops working:
