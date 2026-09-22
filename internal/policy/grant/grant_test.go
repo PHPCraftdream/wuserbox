@@ -135,7 +135,7 @@ func TestApplyHoldsTheDirectoryItChanges(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", t.TempDir())
 	shared := t.TempDir()
 
-	release, err := hold(lock.ForPath(shared))
+	release, err := holdTree(shared)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,14 +264,9 @@ func TestGrantsInUnrelatedTreesDoNotWaitForEachOther(t *testing.T) {
 	}
 }
 
-// hold takes a lock in the background and returns how to let it go, so a test
-// can watch something wait for it.
-func hold(name string) (func(), error) {
-	return holding(func(work func() error) error { return lock.Hold(name, work) })
-}
-
-// holdTree is hold for a whole tree: it claims the root and every directory
-// above it, the way a permission change does.
+// holdTree takes a lock on a whole tree in the background and returns how to
+// let it go, so a test can watch something wait for it: it claims the root
+// and every directory above it, the way a permission change does.
 func holdTree(root string) (func(), error) {
 	return holding(func(work func() error) error { return lock.HoldTree(root, work) })
 }
