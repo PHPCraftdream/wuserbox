@@ -293,6 +293,19 @@ func IdentifierAlone(account string) Identity {
 // the sandbox owns. The caller now says which promise it is making, and
 // the operation holds it to that and nothing else.
 //
+// The members question answers in kind, and the same promise decides its
+// answer too. Where the caller vouched the identifier stands alone, no
+// local group answering to the name is the question confirming the vouch:
+// a plain account is no local group, the one identifier is still the
+// whole of it, and the operation goes on. Where the identifier was handed
+// over as the sandbox's own group, the same answer is the group gone or
+// renamed between the two questions, and an operation that accepted it
+// would run on the group's identifier alone -- owner comparisons and
+// explicit-ACE removals blind to the account its files are owned by, the
+// exact half-an-identity the name stage refuses -- so it refuses too.
+// Every other answer from the asking failed for reasons nobody here
+// controls, and refuses under either promise.
+//
 // The group answers with names, and a name is not SID text. Measured on
 // this desk, non-elevated:
 //
@@ -330,7 +343,18 @@ func identitiesFor(subject Identity) (*identities, error) {
 	}
 	members, err := localGroupMembers(name)
 	if err != nil {
+		if errors.Is(err, errNoSuchGroup) && subject.standsAlone {
+			// The caller vouched that this identifier names
+			// nothing beyond itself, and the members question
+			// says the same: no local group answers to the
+			// name, so there are no members to collect, and
+			// the one already collected is the whole answer.
+			return sandbox, nil
+		}
 		sandbox.End()
+		if errors.Is(err, errNoSuchGroup) {
+			return nil, fmt.Errorf("resolving %s, the group an operation on this sandbox has to know: %w", name, err)
+		}
 		return nil, err
 	}
 	for _, member := range members {
@@ -360,6 +384,14 @@ var (
 	procFreeBuffer   = w32.Netapi32.NewProc("NetApiBufferFree")
 )
 
+// errNoSuchGroup is the answer NetLocalGroupGetMembers reports for a name
+// that is no local group. It is the one answer of this call that is a fact
+// about the name rather than about the asking, and what the fact is worth
+// -- the whole answer about an identifier that stands alone, a refusal
+// about the group an operation has to know -- is the caller's promise,
+// weighed in identitiesFor, not this function's guess.
+var errNoSuchGroup = errors.New("no such local group")
+
 // localGroupMembers lists the account names belonging to a local group, the
 // same question the account package asks the same call. It is asked again
 // here rather than called there because the account package builds on this
@@ -370,8 +402,10 @@ var (
 // the only form that cannot answer for another principal of the same name.
 // sid.Lookup resolves it.
 //
-// A name that is not a local group is not a failure. Measured on this desk,
-// non-elevated, one group under both spellings and a name that is none:
+// A name that is not a local group comes back as its own answer, carrying
+// errNoSuchGroup, and not as an empty list. Both errnos of that answer --
+// measured on this desk, non-elevated, one group under both spellings and
+// a name that is none:
 //
 //	NetLocalGroupGetMembers("Computer")          -> 1376 ERROR_NO_SUCH_ALIAS
 //	NetLocalGroupGetMembers("PC\Computer")       -> 2220 NERR_GroupNotFound
@@ -380,8 +414,12 @@ var (
 //	                                                "PC\Administrator",
 //	                                                "PC\Computer", "PC\User"
 //
-// Any other answer is an enumeration that failed for a group that may well
-// exist, and must not come back as an empty list.
+// -- say the same thing about the name, whether Windows knows a principal
+// there or not, so one sentinel carries both. What the fact is worth is
+// the caller's promise, weighed in identitiesFor the same way the name
+// lookup's NoneMapped above is. Any other answer is an enumeration that
+// failed for a group that may well exist, and must not come back as an
+// empty list.
 func localGroupMembers(name string) ([]string, error) {
 	memberLookups.Add(1)
 	type memberInfo3 struct{ domainAndName *uint16 }
@@ -392,7 +430,7 @@ func localGroupMembers(name string) ([]string, error) {
 		uintptr(unsafe.Pointer(&members)), most, uintptr(unsafe.Pointer(&read)),
 		uintptr(unsafe.Pointer(&total)), 0)
 	if r == 1376 || r == 2220 {
-		return nil, nil
+		return nil, fmt.Errorf("listing the members of %s: %w", name, errNoSuchGroup)
 	}
 	if r != 0 {
 		return nil, fmt.Errorf("listing the members of %s: error %d", name, r)

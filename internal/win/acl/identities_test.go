@@ -11,6 +11,13 @@
 // both halves of that contract, and the operation's identifiers go back to
 // Windows when it is over, success or not -- the collector cannot see that
 // memory at all, so the counters are the only place a leak shows.
+//
+// The members question is a second ask of the same SAM, one stage later,
+// and it answers with the same kinds of answer: no local group answering
+// to the name the first question produced is a fact about the name, and
+// which of the two promises it confirms -- the whole of an identifier that
+// stands alone, or the refusal of a group that has to exist -- is decided
+// by the same subject that decided the first question's answer.
 
 package acl
 
@@ -269,6 +276,169 @@ func TestAnIdentifierThatStandsAloneKeepsWorkingWhenNothingMapsToIt(t *testing.T
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatalf("an identifier that stands alone was refused the answer a group is: %v", err)
+	}
+	if !holds(t, held, unusedAccount, "(M)") {
+		t.Error("the grant on an identifier that stands alone was not written")
+	}
+	pass, err := BeginStripOwn(IdentifierAlone(unusedAccount))
+	if err != nil {
+		t.Fatalf("a stripping pass for an identifier that stands alone was refused: %v", err)
+	}
+	pass.End()
+}
+
+// aNameThatIsNoGroup answers the first question with the bare name of the
+// account the tests run under: a real principal, so the name stage passes
+// exactly as it does for a sandbox group that exists, which is the whole
+// point -- the answer injected below is the second question's alone, the
+// real one Windows gives for the name of anything that is no local group.
+func aNameThatIsNoGroup(t *testing.T) string {
+	t.Helper()
+	user, err := sid.CurrentUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pointer, err := sid.Parse(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := sid.Name(pointer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return name
+}
+
+// TestTheIdentitiesKnowAGroupThatIsGoneFromItsMembersQuestion is the
+// members question's half of the contract the name question's tests above
+// hold. The name resolved -- the stub answers with a real account's name,
+// so the first stage passes exactly as it does for a group that exists --
+// and the members question says no local group answers to it. About the
+// sandbox's own group that is the group gone or renamed between the two
+// questions, and an operation that accepted the answer would run on the
+// group's identifier alone; it refuses instead. About an identifier handed
+// over as standing alone the very same answer is the question confirming
+// the vouch, and the one identifier is the whole of it. The counter
+// balance is the close test of the new refusal path: nothing it parsed
+// stays on the system heap, and the identifier that went on owns nothing
+// it does not give back at End.
+func TestTheIdentitiesKnowAGroupThatIsGoneFromItsMembersQuestion(t *testing.T) {
+	name := aNameThatIsNoGroup(t)
+	real := accountNameOf
+	accountNameOf = func(uintptr) (string, error) { return name, nil }
+	t.Cleanup(func() { accountNameOf = real })
+
+	parses, frees := sid.Parses(), sid.Frees()
+	group, err := identitiesFor(SandboxGroup(unusedAccount))
+	if err == nil {
+		group.End()
+		t.Fatal("a group with no members to list came out as a list anyway")
+	}
+	if group != nil {
+		t.Errorf("a group with no members to list came out as a list of %d identities", len(group.values))
+	}
+	if !errors.Is(err, errNoSuchGroup) {
+		t.Errorf("the refusal carried %v, want the members question's no such group", err)
+	}
+	alone, err := identitiesFor(IdentifierAlone(unusedAccount))
+	if err != nil {
+		t.Fatalf("an identifier that stands alone was refused the answer a group is: %v", err)
+	}
+	if len(alone.values) != 1 {
+		t.Fatalf("an identifier that stands alone came out as %d identities, want itself alone", len(alone.values))
+	}
+	alone.End()
+	if left := (sid.Parses() - parses) - (sid.Frees() - frees); left != 0 {
+		t.Errorf("the two questions left %d identifiers on the system heap, want nothing held behind", left)
+	}
+}
+
+// TestAnIsolateRefusesAGroupGoneFromItsMembersQuestion is the production
+// half at the point it bites, the same stage the name question's refusal is
+// caught at: the grant is handed the sandbox's own group, the name
+// resolves, the members question says no such group, and the grant refuses
+// before the first write, leaving the tree exactly as it was found.
+func TestAnIsolateRefusesAGroupGoneFromItsMembersQuestion(t *testing.T) {
+	root := t.TempDir()
+	held := filepath.Join(root, "held.txt")
+	if err := os.WriteFile(held, []byte("held"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	name := aNameThatIsNoGroup(t)
+	real := accountNameOf
+	accountNameOf = func(uintptr) (string, error) { return name, nil }
+	t.Cleanup(func() { accountNameOf = real })
+
+	writes := 0
+	original := publish
+	publish = func(path string, list []explicitAccess, whole bool) error {
+		writes++
+		return original(path, list, whole)
+	}
+	t.Cleanup(func() { publish = original })
+
+	if err := Isolate(root, SandboxGroup(unusedAccount), []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers, nil); err == nil {
+		t.Fatal("a grant went out under a group whose members could not be listed")
+	} else if !errors.Is(err, errNoSuchGroup) {
+		t.Errorf("the grant was refused with %v, want the members question's no such group", err)
+	}
+	if writes != 0 {
+		t.Errorf("the grant was published %d times while its group's members could not be listed", writes)
+	}
+	if holds(t, held, unusedAccount, "") {
+		t.Error("the tree was written while the group of the grant had no members to list")
+	}
+	if err := os.WriteFile(held, []byte("still mine"), 0o644); err != nil {
+		t.Errorf("the operator lost access to a tree whose grant never started: %v", err)
+	}
+}
+
+// TestABeginStripOwnRefusesAGroupGoneFromItsMembersQuestion is the same
+// refusal on the way out: the pass never comes into existence, so a caller
+// that strips with it strips with nothing.
+func TestABeginStripOwnRefusesAGroupGoneFromItsMembersQuestion(t *testing.T) {
+	name := aNameThatIsNoGroup(t)
+	real := accountNameOf
+	accountNameOf = func(uintptr) (string, error) { return name, nil }
+	t.Cleanup(func() { accountNameOf = real })
+
+	pass, err := BeginStripOwn(SandboxGroup(unusedAccount))
+	if err == nil {
+		pass.End()
+		t.Fatal("a stripping pass came back usable on a group whose members could not be listed")
+	}
+	if pass != nil {
+		t.Error("a failed members question came out as a pass with values on it")
+	}
+	if !errors.Is(err, errNoSuchGroup) {
+		t.Errorf("the pass was refused with %v, want the members question's no such group", err)
+	}
+}
+
+// TestAnIdentifierThatStandsAloneKeepsWorkingThroughItsMembersQuestion is
+// the other half at the same point: the very same members answer, and an
+// identifier the caller vouched for gets its grant written all the same --
+// on the account alone, which is the whole of what it names -- and hands
+// back a stripping pass that can take it off again. Nothing about the
+// lookup's answers differs between this test and the refusals above; the
+// promise is the only thing that does.
+func TestAnIdentifierThatStandsAloneKeepsWorkingThroughItsMembersQuestion(t *testing.T) {
+	root := t.TempDir()
+	held := filepath.Join(root, "held.txt")
+	if err := os.WriteFile(held, []byte("held"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	name := aNameThatIsNoGroup(t)
+	real := accountNameOf
+	accountNameOf = func(uintptr) (string, error) { return name, nil }
+	t.Cleanup(func() { accountNameOf = real })
+
+	if err := Isolate(root, IdentifierAlone(unusedAccount), []ACE{
+		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
+	}, InheritObjects|InheritContainers, nil); err != nil {
+		t.Fatalf("an identifier that stands alone was refused the answer its members question gave: %v", err)
 	}
 	if !holds(t, held, unusedAccount, "(M)") {
 		t.Error("the grant on an identifier that stands alone was not written")
