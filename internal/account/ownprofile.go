@@ -287,10 +287,12 @@ func setHiveSecurity(key uintptr, account sid.Value) error {
 	if err != nil {
 		return err
 	}
+	defer sid.Free(systemSID)
 	adminSID, err := sid.Parse(sid.Administrators)
 	if err != nil {
 		return err
 	}
+	defer sid.Free(adminSID)
 	entries := []explicitAccess{
 		{permissions: keyAllAccess, mode: grantAccess, inheritance: subContainersOnlyInherit, trustee: who(uintptr(unsafe.Pointer(&account[0])))},
 		{permissions: keyAllAccess, mode: grantAccess, inheritance: subContainersOnlyInherit, trustee: who(systemSID)},

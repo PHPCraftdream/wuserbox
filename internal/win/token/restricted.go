@@ -147,14 +147,17 @@ func restrict(self syscall.Token, sandboxGroup, readGroup string, ownIdentityToo
 	if err != nil {
 		return 0, err
 	}
+	defer sid.Free(groupSID)
 	everyone, err := sid.Parse(sid.Everyone)
 	if err != nil {
 		return 0, err
 	}
+	defer sid.Free(everyone)
 	users, err := sid.Parse(sid.Users)
 	if err != nil {
 		return 0, err
 	}
+	defer sid.Free(users)
 	restricting := []sidAndAttributes{{groupSID, 0}, {everyone, 0}, {users, 0}, {logon, 0}}
 	if ownIdentityToo {
 		restricting = append(restricting, sidAndAttributes{user, 0})
@@ -181,7 +184,8 @@ func restrict(self syscall.Token, sandboxGroup, readGroup string, ownIdentityToo
 	// the call above has read them. The rule that keeps an unsafe.Pointer alive
 	// covers the call expression it appears in and nothing further. The two
 	// parsed identifiers need no such care -- ConvertStringSidToSid hands back
-	// memory belonging to Windows.
+	// memory belonging to Windows, and the defers that declared it give it back
+	// at return, once the call has copied what it needs.
 	//
 	// Losing one would almost certainly refuse to build a token rather than
 	// build a weaker one, which is the right direction to fail in, but a
