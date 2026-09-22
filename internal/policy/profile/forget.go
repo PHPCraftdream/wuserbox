@@ -51,9 +51,13 @@ func forget(root *os.Root, previously []config.Entry, current []config.Entry) er
 	// canonical-presence set across every question the stretch answers
 	// after it is built, so a pass that clears nothing pays for one
 	// indexing of the current list however many recorded entries it
-	// answers. A clear that takes something back is the mutation that ends
-	// the stretch, and clearEntry's own answer says which clears did; a
-	// pass whose clears all find nothing to take back pays the same one
+	// answers. A clear that takes something back is the mutation the
+	// stretch's answers cannot survive untouched, and clearEntry's own
+	// answer says which clears did: each one retracts the answers it made
+	// false -- the taken place's, and the directory that held it -- and
+	// keeps the index of the names the list still holds, so a pass that
+	// clears half the record answers the other half out of the one build.
+	// A pass whose clears all find nothing to take back pays the same one
 	// indexing.
 	var stretch *placeIndex
 	for _, entry := range previously {
@@ -121,15 +125,29 @@ func forget(root *os.Root, previously []config.Entry, current []config.Entry) er
 		if taken {
 			// A clear that took something back disassembled
 			// directories the stretch's cached answers still
-			// describe: the stretch dies here and the next question
-			// that needs the volume builds a fresh one. A clear that
-			// took nothing back -- the entry's copy was already gone
-			// from the profile -- changed no name, and answering the
-			// next question out of the same instruments stays the
-			// truth: a pass over stale entries whose copies are all
-			// already gone pays for one indexing of the current list
-			// however many of them it answers.
-			stretch = nil
+			// describe -- but only the ones the clear worked on: the
+			// place it took, and the directory that held it. The
+			// names the list still holds are exactly where they
+			// were, so retract takes back the answers the clear made
+			// false and keeps the index of the rest, and the next
+			// stale entry is answered out of the build the stretch
+			// already paid for -- a pass that takes half the record
+			// back used to rebuild that index once per real clear,
+			// the square the review of 2026-09-26 (P3-1) measured.
+			// retract's false is the clear that never witnessed the
+			// place it worked on -- nothing to scope the retraction
+			// to: the stretch dies here and the next question that
+			// needs the volume builds a fresh one, the whole-stretch
+			// answer that stays correct whatever the clear did. A
+			// clear that took nothing back -- the entry's copy was
+			// already gone from the profile -- changed no name, and
+			// answering the next question out of the same
+			// instruments stays the truth: a pass over stale entries
+			// whose copies are all already gone pays for one indexing
+			// of the current list however many of them it answers.
+			if !stretch.resolver.retract(entry.Path) {
+				stretch = nil
+			}
 		}
 	}
 	return nil
@@ -157,9 +175,11 @@ func forget(root *os.Root, previously []config.Entry, current []config.Entry) er
 // The bool this answers with says whether anything was actually taken --
 // a name removed, a link replaced -- as against the entry's copy already
 // gone from the profile, which is answered and spared the same way. forget
-// holds one stretch of resolver instruments across the clears that took
-// nothing and drops it on the first one that did, because the stretch's
-// cached answers describe the names as the clears found them. An error
+// holds one stretch of resolver instruments across its clears, and a clear
+// that took something back retracts the answers that clear made false --
+// the taken place's, and the directory that held it -- where it used to
+// end the stretch outright, because the names the clear never touched are
+// exactly where they were. An error
 // means the take-back could not finish -- the question of whether the
 // copy stood at all went unanswered -- and the entry stays on the record
 // for the run that comes after: an answer nobody got is never read as
