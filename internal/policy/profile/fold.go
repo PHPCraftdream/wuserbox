@@ -200,7 +200,11 @@ type placeResult struct {
 // spelling, one the alias memo has never heard of because no earlier
 // question spelled it that way, from opening the siblings all over again.
 // A canonical path two names carry -- hard links -- is kept marked not
-// unique and refused, exactly as the scan's own matches != 1 refused. Like
+// unique and refused, exactly as the scan's own matches != 1 refused.
+// The index is rebuilt from the snapshot's canonical answers after every
+// scan rather than extended across them, so re-walking children an
+// earlier partial scan already answered cannot mark them ambiguous: only
+// a second stored name carrying one canonical path does that. Like
 // canonical, it keeps what the scan managed: a sibling the scan could not
 // canonicalize has no entry here, and the next alias question about that
 // spelling asks the volume again.
@@ -423,46 +427,53 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 					}
 				} else {
 					r.scans++
-					index := snap.byCanonical
 					for _, child := range snap.children {
-						childPath, known := snap.canonical[child.Name()]
-						if !known {
-							childFile, err := r.root.Open(filepath.Join(current, child.Name()))
-							if err != nil {
-								continue
-							}
-							var childErr error
-							childPath, childErr = pathid.Canonical(childFile.Name())
-							_ = childFile.Close()
-							if childErr != nil {
-								continue
-							}
-							snap.canonical[child.Name()] = childPath
+						if _, known := snap.canonical[child.Name()]; known {
+							continue
 						}
-						// The scan canonicalizes every child whether the
-						// asking spelling's match is the first child or
-						// the last, so the directory's whole alias index
-						// is filled by the one scan: the next alias
-						// spelling asked here reads it instead of opening
-						// the siblings again. A path two children share
-						// -- hard links -- is marked not unique, and the
-						// refusal below reads the marking exactly as the
-						// matches count used to.
-						if prior, seen := index[childPath]; seen {
+						childFile, err := r.root.Open(filepath.Join(current, child.Name()))
+						if err != nil {
+							continue
+						}
+						var childErr error
+						childPath, childErr := pathid.Canonical(childFile.Name())
+						_ = childFile.Close()
+						if childErr != nil {
+							continue
+						}
+						snap.canonical[child.Name()] = childPath
+					}
+					// The index is rebuilt out of the canonical answers this
+					// snapshot keeps, after every scan, rather than extended
+					// in place: a scan only starts because some spelling's
+					// answer was missing, and the children an earlier
+					// partial scan already answered -- a sibling whose open
+					// or canonicalization failed once and succeeds now --
+					// are seen again on the way past. Re-observing one
+					// child is not two names for one path, and marking it
+					// so made the index refuse spellings this resolver had
+					// itself resolved a moment before. The rebuild keeps
+					// the index exactly the fold of the snapshot's answers
+					// at every scan: one stored name per canonical path,
+					// not unique once two names carry it -- hard links --
+					// however many scans it took to see them.
+					clear(snap.byCanonical)
+					for name, childPath := range snap.canonical {
+						if prior, seen := snap.byCanonical[childPath]; seen {
 							prior.unique = false
-							index[childPath] = prior
+							snap.byCanonical[childPath] = prior
 						} else {
-							index[childPath] = canonicalChild{name: child.Name(), unique: true}
+							snap.byCanonical[childPath] = canonicalChild{name: name, unique: true}
 						}
 					}
 					// Canonical paths retain the stored directory-entry spelling. Hard
 					// links therefore match only the name Windows actually resolved,
 					// rather than merging every name for the same file identity.
-					if answer, seen := index[openedPath]; !seen || !answer.unique {
+					if answer, seen := snap.byCanonical[openedPath]; !seen || !answer.unique {
 						r.alias[aliasPath] = placeResult{}
 						return "", false
 					}
-					chosen = index[openedPath].name
+					chosen = snap.byCanonical[openedPath].name
 					r.alias[aliasPath] = placeResult{canonical: chosen, ok: true}
 				}
 			}
