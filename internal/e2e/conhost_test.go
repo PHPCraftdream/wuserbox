@@ -638,13 +638,16 @@ func TestEveryConsoleHostOfARunIsClosedToTheSandboxedProgram(t *testing.T) {
 	}
 
 	// Three legs, one per console shape a run can leave behind. Each runs
-	// the whole chain for real: the probe is this test binary started by the
+	// the whole chain for real: the probe is the stub copy -- the same test
+	// binary stubBinary put where the account can start it -- started by the
 	// stub as the account, under the restricted token, and it ends on a
-	// verdict no later leg can mistake for another's.
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	// verdict no later leg can mistake for another's. The copy and not the
+	// raw os.Executable() path is named for the same reason the stub itself
+	// is started from the copy: starting an image means reading it, the
+	// original lives under the temporary directory of whoever ran the
+	// tests, and the account is not that person -- measured on CI as the
+	// stub's own "access is denied" at CreateProcess, before a single
+	// console host of the run existed to be measured.
 	for _, leg := range []struct {
 		name   string
 		slug   string
@@ -674,7 +677,7 @@ func TestEveryConsoleHostOfARunIsClosedToTheSandboxedProgram(t *testing.T) {
 		if err := os.Remove(resultFile); err != nil && !os.IsNotExist(err) {
 			t.Fatal(err)
 		}
-		commandLine := syscall.EscapeArg(exe) + " " + conhostProwlFlag + " " + syscall.EscapeArg(resultFile)
+		commandLine := syscall.EscapeArg(stub) + " " + conhostProwlFlag + " " + syscall.EscapeArg(resultFile)
 		legLine := box.throughTheStub(t, stub, commandLine)
 		// The stub's last words go to its stderr, and a run carries that
 		// stderr only when the caller's own streams are consoles -- under
