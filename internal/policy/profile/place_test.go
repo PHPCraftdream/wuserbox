@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
@@ -858,6 +859,98 @@ func TestAliasAnswersAreKeptForTheQuestionsThatFollow(t *testing.T) {
 	e6Canonical := snap.canonical["e6"]
 	if got, ok := snap.byCanonical[e6Canonical]; !ok || got.name != "e6" || !got.unique {
 		t.Errorf("the root's index holds %v for %s, want the stored name e6 marked unique", got, e6Canonical)
+	}
+}
+
+// TestAScanThatSkippedASiblingDoesNotPoisonTheOnesItKept pins the regression
+// the review of 2026-09-25 measured (P2-2): the alias branch's byCanonical
+// index can legitimately come out partial, because one sibling's open or
+// canonicalization can fail for the moment -- a file behind an exclusive
+// handle -- while the rest of the scan succeeds. The retry scan a later
+// spelling triggers walks every child again, and the walk it used to extend
+// the index in place met the entries its own earlier scan had put there and
+// marked each of them not unique: a second observation of one child read as
+// a second stored name for one path. The questions after that were refused
+// for spellings this same resolver had already resolved -- the false that
+// reads, downstream, as "the list no longer names this place", and takes
+// the copy.
+func TestAScanThatSkippedASiblingDoesNotPoisonTheOnesItKept(t *testing.T) {
+	if !fileSystemJoins(t, "b", "B") {
+		t.Skip("this volume holds b and B apart, so there is no alias answer to keep")
+	}
+	dest := t.TempDir()
+	write(t, filepath.Join(dest, "a"), "a")
+	write(t, filepath.Join(dest, "b"), "b")
+	write(t, filepath.Join(dest, "c"), "c")
+
+	root, err := os.OpenRoot(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	resolver := newPlaceResolver(root)
+
+	// b behind an exclusive handle: share nothing, so the kernel refuses
+	// every other open of the file until the handle closes -- the shape
+	// of a sibling briefly unavailable to the scan, not gone from the
+	// directory.
+	locked, err := syscall.UTF16PtrFromString(filepath.Join(dest, "b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := syscall.CreateFile(locked, syscall.GENERIC_READ, 0, nil,
+		syscall.OPEN_EXISTING, syscall.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		t.Fatalf("the kernel refused the exclusive hold that makes this test's first scan partial: %v", err)
+	}
+
+	// The first scan: A resolves, and the scan it triggers is refused b
+	// alone. The snapshot keeps what the scan managed -- a and c -- and
+	// b has no canonical answer in it yet.
+	if !resolver.samePlace("A", "a") {
+		t.Fatal("the spelling whose scan was refused the locked sibling did not resolve")
+	}
+	snap, ok := resolver.dirs["."]
+	if !ok {
+		t.Fatal("the root was never snapshotted, so nothing here was measured")
+	}
+	if _, known := snap.canonical["b"]; known {
+		t.Errorf("b's canonical spelling entered the snapshot while the exclusive handle held it shut (canonical map: %v)", snap.canonical)
+	}
+	if _, known := snap.canonical["c"]; !known {
+		t.Errorf("the first scan left c out of the snapshot (%v), though nothing held c shut", snap.canonical)
+	}
+
+	if err := syscall.CloseHandle(handle); err != nil {
+		t.Fatal(err)
+	}
+
+	// The retry: B's question finds no answer for b in the index and
+	// scans again, past the children the first scan already answered.
+	// The second observation of one child must not read as a second
+	// name for its path.
+	if !resolver.samePlace("B", "b") {
+		t.Fatal("the sibling the first scan could not open was never resolved after the handle let go")
+	}
+	// The question the poisoned index used to refuse: C, resolved by the
+	// first scan and present in the index ever since.
+	if !resolver.samePlace("C", "c") {
+		t.Fatal("the resolver refused a spelling its own earlier scan had resolved, because the retry scan re-met the children it had already answered")
+	}
+	if resolver.scans != 2 {
+		t.Errorf("three questions scanned the root's siblings %d times, want two: the partial first scan, and the retry B's missing answer demanded -- C is answered out of the index the retry rebuilt, not scanned for", resolver.scans)
+	}
+	for name, canonical := range snap.canonical {
+		indexed, ok := snap.byCanonical[canonical]
+		if !ok || indexed.name != name || !indexed.unique {
+			t.Errorf("the index holds %v for %s (snapshot stores it under %s), want that one stored name, unique", indexed, canonical, name)
+		}
+	}
+	// The measurement's control: a fresh resolver over the same unchanged
+	// files answers C, so what failed above was the one resolver's books,
+	// never the volume's.
+	if !sameEntryPlace(root, "C", "c") {
+		t.Fatal("a fresh resolver over the same unchanged files does not resolve C either, so the fixture itself is broken")
 	}
 }
 
