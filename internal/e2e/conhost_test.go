@@ -54,6 +54,14 @@ const (
 	// host could be had -- reporting that as a closed boundary would be the
 	// empty measurement the review calls false confidence.
 	conhostProwlUnmeasured = 46
+	// conhostProwlUnknown: at least one required check on a host the fresh
+	// re-list still finds standing got no answer at all -- an error that is
+	// neither the refusal a shut door gives nor the vanish of something
+	// that ended. A boundary some of whose questions went unanswered is
+	// not a boundary that held, and it is not a host that died either: the
+	// re-list is what confirms a vanish, and this is what an unknown about
+	// a host still standing ends on.
+	conhostProwlUnknown = 47
 )
 
 // The doors an escape through a console host goes by, one mask each and named
@@ -141,6 +149,84 @@ var prowlProcessDoors = []struct {
 	{"WRITE_OWNER", prowlWriteOwner},
 }
 
+// The names the checks carry. The two token legs are named apart on
+// purpose (review round 4, P2-2): an OpenProcess failure and an
+// OpenProcessToken failure are different machines breaking, and the
+// verdict has to be able to say which of the two went unanswered.
+const (
+	prowlTokenProcessDoor   = "OpenProcess for the token"
+	prowlTokenDoor          = "TOKEN_DUPLICATE|TOKEN_QUERY"
+	prowlThreadContextDoor  = "THREAD_SET_CONTEXT|THREAD_SUSPEND_RESUME"
+	prowlThreadWriteDacDoor = "THREAD_WRITE_DAC"
+)
+
+// The answer one required question came back as. A door either opened, was
+// refused by the object's own list -- error 5, the answer shut doors give
+// --, named a thread that had already ended -- error 87, the one vanish a
+// walk tolerates --, was granted for something that opens nothing
+// dangerous -- the ordinary QUERY_LIMITED handle the token door is reached
+// through, proof the host was there to be asked and nothing more -- or
+// came back as something the probe does not understand. That last one is
+// no answer at all, and no answer is its own verdict: never a shut door,
+// never a vanish.
+type prowlAnswer int
+
+const (
+	prowlAnswerOpen     prowlAnswer = iota // the door itself was granted
+	prowlAnswerShut                        // refused by the object's own list
+	prowlAnswerGone                        // the id names a thread that has ended
+	prowlAnswerOrdinary                    // granted, and grants nothing dangerous
+	prowlAnswerUnknown                     // no answer the probe understands
+)
+
+// prowlCheck is one required question with the answer it got: the door
+// asked -- process opens and token opens under names of their own, so the
+// verdict can say which machine broke --, the thread it was asked about
+// when it was a thread door, the answer, and the errno when the answer was
+// none. The checks are what the verdict is computed from and the line is
+// rendered from, which is the whole of review round 4 (P2-2): an unknown
+// recorded next to definite answers has to survive into the verdict
+// instead of washing out in an aggregate count.
+type prowlCheck struct {
+	door  string
+	tid   uint32
+	state prowlAnswer
+	errno int
+}
+
+// prowlClassifyOpen sorts one open call's raw outcome into the check it
+// answers. A handle is the door open; a refusal with error 5 is the
+// object's own list answering; anything else is the door's own unknown,
+// with the errno carried for the line.
+func prowlClassifyOpen(door string, h uintptr, callErr error) prowlCheck {
+	if h != 0 {
+		return prowlCheck{door: door, state: prowlAnswerOpen}
+	}
+	refused, errno := prowlErrno(callErr)
+	if refused {
+		return prowlCheck{door: door, state: prowlAnswerShut}
+	}
+	return prowlCheck{door: door, state: prowlAnswerUnknown, errno: errno}
+}
+
+// prowlClassifyToken sorts the token open's outcome into the token door's
+// own check. It is named for the token door and never for the process open
+// that had to come first: an OpenProcessToken failure after a successful
+// OpenProcess is the token question going unanswered about a host that was
+// demonstrably there to be asked -- the review's own unclassified case,
+// which used to be recorded nowhere at all (review round 4, P2-2). A
+// refusal stays the shut answer it is.
+func prowlClassifyToken(callErr error) prowlCheck {
+	if callErr == nil {
+		return prowlCheck{door: prowlTokenDoor, state: prowlAnswerOpen}
+	}
+	refused, errno := prowlErrno(callErr)
+	if refused {
+		return prowlCheck{door: prowlTokenDoor, state: prowlAnswerShut}
+	}
+	return prowlCheck{door: prowlTokenDoor, state: prowlAnswerUnknown, errno: errno}
+}
+
 // conhostProwl is the probe that runs INSIDE the sandbox, as a child of the
 // stub: it lists the stub's console hosts, tries every door on each from the
 // restricted token it itself runs under, and writes one line per host plus a
@@ -162,7 +248,7 @@ func conhostProwl(resultFile string) int {
 	}
 
 	verdicts := make([]prowlVerdict, 0, len(hosts))
-	anyOpen, anyUnmeasured := false, false
+	anyOpen, anyUnmeasured, anyUnknown := false, false, false
 	for _, pid := range hosts {
 		// Each host fetches its own threads, fresh when it is measured: a
 		// snapshot taken once for the whole probe would be stale by the time
@@ -171,21 +257,25 @@ func conhostProwl(resultFile string) int {
 		v := prowlMeasureHost(pid)
 		anyOpen = anyOpen || len(v.open) > 0
 		anyUnmeasured = anyUnmeasured || v.unmeasured
+		anyUnknown = anyUnknown || v.unknown
 		verdicts = append(verdicts, v)
 	}
 
-	// The dying-host refinement: doors found open -- and hosts whose threads
-	// could not be examined -- are only believed while the host is still
-	// there to be measured again. A console whose host died between the walk
-	// and the probe -- expected for a console freed mid-run -- leaves doors
-	// nobody can re-check, and reporting those as an escape would make every
-	// run with a dying console look guilty. The same mercy is owed to a host
-	// whose threads could not be examined: a host that died cannot be asked
-	// about its threads at all, and that is the honest gone case, not a
-	// hole. Re-list once after a second; a host no longer listed is recorded
-	// as gone, its doors are not counted and its unmeasured flag is
-	// cleared, and one still listed counts.
-	if anyOpen || anyUnmeasured {
+	// The dying-host refinement: doors found open -- hosts whose threads
+	// could not be examined -- and required checks that got no answer are
+	// only believed while the host is still there to be measured again. A
+	// console whose host died between the walk and the probe -- expected
+	// for a console freed mid-run -- leaves doors nobody can re-check, and
+	// reporting those as an escape would make every run with a dying
+	// console look guilty. The same mercy is owed to a host whose threads
+	// could not be examined: a host that died cannot be asked about its
+	// threads at all, and that is the honest gone case, not a hole. It is
+	// owed to an unknown all the same, and only this fresh walk is allowed
+	// to pay it: a vanish is positively confirmed by the re-list, never
+	// assumed from an unclear answer, and a host the walk still finds
+	// standing keeps its unknowns and fails the run on them. Re-list once
+	// after a second and let prowlConfirmGone say which hosts are gone.
+	if anyOpen || anyUnmeasured || anyUnknown {
 		time.Sleep(time.Second)
 		again, walkErr := proc.ConsoleHostChildren(uint32(os.Getppid()))
 		if walkErr != nil {
@@ -195,40 +285,72 @@ func conhostProwl(resultFile string) int {
 		for _, pid := range again {
 			still[pid] = true
 		}
-		for i, v := range verdicts {
-			if (len(v.open) > 0 || v.unmeasured) && !still[v.pid] {
-				v.line = fmt.Sprintf("host %d: gone before it could be measured again", v.pid)
-				v.open = nil
-				v.measured = false
-				v.unmeasured = false
-				verdicts[i] = v
-			}
-		}
+		prowlConfirmGone(verdicts, still)
 	}
 
-	measured, openDoors, unmeasuredAlive := 0, 0, 0
+	measured, openDoors := 0, 0
 	lines := make([]string, 0, len(verdicts)+1)
 	for _, v := range verdicts {
 		lines = append(lines, v.line)
 		if v.measured {
 			measured++
 		}
-		if v.unmeasured {
-			// A host that answered its process doors but not a single thread
-			// of which could be examined is a measurement failure, and it
-			// fails closed: it is counted apart here, and the probe ends
-			// nonzero on it below, so an unmeasured boundary cannot pass
-			// for a held one.
-			unmeasuredAlive++
-		}
 		openDoors += len(v.open)
 	}
 	lines = append(lines, fmt.Sprintf("measured %d hosts with %d open doors", measured, openDoors))
 	_ = os.WriteFile(resultFile, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+	return prowlCode(verdicts)
+}
 
+// prowlConfirmGone is the re-list's verdict, and the only thing allowed to
+// call a host gone: every host the fresh walk no longer lists has its
+// doors, its unmeasured flag and its unknowns cleared, because a console
+// host that died between the walk and the probe cannot be asked anything
+// and the honest gone case is not a hole. The same host still listed keeps
+// every answer it has, unknowns included, for prowlCode to fail on -- an
+// unclear answer is never a vanish, and a vanish is never assumed from an
+// unclear answer (review round 4, P2-2).
+func prowlConfirmGone(verdicts []prowlVerdict, still map[uint32]bool) {
+	for i, v := range verdicts {
+		if (len(v.open) > 0 || v.unmeasured || v.unknown) && !still[v.pid] {
+			v.line = fmt.Sprintf("host %d: gone before it could be measured again", v.pid)
+			v.open = nil
+			v.measured = false
+			v.unmeasured = false
+			v.unknown = false
+			verdicts[i] = v
+		}
+	}
+}
+
+// prowlCode is the exit code these verdicts end the probe on, worst first:
+// a door that opened is the escape itself and outranks every doubt about
+// the measurement; then the required checks that got no answer about hosts
+// still standing -- an unanswered question is not a shut door; then the
+// hosts that answered their process doors but not a single thread of which
+// could be examined, a measurement failure counted apart so an unmeasured
+// boundary cannot pass for a held one; then the run that measured nothing
+// at all. Only a probe whose every host was measured and whose every
+// required check was answered ends zero.
+func prowlCode(verdicts []prowlVerdict) int {
+	measured, openDoors, unmeasuredAlive, unknownAlive := 0, 0, 0, 0
+	for _, v := range verdicts {
+		if v.measured {
+			measured++
+		}
+		if v.unmeasured {
+			unmeasuredAlive++
+		}
+		if v.unknown {
+			unknownAlive++
+		}
+		openDoors += len(v.open)
+	}
 	switch {
 	case openDoors > 0:
 		return conhostProwlOpen
+	case unknownAlive > 0:
+		return conhostProwlUnknown
 	case unmeasuredAlive > 0:
 		return conhostProwlUnmeasured
 	case measured == 0:
@@ -240,76 +362,158 @@ func conhostProwl(resultFile string) int {
 
 // prowlVerdict is what the probe decided about one host: the line it will be
 // reported by, the doors that opened on it, whether it was measured at all
-// -- unreachable and gone hosts are reported and counted as neither -- and
+// -- unreachable and gone hosts are reported and counted as neither --
 // whether the host answered its process doors while not one thread of it
-// could be examined. That last state is a measurement failure and not a
-// shut boundary, which is what unmeasured exists to say.
+// could be examined, which is what unmeasured exists to say, and whether
+// any required check on it got no answer at all. That last flag is a
+// verdict of its own (review round 4, P2-2): one definite answer never
+// redeems an unknown about a different door or thread, and an unknown is
+// neither a shut door nor a vanished host -- only the fresh re-list may
+// turn it into a vanish, by finding the host gone.
 type prowlVerdict struct {
 	pid        uint32
 	line       string
 	open       []string
 	measured   bool
 	unmeasured bool
+	unknown    bool
+}
+
+// prowlVerdictOf is the prowl's arithmetic, kept apart from every open so
+// it can be checked on a desk with no doors at all: from the checks one
+// host's measurement gathered it says which doors opened, whether any
+// thread of the host was definitely examined, whether the host answered
+// its process doors while not one thread of it could be had, and whether
+// any required check on it got no answer at all. That last flag stands on
+// its own and stands forever: a later pass answering other questions does
+// not unask the one that went unanswered. A vanish is not for the checks
+// to imply either -- a check that names a thread gone is only the words
+// "ended between the doors" on the line, and calling a whole host gone is
+// the fresh re-list's alone (prowlConfirmGone). The walk's own complaint,
+// when the walk itself broke, comes in as walkSaid and goes on the line
+// last, where the diagnosis reads.
+func prowlVerdictOf(pid uint32, process, threads []prowlCheck, walkSaid []string) prowlVerdict {
+	v := prowlVerdict{pid: pid}
+	var notes []string
+	examined := make(map[uint32]bool)
+	for _, c := range process {
+		switch c.state {
+		case prowlAnswerOpen:
+			v.open = append(v.open, c.door)
+		case prowlAnswerUnknown:
+			v.unknown = true
+			notes = append(notes, fmt.Sprintf("%s (errno %d)", c.door, c.errno))
+		}
+	}
+	for _, c := range threads {
+		switch c.state {
+		case prowlAnswerOpen:
+			v.open = append(v.open, c.door)
+			examined[c.tid] = true
+		case prowlAnswerShut:
+			examined[c.tid] = true
+		case prowlAnswerGone:
+			notes = append(notes, fmt.Sprintf("thread %d ended between the doors", c.tid))
+		case prowlAnswerUnknown:
+			v.unknown = true
+			notes = append(notes, fmt.Sprintf("%s of thread %d (errno %d)", c.door, c.tid, c.errno))
+		}
+	}
+	notes = append(notes, walkSaid...)
+	// The count of threads actually examined goes on the line when there
+	// was one; when there was none, the line says so instead of leaving a
+	// "closed" that only means nobody could ask.
+	v.measured = len(examined) > 0
+	v.unmeasured = !v.measured
+	line := fmt.Sprintf("host %d: closed", pid)
+	if len(v.open) > 0 {
+		line = fmt.Sprintf("host %d: open doors %s", pid, strings.Join(v.open, ", "))
+	}
+	if v.measured {
+		line += fmt.Sprintf(" (%d threads tried)", len(examined))
+	} else {
+		line += " (no thread of it would answer)"
+	}
+	if len(notes) > 0 {
+		line += " (" + strings.Join(notes, ", ") + ")"
+	}
+	v.line = line
+	return v
 }
 
 // prowlMeasureHost tries every door on one console host and says what
 // opened. It fetches the host's threads itself, fresh when it is measured --
 // see prowlThreadsOfOwner for why the snapshot is not shared between hosts.
+// Every open's outcome is sorted into a prowlCheck as it happens -- the
+// door asked, the answer, the errno when there was no answer -- and the
+// checks, not loose notes, are what the verdict is computed from: an
+// unknown recorded next to definite answers has to survive into the
+// verdict instead of washing out in an aggregate count (review round 4,
+// P2-2).
 func prowlMeasureHost(pid uint32) prowlVerdict {
-	var open []string
-	var notes []string
-	attempts, otherErrno := 0, 0
+	var process, threads []prowlCheck
 
-	// tryProcess attempts one OpenProcess door: a handle is a door open; a
-	// refusal with error 5 is the object's own list answering, which is the
-	// fix working; anything else is the probe not understanding the machine
-	// it runs on and is noted rather than read as a shut door.
-	tryProcess := func(name string, access uintptr) {
-		attempts++
-		h, _, callErr := prowlOpenProcess.Call(access, 0, uintptr(pid))
-		if h != 0 {
-			open = append(open, name)
-			syscall.CloseHandle(syscall.Handle(h))
-			return
-		}
-		refused, errno := prowlErrno(callErr)
-		if !refused {
-			notes = append(notes, fmt.Sprintf("%s (errno %d)", name, errno))
-			if otherErrno == 0 {
-				otherErrno = errno
-			}
-		}
-	}
-
+	// A dangerous door: a handle is the door open; a refusal with error 5
+	// is the object's own list answering, which is the fix working;
+	// anything else is the probe not understanding the machine it runs on
+	// and is the door's own unknown -- on the line, and on the verdict,
+	// never read as a shut door.
 	for _, door := range prowlProcessDoors {
-		tryProcess(door.name, door.access)
+		h, _, callErr := prowlOpenProcess.Call(door.access, 0, uintptr(pid))
+		if h != 0 {
+			syscall.CloseHandle(syscall.Handle(h))
+		}
+		process = append(process, prowlClassifyOpen(door.name, h, callErr))
 	}
 
 	// The token door goes through the one open every account has: a handle
-	// for QUERY_LIMITED_INFORMATION is ordinary, the token behind it is not
+	// for QUERY_LIMITED_INFORMATION is ordinary -- proof the host was there
+	// to be asked, and nothing more -- and the token behind it is not
 	// supposed to be duplicable by the program the host was started for.
-	attempts++
-	if h, _, callErr := prowlOpenProcess.Call(prowlProcessQueryLimited, 0, uintptr(pid)); h != 0 {
+	// What the token open itself answers is the token door's own check,
+	// under the token door's own name: an OpenProcessToken failure after a
+	// successful OpenProcess is an unknown of its own class, never dropped
+	// and never folded into a process-open result (review round 4, P2-2).
+	h, _, callErr := prowlOpenProcess.Call(prowlProcessQueryLimited, 0, uintptr(pid))
+	if h != 0 {
+		process = append(process, prowlCheck{door: prowlTokenProcessDoor, state: prowlAnswerOrdinary})
 		var token syscall.Token
-		if err := syscall.OpenProcessToken(syscall.Handle(h), prowlTokenDuplicateQuery, &token); err == nil {
-			open = append(open, "TOKEN_DUPLICATE|TOKEN_QUERY")
+		tokenErr := syscall.OpenProcessToken(syscall.Handle(h), prowlTokenDuplicateQuery, &token)
+		if tokenErr == nil {
 			token.Close()
 		}
+		process = append(process, prowlClassifyToken(tokenErr))
 		syscall.CloseHandle(syscall.Handle(h))
-	} else if refused, errno := prowlErrno(callErr); !refused {
-		notes = append(notes, fmt.Sprintf("OpenProcess for the token (errno %d)", errno))
-		if otherErrno == 0 {
-			otherErrno = errno
-		}
+	} else {
+		process = append(process, prowlClassifyOpen(prowlTokenProcessDoor, h, callErr))
 	}
 
 	// A host every open of which failed with something other than a refusal
 	// is a pid that died between the walk and the probe, not a shut one --
-	// saying so keeps a broken measurement from passing for a boundary.
-	if len(open) == 0 && len(notes) == attempts {
+	// saying so keeps a broken measurement from passing for a boundary. The
+	// unknown answers stay on the verdict all the same: that the pid really
+	// died is the fresh re-list's to confirm, and a host the re-list still
+	// finds standing is a live host nothing could be asked about, which
+	// ends the run on conhostProwlUnknown of its own.
+	allUnknown := true
+	for _, c := range process {
+		if c.state != prowlAnswerUnknown {
+			allUnknown = false
+			break
+		}
+	}
+	if allUnknown {
+		errno := 0
+		for _, c := range process {
+			if c.state == prowlAnswerUnknown && c.errno != 0 {
+				errno = c.errno
+				break
+			}
+		}
 		return prowlVerdict{
-			pid:  pid,
-			line: fmt.Sprintf("host %d: unreachable (errno %d)", pid, otherErrno),
+			pid:     pid,
+			line:    fmt.Sprintf("host %d: unreachable (errno %d)", pid, errno),
+			unknown: true,
 		}
 	}
 
@@ -336,17 +540,18 @@ func prowlMeasureHost(pid uint32) prowlVerdict {
 	examined, walkFailed := 0, false
 	deadline := time.Now().Add(prowlThreadPollWant)
 	for {
-		threads, walkOK := prowlThreadsOfOwner(pid)
+		threadsListed, walkOK := prowlThreadsOfOwner(pid)
 		if !walkOK {
 			// The walk itself broke -- the snapshot could not be taken, or
 			// ended in something other than its normal 18. Nothing was
-			// examined and nothing can be: note it and stop, rather than
-			// retry a machine that has stopped answering.
+			// examined and nothing can be -- every pass that examined a
+			// thread broke out of the loop before this one -- so say so
+			// and stop, rather than retry a machine that has stopped
+			// answering.
 			walkFailed = true
-			examined = 0
 			break
 		}
-		for _, tid := range threads {
+		for _, tid := range threadsListed {
 			// Door A first, the dangerous one. A handle here makes the host
 			// guilty regardless of anything else -- the door IS the escape
 			// -- so the thread counts as examined and door B is never
@@ -354,8 +559,8 @@ func prowlMeasureHost(pid uint32) prowlVerdict {
 			// proven open.
 			h, _, openErr := prowlOpenThread.Call(prowlThreadSetContextResume, 0, uintptr(tid))
 			if h != 0 {
-				open = append(open, "THREAD_SET_CONTEXT|THREAD_SUSPEND_RESUME")
 				syscall.CloseHandle(syscall.Handle(h))
+				threads = append(threads, prowlCheck{door: prowlThreadContextDoor, tid: tid, state: prowlAnswerOpen})
 				examined++
 				continue
 			}
@@ -369,41 +574,54 @@ func prowlMeasureHost(pid uint32) prowlVerdict {
 				// a shield -- whoever cannot redirect the thread can still
 				// rewrite the list that would keep the next attacker out.
 				if hB, _, openErrB := prowlOpenThread.Call(prowlWriteDac, 0, uintptr(tid)); hB != 0 {
-					open = append(open, "THREAD_WRITE_DAC")
 					syscall.CloseHandle(syscall.Handle(hB))
+					threads = append(threads,
+						prowlCheck{door: prowlThreadContextDoor, tid: tid, state: prowlAnswerShut},
+						prowlCheck{door: prowlThreadWriteDacDoor, tid: tid, state: prowlAnswerOpen})
 					examined++
 				} else if refusedB, goneB, errnoB := prowlThreadErrno(openErrB); refusedB {
 					// Refused twice, dangerous and narrow alike: the only
 					// shape counted as a shut thread, an answer the
 					// thread's own list gave about both doors.
+					threads = append(threads,
+						prowlCheck{door: prowlThreadContextDoor, tid: tid, state: prowlAnswerShut},
+						prowlCheck{door: prowlThreadWriteDacDoor, tid: tid, state: prowlAnswerShut})
 					examined++
 				} else if goneB {
 					// The thread ended between the two doors. The
 					// dangerous door already answered shut before it
 					// vanished, so the thread still counts as examined
-					// -- but the vanish is noted, because a thread dying
-					// under the probe is worth a word in the diagnosis.
+					// -- but the vanish is on the record, because a thread
+					// dying under the probe is worth a word in the
+					// diagnosis.
+					threads = append(threads,
+						prowlCheck{door: prowlThreadContextDoor, tid: tid, state: prowlAnswerShut},
+						prowlCheck{door: prowlThreadWriteDacDoor, tid: tid, state: prowlAnswerGone})
 					examined++
-					notes = append(notes, fmt.Sprintf("thread %d ended between the doors", tid))
 				} else {
 					// Not a refusal and not a vanish: the machine is not
 					// answering the question that was asked, and that
 					// must never count as a door closed -- the thread
-					// stays unexamined and the errno is written down.
-					notes = append(notes, fmt.Sprintf("THREAD_WRITE_DAC of thread %d (errno %d)", tid, errnoB))
+					// stays unexamined and the door's own unknown is what
+					// the verdict fails on.
+					threads = append(threads,
+						prowlCheck{door: prowlThreadContextDoor, tid: tid, state: prowlAnswerShut},
+						prowlCheck{door: prowlThreadWriteDacDoor, tid: tid, state: prowlAnswerUnknown, errno: errnoB})
 				}
 			case goneA:
 				// The thread ended between the snapshot and the open --
 				// the expected vanish every walk tolerates, Windows
 				// answering 87 because the id now names nothing. The
 				// thread is skipped entirely: not examined, not guilty,
-				// not noted.
+				// not noted, and no check at all -- it was never asked
+				// anything.
 			default:
 				// Neither a refusal nor a vanish, and no handle: the same
-				// rule the process doors keep, an error the probe does not
-				// understand is noted and the thread stays unexamined --
-				// never a door closed by accident.
-				notes = append(notes, fmt.Sprintf("THREAD_SET_CONTEXT|THREAD_SUSPEND_RESUME of thread %d (errno %d)", tid, errnoA))
+				// rule the process doors keep, an error the probe does
+				// not understand is the door's own unknown -- the thread
+				// stays unexamined and the verdict fails on it, never a
+				// door closed by accident.
+				threads = append(threads, prowlCheck{door: prowlThreadContextDoor, tid: tid, state: prowlAnswerUnknown, errno: errnoA})
 			}
 		}
 		if examined > 0 {
@@ -414,32 +632,13 @@ func prowlMeasureHost(pid uint32) prowlVerdict {
 		}
 		time.Sleep(prowlThreadPollStep)
 	}
-	if walkFailed {
-		notes = append(notes, "the thread walk itself failed")
-	}
 
-	// The count of threads actually examined goes on the line when there
-	// was one; when there was none, the line says so instead of leaving a
-	// "closed" that only means nobody could ask.
-	line := fmt.Sprintf("host %d: closed", pid)
-	if len(open) > 0 {
-		line = fmt.Sprintf("host %d: open doors %s", pid, strings.Join(open, ", "))
+	// The walk's own complaint goes in last, where the diagnosis reads.
+	var walkSaid []string
+	if walkFailed {
+		walkSaid = append(walkSaid, "the thread walk itself failed")
 	}
-	if examined > 0 {
-		line += fmt.Sprintf(" (%d threads tried)", examined)
-	} else {
-		line += " (no thread of it would answer)"
-	}
-	if len(notes) > 0 {
-		line += " (" + strings.Join(notes, ", ") + ")"
-	}
-	return prowlVerdict{
-		pid:        pid,
-		line:       line,
-		open:       open,
-		measured:   examined > 0,
-		unmeasured: examined == 0,
-	}
+	return prowlVerdictOf(pid, process, threads, walkSaid)
 }
 
 // prowlThreadsOfOwner lists EVERY thread id the walk assigns to pid, and
@@ -558,6 +757,18 @@ func prowlThreadErrno(err error) (refused, gone bool, errno int) {
 // living host's threads could not be examined at all the prowl ends nonzero
 // (exit code 46), so an unmeasured boundary can no longer pass for a held
 // one.
+//
+// Since review round 4 (P2-2) every open's outcome is sorted into a check
+// the verdict is computed from, and an unknown -- a required check that
+// got no answer at all -- is a verdict of its own: the token open that
+// fails after its process open succeeded, the door that answers neither a
+// refusal nor a vanish next to doors that were answered, the thread whose
+// question went unanswered while another thread's was taken. None of them
+// washes out in an aggregate any more, and none of them is read as a
+// vanished host either: vanishing is the fresh re-list's to confirm, and a
+// host it still finds standing ends the run on its unknowns (exit code
+// 47). The verdict arithmetic is plain data -- prowlVerdictOf, prowlCode,
+// prowlConfirmGone -- and its own tests below run with no doors at all.
 //
 // Two things it cannot measure on a desk: without administrator rights no
 // real sandbox account can be built here, so neither the door measurement nor
@@ -709,7 +920,7 @@ func TestEveryConsoleHostOfARunIsClosedToTheSandboxedProgram(t *testing.T) {
 			// answers in it and the test reads the file only to say why.
 			//
 			// Exit code 90 is never one of the prowl's verdicts -- 42
-			// through 46 are the five the prowl ends on. 90 is
+			// through 47 are the six the prowl ends on. 90 is
 			// account_test.go's TestMain answering for exec.Stub having
 			// returned an error, the stub's own refusal or breakage, so the
 			// doors were never measured at all and the number must not be
@@ -752,5 +963,155 @@ func TestEveryConsoleHostOfARunIsClosedToTheSandboxedProgram(t *testing.T) {
 		if openDoors != 0 || measured < 1 {
 			t.Errorf("%s: a console host of the run was left open to the sandboxed program: %s", leg.name, content)
 		}
+	}
+}
+
+// The verdict arithmetic's own tests, on a desk with no doors: review
+// round 4 (P2-2) asks that a partially unknown measurement cannot pass,
+// and asks that the demand be checkable without windows accounts, without
+// elevation and without a real dangerous open -- the checks and the code
+// they end on are plain data now, so these tests feed synthetic ones
+// straight to the arithmetic and read the verdict back.
+
+// TestAnUnknownAnswerAboutAStillLivingHostFailsTheProwl is the review's own
+// case: one required check definitely answered -- a door refused, a thread
+// examined -- next to one that got no answer at all, on a host still
+// standing. One definite answer never redeemed the unknown before only
+// because the aggregates never looked at it: the unanswered door sat in
+// the notes while the measured count and the open count both came back
+// clean. The verdict carries the unknown on its own now, and the probe
+// ends on conhostProwlUnknown for it -- whether the unknown is a process
+// door's or a thread door's next to a thread that was examined.
+func TestAnUnknownAnswerAboutAStillLivingHostFailsTheProwl(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		process []prowlCheck
+		threads []prowlCheck
+	}{
+		{
+			"a process door unanswered next to a process door refused",
+			[]prowlCheck{
+				{door: "PROCESS_VM_WRITE", state: prowlAnswerShut},
+				{door: "PROCESS_DUP_HANDLE", state: prowlAnswerUnknown, errno: 6},
+			},
+			[]prowlCheck{
+				{door: prowlThreadContextDoor, tid: 5, state: prowlAnswerShut},
+				{door: prowlThreadWriteDacDoor, tid: 5, state: prowlAnswerShut},
+			},
+		},
+		{
+			"a thread door unanswered next to a thread examined",
+			[]prowlCheck{{door: "PROCESS_ALL_ACCESS", state: prowlAnswerShut}},
+			[]prowlCheck{
+				{door: prowlThreadContextDoor, tid: 7, state: prowlAnswerShut},
+				{door: prowlThreadContextDoor, tid: 8, state: prowlAnswerUnknown, errno: 6},
+			},
+		},
+	} {
+		v := prowlVerdictOf(4242, tt.process, tt.threads, nil)
+		if !v.unknown {
+			t.Errorf("%s: the verdict carries no unknown although a required check got no answer", tt.name)
+		}
+		if !v.measured {
+			t.Errorf("%s: the host was measured -- its definite answers stand -- and the verdict has to say so", tt.name)
+		}
+		if got := prowlCode([]prowlVerdict{v}); got != conhostProwlUnknown {
+			t.Errorf("%s: the probe ends %d on a partially unknown measurement, not conhostProwlUnknown", tt.name, got)
+		}
+	}
+
+	// The positive control: the same host with every check answered ends
+	// zero, so what turns the code below is the unknown and not the company
+	// it keeps.
+	shut := prowlVerdictOf(4242,
+		[]prowlCheck{{door: "PROCESS_VM_WRITE", state: prowlAnswerShut}},
+		[]prowlCheck{{door: prowlThreadContextDoor, tid: 5, state: prowlAnswerShut}}, nil)
+	if shut.unknown || shut.unmeasured {
+		t.Errorf("a host whose every check was answered came back unknown %v unmeasured %v", shut.unknown, shut.unmeasured)
+	}
+	if got := prowlCode([]prowlVerdict{shut}); got != 0 {
+		t.Errorf("the probe ends %d on a measurement whose every check was answered", got)
+	}
+}
+
+// TestATokenOpenFailingAfterASuccessfulProcessOpenIsAnUnknownOfItsOwn is
+// the shape the review caught falling through unclassified: the process
+// open for the token leg succeeded -- the host was demonstrably there to
+// be asked -- and the token open behind it failed with something that is
+// no refusal. That outcome used to be recorded nowhere at all: no door
+// counted open, no note the aggregates read, a required check silently
+// gone. It is the token door's own unknown now, under the token door's own
+// name -- never folded into the process open's result and never into a
+// process door's -- and a verdict holding it next to doors that were
+// answered ends the probe on conhostProwlUnknown.
+func TestATokenOpenFailingAfterASuccessfulProcessOpenIsAnUnknownOfItsOwn(t *testing.T) {
+	c := prowlClassifyToken(syscall.Errno(6))
+	if c.state != prowlAnswerUnknown {
+		t.Errorf("a token open failed with errno 6, which is no refusal, and was classified %v", c.state)
+	}
+	if c.door != prowlTokenDoor {
+		t.Errorf("the token open's unknown answers under %q, not the token door's own name", c.door)
+	}
+	// The classes stay apart: the process open's own failure keeps its own
+	// check under its own name, and the two never share one bucket.
+	p := prowlClassifyOpen(prowlTokenProcessDoor, 0, syscall.Errno(6))
+	if p.state != prowlAnswerUnknown {
+		t.Errorf("a process open failed with errno 6, which is no refusal, and was classified %v", p.state)
+	}
+	if p.door != prowlTokenProcessDoor {
+		t.Errorf("the process open's unknown answers under %q, not its own name", p.door)
+	}
+
+	// And the whole verdict: the ordinary handle proves the host was there,
+	// the dangerous door was refused, the token question went unanswered,
+	// a thread was examined -- and the run still fails, on the unknown's
+	// own code, which is the review's demand.
+	v := prowlVerdictOf(99, []prowlCheck{
+		{door: "PROCESS_ALL_ACCESS", state: prowlAnswerShut},
+		{door: prowlTokenProcessDoor, state: prowlAnswerOrdinary},
+		c,
+	}, []prowlCheck{{door: prowlThreadContextDoor, tid: 3, state: prowlAnswerShut}}, nil)
+	if !v.unknown {
+		t.Error("the verdict carries no unknown although the token question went unanswered")
+	}
+	if got := prowlCode([]prowlVerdict{v}); got != conhostProwlUnknown {
+		t.Errorf("the probe ends %d on an unanswered token question, not conhostProwlUnknown", got)
+	}
+
+	// The refusal itself is still the shut answer, so the door is read as
+	// shut exactly when the object's own list said so and never otherwise.
+	if got := prowlClassifyToken(prowlAccessDenied); got.state != prowlAnswerShut {
+		t.Errorf("a token open refused with error 5 was classified %v, not shut", got.state)
+	}
+}
+
+// TestAHostIsOnlyGoneWhenTheFreshWalkSaysSo pins the other half of the same
+// rule: vanishing is its own outcome, positively confirmed by the fresh
+// re-list, and an unclear answer never implies it. A verdict carrying
+// unknowns whose host the re-list no longer lists is cleared to the gone
+// line and counted nowhere; the same verdict with the host still listed is
+// kept whole and ends the probe on the unknown's own code; and the lone
+// host confirmed gone still ends conhostProwlNothingMeasured, because a
+// run that measured nothing is not a boundary that held either.
+func TestAHostIsOnlyGoneWhenTheFreshWalkSaysSo(t *testing.T) {
+	host := prowlVerdictOf(7,
+		[]prowlCheck{{door: "PROCESS_VM_WRITE", state: prowlAnswerUnknown, errno: 6}}, nil, nil)
+
+	kept := []prowlVerdict{host}
+	prowlConfirmGone(kept, map[uint32]bool{7: true})
+	if !kept[0].unknown {
+		t.Error("the fresh walk still lists the host, and its unknown was cleared anyway")
+	}
+	if got := prowlCode(kept); got != conhostProwlUnknown {
+		t.Errorf("the probe ends %d on an unknown about a host the re-list still finds standing", got)
+	}
+
+	gone := []prowlVerdict{host}
+	prowlConfirmGone(gone, nil)
+	if gone[0].unknown || gone[0].unmeasured || gone[0].measured || len(gone[0].open) > 0 {
+		t.Error("a host confirmed gone kept flags only a live host is allowed to carry")
+	}
+	if got := prowlCode(gone); got != conhostProwlNothingMeasured {
+		t.Errorf("the probe ends %d after the only host was confirmed gone, not conhostProwlNothingMeasured", got)
 	}
 }
