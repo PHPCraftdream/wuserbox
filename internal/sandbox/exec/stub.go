@@ -199,8 +199,16 @@ func Stub(args []string) error {
 		relay = r
 		// The same blind spot the own-console restore above sits in:
 		// os.Exit skips deferred calls, so on the success path this close
-		// never runs, and the stub's death closes what it names.
-		defer relay.close()
+		// never runs, and the stub's death closes what it names. And the
+		// close itself is pipes only, on purpose: this deferred cleanup has
+		// no ceiling under it, so it must never be in a position to make
+		// the native console close -- review round 4, P1-2. When finish has
+		// run, its close worker already owns that call and this must not
+		// become a second owner; when finish never ran, nobody does, and
+		// the stub's own death -- the next thing this error path leads to
+		// -- is what closes the console, the same pattern the success
+		// path's os.Exit relies on for everything it names.
+		defer relay.closePipes()
 	}
 	// Before the program exists, and not after -- and before the two-argument
 	// return below, not conditioned on it. What is about to start, when there
@@ -268,8 +276,8 @@ func Stub(args []string) error {
 		// operator is owed it even when the delivery that would have
 		// carried it broke. os.Exit below skips deferred calls, so the
 		// explicit close is still what keeps a conhost from outliving the
-		// handle-draining the run's caller does -- finish's relay.close on
-		// the success path is that close now.
+		// handle-draining the run's caller does -- finish's close worker,
+		// claimed before it was launched, is that close now.
 		if err := pump.finish(relay); err != nil {
 			return fmt.Errorf("the program ended with exit code %d, but its relayed console output was not fully delivered: %w", code, err)
 		}

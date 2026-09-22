@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -1719,4 +1720,294 @@ func measureTheBirthShut(dir string) error {
 		return fmt.Errorf("the birth host the guard shut (%d) still opens for everything; the shut never landed", hostPid)
 	}
 	return nil
+}
+
+// TestADrainThatEndsBeforeTheCloseIsClaimedLeavesTheNativeCloseToTheWorker
+// is the round-4 P1-2 test, and it holds the reverse of the order the two
+// console-free siblings hold: they keep the drain unfinished so the close
+// worker wins the claim first; here the drain is completely over before
+// finish even starts -- delivery done, verdict recorded, awaited by the
+// test itself -- which is the exact state that used to let the main path
+// win the handle. Under the old shape ownership was decided inside
+// closeConsole, by whoever reached the mutex first, so a worker still on
+// its way there could lose the console to the drain branch's relay.close,
+// and finish would then make the one call that can hang forever on its own
+// stack, outside the select its ceiling is built around. The claim now
+// happens synchronously before the worker exists, and the assertions are
+// the ownership itself, not a usually-fine outcome: finish returns while
+// the hooked native call is parked where nothing may wait on it, the call
+// is entered exactly once, and its stack is the close worker's --
+// freeClaimed, the owner's path -- never finish's own frame. The deferred
+// cleanup shapes are then called while the call is still parked: the
+// stub's error-return shape and a plain close must answer at once, reach
+// the native call neither of them, and leave the count at exactly one when
+// the parked call is finally let go.
+func TestADrainThatEndsBeforeTheCloseIsClaimedLeavesTheNativeCloseToTheWorker(t *testing.T) {
+	const fakeHPC = syscall.Handle(0x00C0FFED)
+	outRead, outWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outWrite.Close()
+	inRead, inWrite, err := os.Pipe()
+	if err != nil {
+		outRead.Close()
+		outWrite.Close()
+		t.Fatal(err)
+	}
+	defer inRead.Close()
+	relay := &consoleRelay{hpc: fakeHPC, input: inWrite, output: outRead}
+	pump := pumpRelay(relay, &bytes.Buffer{}, strings.NewReader(""))
+	// The drain's whole life happens before finish exists: a payload and
+	// the pipe's end are already in, and the test awaits the tracked drain
+	// itself, so no scheduling decides whether the verdict is in.
+	if _, err := outWrite.Write([]byte("WUSERBOX-DRAIN-FIRST")); err != nil {
+		t.Fatal(err)
+	}
+	if err := outWrite.Close(); err != nil {
+		t.Fatal(err)
+	}
+	drained := make(chan struct{})
+	go func() {
+		pump.drained.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the drain never ended although the pipe was closed under it")
+	}
+
+	// The hook stands where the native call sits, and it parks: what the
+	// test measures is everything that happens while the close is still
+	// inside it. Each entry records the handle and the caller's stack --
+	// the stack is the ownership evidence, the one thing that says which
+	// path the call was made from.
+	var (
+		mu      sync.Mutex
+		entries []struct {
+			hpc   syscall.Handle
+			stack string
+		}
+	)
+	closeStarted := make(chan struct{}, 1)
+	closeEnded := make(chan struct{}, 1)
+	gate := make(chan struct{})
+	oldClose := closePseudoConsole
+	closePseudoConsole = func(hpc syscall.Handle) {
+		buf := make([]byte, 4096)
+		n := runtime.Stack(buf, false)
+		mu.Lock()
+		entries = append(entries, struct {
+			hpc   syscall.Handle
+			stack string
+		}{hpc, string(buf[:n])})
+		mu.Unlock()
+		closeStarted <- struct{}{}
+		<-gate
+		closeEnded <- struct{}{}
+	}
+	t.Cleanup(func() { closePseudoConsole = oldClose })
+	releaseGate := new(sync.Once)
+	// The quiesce is registered last and runs first, the siblings' order:
+	// a test that dies mid-flight must not restore a hook a goroutine is
+	// still parked inside.
+	t.Cleanup(func() {
+		releaseGate.Do(func() { close(gate) })
+	})
+
+	finished := make(chan error, 1)
+	started := time.Now()
+	go func() { finished <- pump.finish(relay) }()
+	var finishErr error
+	select {
+	case finishErr = <-finished:
+	case <-time.After(10 * time.Second):
+		t.Fatal("finish never returned although the drain was already over and the native close was parked where nothing may wait on it")
+	}
+	if elapsed := time.Since(started); elapsed >= relayDrainCeiling {
+		t.Fatalf("finish took %s, past the %s ceiling, for a drain that had already ended", elapsed, relayDrainCeiling)
+	}
+	if finishErr != nil {
+		t.Fatalf("finish threw away the drain's verdict, which was in before finish started: %v", finishErr)
+	}
+	// The gate has not moved -- the return could not have waited on the
+	// native call, which is the bounded return itself.
+	select {
+	case <-closeEnded:
+		t.Fatal("the hooked close returned before the gate moved -- the park was never held")
+	default:
+	}
+	// The call was entered, and by the worker: the stack names
+	// freeClaimed, the owner's path, and never finish's own frame -- a
+	// native close made on finish's stack is the unbounded caller the
+	// synchronous claim exists to prevent.
+	select {
+	case <-closeStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the close worker never reached the hooked native call")
+	}
+	mu.Lock()
+	entered, entryStack := len(entries), ""
+	if entered > 0 {
+		entryStack = entries[0].stack
+	}
+	mu.Unlock()
+	if entered != 1 {
+		t.Fatalf("the native close was entered %d times before the deferred cleanups ran, want once", entered)
+	}
+	if !strings.Contains(entryStack, "freeClaimed") {
+		t.Fatalf("the native close was not made by the owner's path; entered from:\n%s", entryStack)
+	}
+	if strings.Contains(entryStack, "finish(") {
+		t.Fatalf("the native close was made on finish's own stack, outside the select that bounds it; entered from:\n%s", entryStack)
+	}
+
+	// The deferred-cleanup shapes, called with the owner still parked:
+	// the stub's error-return shape and a plain close must answer at once
+	// and reach the native call neither of them.
+	pipesDone := make(chan struct{})
+	go func() { relay.closePipes(); close(pipesDone) }()
+	select {
+	case <-pipesDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the deferred pipe-end cleanup waited on the close parked in the native call")
+	}
+	secondDone := make(chan struct{})
+	go func() { relay.close(); close(secondDone) }()
+	select {
+	case <-secondDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a second close waited on the close parked in the native call instead of being refused the claim")
+	}
+	mu.Lock()
+	count := len(entries)
+	mu.Unlock()
+	if count != 1 {
+		t.Fatalf("the deferred cleanups reached the native call; it has now been entered %d times, want once", count)
+	}
+
+	// Let the parked call come back: once in total, aimed at the relay's
+	// console.
+	releaseGate.Do(func() { close(gate) })
+	select {
+	case <-closeEnded:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the hooked close never returned even after the gate moved")
+	}
+	mu.Lock()
+	total, aimedAt := len(entries), entries[0].hpc
+	mu.Unlock()
+	if total != 1 {
+		t.Fatalf("the console was freed %d times in total, want exactly once", total)
+	}
+	if aimedAt != fakeHPC {
+		t.Fatalf("the close was aimed at handle %#x, not the relay's console", aimedAt)
+	}
+}
+
+// TestTheStubsDeferredCleanupClosesOnlyTheRelaysPipeEnds is the deferred
+// half of the round-4 P1-2 test, the stub's error-return shape: the program
+// failed to start after pumpRelay, no finish ever ran, and the deferred
+// cleanup is the next thing that happens to the relay. There is no ceiling
+// under anything this path does, which is why it must never be in a
+// position to make the native console close at all -- not to wait behind an
+// owner, and not to claim the console first either: the console is left to
+// the stub's own death, the same pattern the success path's os.Exit relies
+// on. The assertions: the deferred closePipes answers at once, closes both
+// pipe ends, and the native call is never entered; the console is still
+// there to be claimed afterwards, exactly once, by the owner's path, which
+// is the proof the deferred cleanup claimed nothing. The pump a failed
+// start leaves behind is started here and its drain is ended before the
+// deferred cleanup runs -- the drain's end is awaited, so what this test
+// measures is the ownership and nothing else: a Close under a read still
+// parking is Windows' own timing, ground the siblings' close-under-reader
+// shape stands on only after its drains have long been parked, and a
+// measurement that bet on it would be about the kernel, not the relay.
+func TestTheStubsDeferredCleanupClosesOnlyTheRelaysPipeEnds(t *testing.T) {
+	const fakeHPC = syscall.Handle(0x00C0FFEC)
+	outRead, outWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inRead, inWrite, err := os.Pipe()
+	if err != nil {
+		outRead.Close()
+		outWrite.Close()
+		t.Fatal(err)
+	}
+	defer inRead.Close()
+	relay := &consoleRelay{hpc: fakeHPC, input: inWrite, output: outRead}
+	// The pump a failed start leaves behind: the input loop ends on its
+	// empty reader at once, and the drain carries whatever the pipe holds
+	// and then parks on it.
+	pump := pumpRelay(relay, &bytes.Buffer{}, strings.NewReader(""))
+	var (
+		mu         sync.Mutex
+		closeCalls []syscall.Handle
+	)
+	oldClose := closePseudoConsole
+	closePseudoConsole = func(hpc syscall.Handle) {
+		mu.Lock()
+		closeCalls = append(closeCalls, hpc)
+		mu.Unlock()
+	}
+	t.Cleanup(func() { closePseudoConsole = oldClose })
+
+	// The drain is ended before the deferred cleanup runs, and the test
+	// awaits its end: the write end goes, the drain reaches the pipe's
+	// end, and no measurement below depends on where a read was parked.
+	if err := outWrite.Close(); err != nil {
+		t.Fatal(err)
+	}
+	allDone := make(chan struct{})
+	go func() {
+		pump.drained.Wait()
+		close(allDone)
+	}()
+	select {
+	case <-allDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the tracked drain never ended after the pipe's write end did")
+	}
+
+	deferredDone := make(chan struct{})
+	go func() { relay.closePipes(); close(deferredDone) }()
+	select {
+	case <-deferredDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stub's deferred cleanup did not answer at once")
+	}
+	mu.Lock()
+	calls := len(closeCalls)
+	mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("the deferred cleanup made the native console close %d times; it has no ceiling under it and must never make it", calls)
+	}
+	// And it claimed nothing: the console is still there for the owner's
+	// path, which closes it once -- in production nobody does, and the
+	// stub's death closes it instead.
+	relay.closeConsole()
+	mu.Lock()
+	calls = len(closeCalls)
+	aimedAt := syscall.Handle(0)
+	if calls > 0 {
+		aimedAt = closeCalls[0]
+	}
+	mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("the console was closed %d times by the owner's path after the deferred cleanup, want exactly once -- zero would mean the deferred cleanup claimed it", calls)
+	}
+	if aimedAt != fakeHPC {
+		t.Fatalf("the close was aimed at handle %#x, not the relay's console", aimedAt)
+	}
+	// The pipe ends the deferred cleanup closed: a second close of the
+	// input end and a read from the output end are both refused as
+	// closed, and nothing else in this test closed them.
+	if err := relay.input.Close(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("the relay's input end survived the deferred cleanup: %v", err)
+	}
+	if _, err := relay.output.Read(make([]byte, 1)); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("the relay's output end survived the deferred cleanup: %v", err)
+	}
 }

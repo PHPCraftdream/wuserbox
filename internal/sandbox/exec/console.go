@@ -342,15 +342,19 @@ const handleFlagInherit = 0x00000001
 // console itself, named in the child's thread attribute list by
 // proc.RunWithConsole.
 //
-// The handle has one ownership. hpcMu is the mutex the close settles its
-// transition under -- the closed state set, the handle taken out -- and the
+// The handle has one ownership, and it is granted exactly once: claimClose
+// is the only door to it, and the caller it hands the handle to owns the
+// one native close from that instant -- every later claimant is refused
+// with nothing to free and no call to make. hpcMu is the mutex the claim
+// settles under -- the closed state set, the handle taken out -- and the
 // same mutex every resize reads before it calls; resizes counts the resize
-// calls that passed the check so the close can wait them out before it
+// calls that passed the check so the owner can wait them out before it
 // frees the console. That makes the two WinAPI calls that consume the
 // handle impossible to overlap, and it is why neither call runs under the
 // mutex: a native call that wedges must wedge on its own, where finish's
 // ceiling can race it, not while holding the one lock the other caller
-// needs (review round 2, P1-2, coordinated with P1-1's bounded close).
+// needs (review round 2, P1-2, coordinated with P1-1's bounded close; the
+// synchronous claim itself is round 4's P1-2 -- round 3's, carried).
 type consoleRelay struct {
 	hpc    syscall.Handle
 	input  *os.File
@@ -483,6 +487,52 @@ func noInherit(file *os.File) error {
 	return nil
 }
 
+// claimClose takes the console's close out of circulation synchronously:
+// under the mutex the closed state is set and the handle taken out, and the
+// caller that did it first receives the handle with owned true. From that
+// instant the exclusive right to make the native ClosePseudoConsole call is
+// that caller's, and every later claimant finds the state set and receives
+// owned false -- nothing to free, no call to make, no waiting on the call
+// in flight. The claim is the whole of review round 4's P1-2 (round 3's,
+// carried): the old shape set this state inside closeConsole itself, so the
+// close worker finish launches could still be on its way to the mutex when
+// a drain that had just ended let the main path's relay.close in first --
+// and the main path made the one call that can hang forever outside the
+// select that bounds it. Deciding the owner synchronously, before any
+// worker is launched and before any select, closes that window for good:
+// no later path can win the handle, only lose the claim.
+func (r *consoleRelay) claimClose() (hpc syscall.Handle, owned bool) {
+	if r == nil {
+		return 0, false
+	}
+	r.hpcMu.Lock()
+	defer r.hpcMu.Unlock()
+	if r.hpcClosed {
+		return 0, false
+	}
+	r.hpcClosed = true
+	hpc, owned = r.hpc, true
+	r.hpc = 0
+	return hpc, owned
+}
+
+// freeClaimed performs the native close that claimClose handed out, and it
+// is for the owner alone. The in-flight resizes are waited out first --
+// each counted on its way in, each released only after its
+// ResizePseudoConsole returned -- and only then is the handle freed, the
+// order closeConsole has always had. It runs wherever the owner put it:
+// inline where nothing else is in flight, and on finish's close worker
+// under the teardown's ceiling. A zero handle frees nothing -- a relay
+// built without a console has nothing to free, and a caller the claim
+// refused receives zero for exactly that reason.
+func (r *consoleRelay) freeClaimed(hpc syscall.Handle) {
+	if hpc == 0 {
+		return
+	}
+	r.resizes.Wait()
+	closePseudoConsole(hpc)
+}
+
 // closeConsole ends the pseudo console and nothing else. It is its own
 // method because finishing the relay needs the two ends of close separated
 // in time: ending the console is what makes conhost eventually let go of
@@ -494,55 +544,68 @@ func noInherit(file *os.File) error {
 // draining internally, and the documented completion signal is the read
 // side reaching the end of the pipe -- which is why finish keeps reading to
 // EOF after calling this instead of trusting the return. Twice-safe like
-// close, and twice-safe without waiting: the closed state and the handle
-// are settled under hpcMu before any call is made, so a second entry finds
-// nothing left to free and returns at once -- even while a first close is
-// still blocked inside ClosePseudoConsole itself, which is what lets
-// finish's ceiling path decline to re-enter a call that never comes back.
+// close, and twice-safe without waiting: the claim is settled under hpcMu
+// before any call is made, so a second entry is refused the claim and
+// returns at once -- even while the owner is still blocked inside
+// ClosePseudoConsole itself, which is what lets finish's ceiling path
+// decline to re-enter a call that never comes back. Its callers are the
+// paths that can still be the first and only closer -- the
+// creation-failure paths in takeConsoleRelay, and a test closing a relay
+// it is done with; finish claims before its close worker exists, and its
+// own cleanups go through closePipes instead.
 //
-// The order inside is the P1-2 fix, and it is the review's own: the closed
-// state goes first, under the mutex, which stops every resize that has not
-// yet passed its check; resizes.Wait then waits out the calls that already
-// passed -- each counted on its way in, each released only after its
-// ResizePseudoConsole returned -- and only then is the handle freed. A
-// resize in flight and the free can therefore never overlap. The mutex is
-// never held across either native call, so a wedged ClosePseudoConsole
-// holds nothing a resize needs, and the close runs where finish's deadline
-// can race it instead of behind it.
+// The order inside is the round-2 P1-2 fix, and it is the review's own: the
+// claim goes first, under the mutex, which stops every resize that has not
+// yet passed its check; the owner's resizes.Wait then waits out the calls
+// that already passed -- each counted on its way in, each released only
+// after its ResizePseudoConsole returned -- and only then is the handle
+// freed. A resize in flight and the free can therefore never overlap. The
+// mutex is never held across either native call, so a wedged
+// ClosePseudoConsole holds nothing a resize needs, and the close runs where
+// finish's deadline can race it instead of behind it.
 func (r *consoleRelay) closeConsole() {
-	if r == nil {
-		return
+	if hpc, owned := r.claimClose(); owned {
+		r.freeClaimed(hpc)
 	}
-	r.hpcMu.Lock()
-	if r.hpcClosed {
-		r.hpcMu.Unlock()
-		return
-	}
-	r.hpcClosed = true
-	hpc := r.hpc
-	r.hpc = 0
-	r.hpcMu.Unlock()
-	if hpc == 0 {
-		return
-	}
-	r.resizes.Wait()
-	closePseudoConsole(hpc)
 }
 
 // close ends the pseudo console and both pipe ends, closeConsole for the
 // console and then both ends of the relay. Closing the console is also what
 // ends its conhost and what lets a reader of output reach EOF -- the
 // measured shape of every drain in this repository that reads a pseudo
-// console's pipe. os.Exit skips deferred calls, so on the stub's success
-// path close never runs; the stub's own death closes everything it names.
-// Safe to call twice: the handle is cleared before it is closed, which is
-// what lets a test close the relay explicitly and still have its deferred
-// call find nothing left to do.
+// console's pipe. When the close has already been claimed -- finish claims
+// before its worker runs -- the console half is an instant no-op and what
+// runs here is the pipe ends only; the caller that claimed owns the native
+// call, and this cannot become a second one. os.Exit skips deferred calls,
+// so on the stub's success path close never runs; the stub's own death
+// closes everything it names. Safe to call twice: the claim is refused the
+// second time, which is what lets a test close the relay explicitly and
+// still have its deferred call find nothing left to do.
 func (r *consoleRelay) close() {
 	if r == nil {
 		return
 	}
 	r.closeConsole()
+	_ = r.input.Close()
+	_ = r.output.Close()
+}
+
+// closePipes ends both relay pipe ends and nothing else -- no claim, no
+// console, no native call. It is the shape of the cleanups that run beside
+// an owner they must never compete with: finish's drain-ended branches, and
+// the stub's deferred cleanup on the error-return path, where there is no
+// ceiling under anything a console close would do. When finish has run,
+// its close worker already owns the native close, and a second owner is
+// exactly what review round 4's P1-2 forbids; when finish never ran --
+// Shield refusing, the program failing to start -- nobody owns it, and the
+// stub's own death closes what remains, the same pattern its success
+// path's os.Exit has always relied on. Safe to call twice, and beside an
+// owned close: the ends close idempotently, and the console is not this
+// method's business at all.
+func (r *consoleRelay) closePipes() {
+	if r == nil {
+		return
+	}
 	_ = r.input.Close()
 	_ = r.output.Close()
 }
@@ -595,10 +658,11 @@ func pumpRelay(relay *consoleRelay, stdout io.Writer, stdin io.Reader) *relayPum
 // finish ends the relay the way the end of a run needs it ended, and the
 // order is the fix, not a convention. The relay's input stops first: the
 // program is dead and nothing will read a keystroke again, so the loop
-// feeding them in has no work left to be right about. The console closes
-// second -- closeConsole, and nothing else: ending the console is what
-// makes conhost let go of the write end of the output pipe, while the read
-// end stays open, because the drain still has to be watched through it. The
+// feeding them in has no work left to be right about. The console's close
+// is claimed second -- claimed for the close worker, synchronously, and
+// nothing else: ending the console is what makes conhost let go of the
+// write end of the output pipe, while the read end stays open, because the
+// drain still has to be watched through it. The
 // drain is waited on third, and that wait is what review finding P2-1
 // measured the absence of: the fixed pause the stub used to sleep narrowed
 // the race between conhost's last rendered bytes and this process's exit
@@ -624,13 +688,17 @@ func pumpRelay(relay *consoleRelay, stdout io.Writer, stdin io.Reader) *relayPum
 // and giving up there is what keeps this stub from hanging against a run
 // waiting for it to die.
 //
-// No path re-enters a blocking close. closeConsole is twice-safe without
-// waiting, so a relay.close after a verdict is either real work on the
-// success path or an instant no-op; on the ceiling path nothing closes
-// anything -- the goroutine already inside ClosePseudoConsole is the one
-// close the console gets, the read end stays open for the same reason it
-// always did (closing a handle a synchronous read is blocked in is
-// undefined ground), and the stub's own death closes what it names.
+// No path but the worker's reaches a blocking close. The claim at the top
+// decides who owns the native call before any branch runs, so the cleanups
+// the branches perform -- closePipes, on the drain-ended branches and at
+// the end -- close pipe ends only, by construction rather than by timing;
+// even a closeConsole reached from here finds the claim taken and answers
+// at once, neither waiting on the call in flight nor becoming a second
+// one. On the ceiling path nothing closes anything -- the worker already
+// inside ClosePseudoConsole is the one close the console gets, the read
+// end stays open for the same reason it always did (closing a handle a
+// synchronous read is blocked in is undefined ground), and the stub's own
+// death closes what it names.
 //
 // A non-nil return must not become a silent truncation behind the
 // program's own exit code, and a verdict the drain already reached is
@@ -652,9 +720,23 @@ func (p *relayPump) finish(relay *consoleRelay) error {
 	}()
 	timer := time.NewTimer(relayDrainCeiling)
 	defer timer.Stop()
+	// The claim, and it is synchronous on purpose: the exclusive right to
+	// the native close is handed to the close worker before that worker
+	// exists. Launched first and claimed from inside closeConsole, the
+	// worker could lose the handle to the drain branch below -- a drain
+	// that ends while the worker is still on its way to the mutex lets
+	// relay.close claim the console and make the one call that can hang
+	// forever outside the select this function is built around, which is
+	// exactly the gap review round 4's P1-2 measured in the old order.
+	// Claimed here, the console is out of circulation before any branch
+	// runs, the worker below is the only native close there will be, and
+	// every cleanup on every branch closes pipe ends only.
+	hpc, owned := relay.claimClose()
 	closed := make(chan struct{})
 	go func() {
-		relay.closeConsole()
+		if owned {
+			relay.freeClaimed(hpc)
+		}
 		close(closed)
 	}()
 	select {
@@ -672,10 +754,11 @@ func (p *relayPump) finish(relay *consoleRelay) error {
 		// The drain ended first -- the pipe reached its end and its
 		// last Write into the consumer returned -- while the close is
 		// still going. The verdict is in, and it outranks waiting on a
-		// call that may never return; relay.close below is a real close
-		// of the pipe ends and an instant no-op on the console, whose
-		// close finishes on its own goroutine or ends with the process.
-		relay.close()
+		// call that may never return; closePipes below is a real close
+		// of the pipe ends and nothing else -- the console is not this
+		// branch's to touch, its close belongs to the worker already
+		// running it under this select.
+		relay.closePipes()
 		return p.drainErr
 	case <-timer.C:
 		// The deadline expired before either half ended -- the shape
@@ -685,13 +768,13 @@ func (p *relayPump) finish(relay *consoleRelay) error {
 		// reported possibly-incomplete rather than hung.
 		select {
 		case <-waited:
-			relay.close()
+			relay.closePipes()
 			return p.drainErr
 		default:
 		}
 		return fmt.Errorf("the relay's console close or its output drain did not end within %s; the run's output may be incomplete", relayDrainCeiling)
 	}
-	relay.close()
+	relay.closePipes()
 	return p.drainErr
 }
 
