@@ -188,10 +188,66 @@ func Delete(name string) error {
 	return status("NetUserDel", r)
 }
 
+// ownerSeparator separates the project directory from the SID of the
+// operator who created the account inside the comment. A vertical bar cannot
+// appear in a Windows path, so the split is unambiguous in both directions;
+// a comment that has none of them in it is a directory alone, the shape
+// every account carried before operators were recorded.
+const ownerSeparator = "|"
+
 // Comment returns the project directory recorded on an account, and whether
 // the account exists. The comment is part of the identity check: a colliding
 // account name must never be treated as belonging to a different sandbox.
+// Accounts this package builds also carry the SID of the operator who made
+// them after the directory (see OwnerComment); the directory alone is what
+// callers compare against, so the owner half never reaches them.
 func Comment(name string) (string, bool, error) {
+	raw, exists, err := rawComment(name)
+	if err != nil || !exists {
+		return "", exists, err
+	}
+	project, _ := splitComment(raw)
+	return project, true, nil
+}
+
+// Owner returns the SID of the operator an account's comment records as its
+// creator, and whether the account exists. An empty owner -- an account made
+// before comments carried one, or by anything that did not go through
+// OwnerComment -- means creatorship cannot be proved either way, and every
+// caller treats that as a refusal to act on the account rather than as a
+// match for whoever is asking.
+func Owner(name string) (string, bool, error) {
+	raw, exists, err := rawComment(name)
+	if err != nil || !exists {
+		return "", exists, err
+	}
+	_, owner := splitComment(raw)
+	return owner, true, nil
+}
+
+// splitComment takes a comment apart into its project directory and the SID
+// of the operator who created the account. The owner half is optional and
+// the directory half is everything before the last separator, because only
+// the owner half is ever written by this package and a directory can hold
+// no separator at all.
+func splitComment(comment string) (project, owner string) {
+	if i := strings.LastIndex(comment, ownerSeparator); i >= 0 {
+		return comment[:i], comment[i+len(ownerSeparator):]
+	}
+	return comment, ""
+}
+
+// OwnerComment builds the comment an account carries: the project directory,
+// the same as always, followed by the SID of the operator who created the
+// account, so that a later run holding no record of the password can tell
+// its own account from one another operator's sandbox still lives in.
+func OwnerComment(project, ownerSID string) string {
+	return project + ownerSeparator + ownerSID
+}
+
+// rawComment returns the comment an account carries, exactly as the accounts
+// database holds it, and whether the account exists.
+func rawComment(name string) (string, bool, error) {
 	var buf *userInfo1
 	r, _, _ := procUserGetInfo.Call(0, uintptr(unsafe.Pointer(w32.UTF16(name))), 1,
 		uintptr(unsafe.Pointer(&buf)))
