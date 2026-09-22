@@ -34,6 +34,7 @@ const (
 	prowlerFlag       = "-wuserbox-prowler"
 	stubbyFlag        = "-wuserbox-stubby"
 	consoleHolderFlag = "-wuserbox-console-holder"
+	shutFixtureFlag   = "-wuserbox-shut-fixture"
 
 	// A group nothing on the machine is a member of. What matters below is
 	// the restricting list and the two tokens' relationship, never what the
@@ -67,8 +68,8 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 2 && os.Args[1] == raceVictimFlag {
 		os.Exit(raceVictim(os.Args[2]))
 	}
-	if len(os.Args) > 2 && os.Args[1] == threadSpawnerFlag {
-		os.Exit(threadSpawner(os.Args[2]))
+	if len(os.Args) > 2 && os.Args[1] == threadShieldFixtureFlag {
+		os.Exit(threadShieldFixture(os.Args[2]))
 	}
 	if len(os.Args) > 2 && os.Args[1] == threadProberFlag {
 		var ids []uint32
@@ -83,6 +84,9 @@ func TestMain(m *testing.M) {
 	}
 	if len(os.Args) > 2 && os.Args[1] == stdinBridgeProbeFlag {
 		os.Exit(stdinBridgeProbe(os.Args[2]))
+	}
+	if len(os.Args) > 2 && os.Args[1] == shutFixtureFlag {
+		os.Exit(shutFixture(os.Args[2]))
 	}
 	if os.Getenv(driverEnv) == "1" {
 		runDriver()
