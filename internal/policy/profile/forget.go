@@ -22,13 +22,45 @@ import (
 // entry carried: a name leaving the list says something about copying, and
 // what its exclusions protected was never ours to take back.
 func forget(root *os.Root, previously []config.Entry, current []config.Entry) error {
+	// One cleaned-spelling set of the current list, built before the loop:
+	// the ordinary warm run answers every recorded entry out of it and
+	// never opens the volume at all -- the pass is O(E) before anything
+	// asks a directory for a child. The clean is cleanEntryPath, the same
+	// one the ownership question falls back to, and case is deliberately
+	// left out of the comparison exactly as it was there: where the volume
+	// can witness a place it is asked -- the stretch's holds below -- and
+	// case is decided against that place, but where it cannot, the
+	// recorded place is not on disk and the spellings are compared cleaned
+	// and nothing else, because with no place to be witnessed against
+	// every extra join is the fold's i-for-U+0131 mistake in a fallback's
+	// clothes. The fallback is also the record's escape hatch: a recorded
+	// entry whose limits cannot bind is refused below unless the list
+	// still names it, and the way out is putting the entry back under its
+	// recorded spelling and running once -- which may be a run where the
+	// copy never lands at all, so the spelling answer cannot depend on
+	// anything being on disk.
+	currentSpellings := make(map[string]bool, len(current))
+	for _, entry := range current {
+		currentSpellings[cleanEntryPath(entry.Path)] = true
+	}
+	// One placeIndex per mutation-free stretch of the loop, built the
+	// first time a question actually needs the volume: a recorded entry
+	// the list still names by spelling is answered above and never builds
+	// anything, and an entry the volume cannot witness at all is answered
+	// by the same spelling set. The stretch keeps its resolver and its
+	// canonical-presence set across every question the stretch answers
+	// after it is built, so a pass that clears nothing pays for one
+	// indexing of the current list however many recorded entries it
+	// answers.
+	var stretch *placeIndex
 	for _, entry := range previously {
-		// One resolver for this entry's whole question, and no more:
-		// clearEntry below mutates the directories a later stillNamed
-		// would ask about, so the resolver's snapshots must not outlive
-		// the question they were read for.
-		resolver := newPlaceResolver(root)
-		if stillNamed(resolver, current, entry.Path) {
+		if currentSpellings[cleanEntryPath(entry.Path)] {
+			continue
+		}
+		if stretch == nil {
+			stretch = newPlaceIndex(root, entryPathsOf(current))
+		}
+		if stretch.holds(entry.Path) {
 			continue
 		}
 		// A recorded entry whose name the volume resolves onto a reserved
@@ -82,6 +114,12 @@ func forget(root *os.Root, previously []config.Entry, current []config.Entry) er
 		if err := clearEntry(root, stale, entry); err != nil {
 			return fmt.Errorf("clearing %s, which the rules file no longer names: %w", entry.Path, err)
 		}
+		// A real clear happened, and every cached answer the stretch held
+		// described directories the clear has since taken apart: the
+		// stretch dies here and the next question that needs the volume
+		// builds a fresh one. A question answered without a clear never
+		// costs a rebuild, which is what keeps the unchanged run linear.
+		stretch = nil
 	}
 	return nil
 }
@@ -251,48 +289,4 @@ func clearKeeping(root *os.Root, dir, rel string, w *walk, kept *bool) error {
 		}
 	}
 	return nil
-}
-
-// stillNamed answers whether the current list names the place a recorded
-// entry claims, and it is the question whose both wrong directions delete:
-// reading two spellings of one place as strangers deletes a live copy, and
-// reading two places as one spares a stray for good. Where the volume can
-// answer, it is asked -- the resolver opens both spellings and compares
-// their canonical places as the one witness both lists stand before. Where
-// it cannot, the recorded place is not on disk and the spellings are
-// compared cleaned and nothing else: the clean is the half that was
-// measured (a rules file respelling "agent" as "./agent"), and case is
-// deliberately left out of it, because with no place on disk there is
-// nothing for case to be witnessed against and every extra join is the
-// fold's i-for-U+0131 mistake in a fallback's clothes.
-//
-// What the fallback has to keep working is the record's own escape hatch:
-// a recorded entry whose limits cannot bind is refused below unless the
-// list still names it, and the way out of that refusal is putting the
-// entry back under its recorded spelling and running once -- which may be
-// a run where the copy never lands at all, so the hatch cannot depend on
-// anything being on disk.
-//
-// The question is answered through one resolver that spans this whole
-// question, not one comparison at a time: every current entry's place is
-// put to the same snapshots and collected into a canonical-presence index,
-// so the recorded entry is named by the set rather than by one resolver
-// per pair. forget's clearEntry for a previous recorded entry falls
-// between two stillNamed calls, which is what keeps every cached answer
-// describing directories the pass has not yet cleared -- the resolver dies
-// with the question it was built for, before the next deletion can turn
-// its snapshots into lies.
-func stillNamed(resolver *placeResolver, current []config.Entry, recorded string) bool {
-	cleaned := cleanEntryPath(recorded)
-	places := make(map[string]bool, len(current))
-	for _, entry := range current {
-		if cleanEntryPath(entry.Path) == cleaned {
-			return true
-		}
-		if canonical, ok := resolver.place(entry.Path); ok {
-			places[canonical] = true
-		}
-	}
-	recordedPlace, ok := resolver.place(recorded)
-	return ok && places[recordedPlace]
 }

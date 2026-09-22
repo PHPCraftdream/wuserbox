@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
 )
 
@@ -148,13 +149,15 @@ func FoldedEntryPath(path string) string {
 // The question is put to the volume through a placeResolver built for this
 // one comparison, so the two spellings share a single look at every
 // directory they touch: the second spelling is answered from what the
-// first already read. sameEntryPlace stays the one-comparison convenience;
-// the callers that have a whole set of comparisons to do -- forget's
-// stillNamed, copyEntries' recordVouches -- hold one resolver across each
-// whole set instead of building one per comparison, and they still stop at
-// what happens between the sets: forget clears and copyEntries copies
-// between two of these, and an answer held across that would describe
-// directories this very operation has since changed.
+// first already read. sameEntryPlace stays the one-comparison convenience,
+// the shape a caller with a single comparison to ask keeps; the callers
+// with a whole loop of comparisons to ask -- forget over its recorded
+// entries, copyEntries over its missing sources -- hold one placeIndex
+// across each mutation-free stretch of the loop instead of a resolver per
+// question, and the stretch still stops at what happens inside the loop:
+// forget clears and copyEntries copies between two of these, and an answer
+// held across that would describe directories this very operation has
+// since changed.
 func sameEntryPlace(root *os.Root, first, second string) bool {
 	return newPlaceResolver(root).samePlace(first, second)
 }
@@ -188,11 +191,34 @@ type placeResult struct {
 // siblings one by one. Only successful answers are kept: a sibling that
 // would not open or canonicalize is asked again next time, exactly as the
 // scan without the cache would have asked.
+//
+// byCanonical is the same scan's other product, indexed the way the next
+// alias question asks: per canonical path, the one stored directory-entry
+// name that carries it. The scan walks every child whether the asking
+// spelling's match is the first child or the last, so the index falls out
+// of it for nothing -- and it is what keeps a directory's second alias
+// spelling, one the alias memo has never heard of because no earlier
+// question spelled it that way, from opening the siblings all over again.
+// A canonical path two names carry -- hard links -- is kept marked not
+// unique and refused, exactly as the scan's own matches != 1 refused. Like
+// canonical, it keeps what the scan managed: a sibling the scan could not
+// canonicalize has no entry here, and the next alias question about that
+// spelling asks the volume again.
 type dirSnapshot struct {
-	children  []os.DirEntry
-	byName    map[string]string
-	canonical map[string]string
-	ok        bool
+	children    []os.DirEntry
+	byName      map[string]string
+	canonical   map[string]string
+	byCanonical map[string]canonicalChild
+	ok          bool
+}
+
+// canonicalChild is one canonical path's answer in the snapshot's
+// byCanonical index: the single stored directory-entry name that has it,
+// or unique=false when two names do (hard links), which the alias branch
+// refuses exactly as the scan's matches != 1 did.
+type canonicalChild struct {
+	name   string
+	unique bool
 }
 
 // placeResolver answers the ownership question for one operation, and it
@@ -208,24 +234,31 @@ type dirSnapshot struct {
 // operation, each entry once.
 //
 // "One operation" is as long as the resolver lives, and that is a promise
-// about mutation, not about time: one holder spans one whole question-set
-// and stops at the first thing that could change an answer under it. A
+// about mutation, not about time: a holder spans a mutation-free stretch
+// of its caller's loop and never spans the mutation that ends it. A
 // DedupeEntries call compares and writes nothing, so one resolver spans
-// all of its comparisons; stillNamed holds one across every current entry
-// it compares a single recorded entry against; recordVouches holds one
-// across the whole record it asks about a single entry; forget's
-// clearEntry and copyEntries' mirror fall between two of these, and an
-// answer held across one of those would describe directories this very
-// operation has since changed. What no resolver may do is outlive the run
-// that built it: the volume answers for the moment of asking, and a cache
-// carried across CLI runs would answer a later question with an earlier
-// disk.
+// all of its comparisons; forget and copyEntries hold one across each
+// mutation-free stretch of their loops -- forget over every recorded
+// entry it compares against one unchanged current list, copyEntries over
+// every missing source it vouches against one unchanged record -- and
+// both throw the resolver and the presence index it serves away the
+// moment the real mutation happens, forget's clearEntry and copyEntries'
+// mirror, building the next stretch's only when a question needs it. What
+// no resolver may do is outlive the run that built it: the volume answers
+// for the moment of asking, and a cache carried across CLI runs would
+// answer a later question with an earlier disk.
 //
-// opens and reads are the measurement the review's close test holds the
-// resolver to: every open of a directory made to enumerate it, and every
-// ReadDir. The alias branch's opens of stored spellings are resolution,
-// not enumeration, and are not counted. The numbers are read, never used
-// to decide.
+// opens, reads, resolutions, children and scans are the measurement the
+// review's close tests hold the resolver to: every open of a directory
+// made to enumerate it, every ReadDir, every spelling resolved that the
+// places memo had not already answered, the number of children those
+// ReadDirs actually processed, and the sibling scans the alias branch ran
+// that its byCanonical index did not save. The last three are the counters
+// the earlier review's opens and reads could not stand in for -- a warm
+// pass can look linear by those and still pay per pair -- and they are
+// what pins the stretch shape. The alias branch's opens of stored
+// spellings are resolution, not enumeration, and are not counted. The
+// numbers are read, never used to decide.
 type placeResolver struct {
 	root   *os.Root
 	dirs   map[string]dirSnapshot
@@ -242,6 +275,16 @@ type placeResolver struct {
 	alias map[string]placeResult
 	opens int
 	reads int
+	// resolutions, children and scans are the stretch-shaped counters the
+	// opens and reads above could not answer: how many spellings were
+	// really walked rather than answered from the places memo, how many
+	// directory children the enumerations processed, and how often the
+	// alias branch paid its sibling scan instead of reading the snapshot's
+	// byCanonical index. Like the two above they are read by the counting
+	// tests and used to decide nothing.
+	resolutions int
+	children    int
+	scans       int
 }
 
 // newPlaceResolver is a variable so the counting test can hold the
@@ -266,6 +309,7 @@ func (r *placeResolver) place(path string) (string, bool) {
 	if got, ok := r.places[key]; ok {
 		return got.canonical, got.ok
 	}
+	r.resolutions++
 	canonical, ok := r.canonicalEntryPath(path)
 	r.places[key] = placeResult{canonical: canonical, ok: ok}
 	return canonical, ok
@@ -308,12 +352,14 @@ func (r *placeResolver) snapshot(dir string) (dirSnapshot, bool) {
 		byName[child.Name()] = child.Name()
 	}
 	snap := dirSnapshot{
-		children:  children,
-		byName:    byName,
-		canonical: make(map[string]string),
-		ok:        true,
+		children:    children,
+		byName:      byName,
+		canonical:   make(map[string]string),
+		byCanonical: make(map[string]canonicalChild),
+		ok:          true,
 	}
 	r.dirs[dir] = snap
+	r.children += len(children)
 	return snap, true
 }
 
@@ -324,9 +370,11 @@ func (r *placeResolver) snapshot(dir string) (dirSnapshot, bool) {
 // match's absence is the alias branch below, where the volume itself has
 // to say which stored spelling a name resolves onto. That branch's whole
 // answer is kept in the resolver's alias memo and its siblings' canonical
-// spellings in the snapshot, so a second question about the same spelling
-// in the same directory, this query or any later one this resolver
-// answers, opens nothing at all.
+// spellings in the snapshot, and the snapshot's byCanonical index holds
+// the same scan's answers for every other spelling of the same place, so
+// a second question about one spelling -- or a first question about a
+// different spelling of it -- in a directory this resolver has already
+// scanned opens nothing at all.
 func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 	clean := cleanEntryPath(path)
 	if clean == "." || filepath.IsAbs(clean) || clean == ".." ||
@@ -359,35 +407,64 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 					r.alias[aliasPath] = placeResult{}
 					return "", false
 				}
-				matches := 0
-				for _, child := range snap.children {
-					childPath, known := snap.canonical[child.Name()]
-					if !known {
-						childFile, err := r.root.Open(filepath.Join(current, child.Name()))
-						if err != nil {
-							continue
-						}
-						var childErr error
-						childPath, childErr = pathid.Canonical(childFile.Name())
-						_ = childFile.Close()
-						if childErr != nil {
-							continue
-						}
-						snap.canonical[child.Name()] = childPath
+				// A sibling scan here already ran for an earlier alias
+				// spelling and canonicalized every child on its way
+				// past, so this spelling's answer is in the snapshot's
+				// index whether or not the alias memo has heard of it;
+				// only a canonical path the index has never seen asks
+				// the volume for the siblings again.
+				if indexed, seen := snap.byCanonical[openedPath]; seen {
+					if indexed.unique {
+						chosen = indexed.name
+						r.alias[aliasPath] = placeResult{canonical: chosen, ok: true}
+					} else {
+						r.alias[aliasPath] = placeResult{}
+						return "", false
 					}
-					if childPath == openedPath {
-						chosen = child.Name()
-						matches++
+				} else {
+					r.scans++
+					index := snap.byCanonical
+					for _, child := range snap.children {
+						childPath, known := snap.canonical[child.Name()]
+						if !known {
+							childFile, err := r.root.Open(filepath.Join(current, child.Name()))
+							if err != nil {
+								continue
+							}
+							var childErr error
+							childPath, childErr = pathid.Canonical(childFile.Name())
+							_ = childFile.Close()
+							if childErr != nil {
+								continue
+							}
+							snap.canonical[child.Name()] = childPath
+						}
+						// The scan canonicalizes every child whether the
+						// asking spelling's match is the first child or
+						// the last, so the directory's whole alias index
+						// is filled by the one scan: the next alias
+						// spelling asked here reads it instead of opening
+						// the siblings again. A path two children share
+						// -- hard links -- is marked not unique, and the
+						// refusal below reads the marking exactly as the
+						// matches count used to.
+						if prior, seen := index[childPath]; seen {
+							prior.unique = false
+							index[childPath] = prior
+						} else {
+							index[childPath] = canonicalChild{name: child.Name(), unique: true}
+						}
 					}
+					// Canonical paths retain the stored directory-entry spelling. Hard
+					// links therefore match only the name Windows actually resolved,
+					// rather than merging every name for the same file identity.
+					if answer, seen := index[openedPath]; !seen || !answer.unique {
+						r.alias[aliasPath] = placeResult{}
+						return "", false
+					}
+					chosen = index[openedPath].name
+					r.alias[aliasPath] = placeResult{canonical: chosen, ok: true}
 				}
-				// Canonical paths retain the stored directory-entry spelling. Hard
-				// links therefore match only the name Windows actually resolved,
-				// rather than merging every name for the same file identity.
-				if matches != 1 {
-					r.alias[aliasPath] = placeResult{}
-					return "", false
-				}
-				r.alias[aliasPath] = placeResult{canonical: chosen, ok: true}
 			}
 		}
 		if chosen == "" {
@@ -396,4 +473,62 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 		current = filepath.Join(current, chosen)
 	}
 	return current, true
+}
+
+// placeIndex is one mutation-free stretch's instruments: one resolver and
+// the canonical-presence set of the names every question in the stretch is
+// asked against. forget builds one stretch for its whole loop when the run
+// has something to answer and nothing to clear, copyEntries one for the
+// missing sources it meets between two mirrors, and both answer every
+// question of the stretch out of the set and the resolver's memos rather
+// than out of a fresh walk per question -- that is what makes the unchanged
+// run linear where the shapes before it paid once per pair. The stretch
+// dies with its last real mutation -- forget's clearEntry, copyEntries'
+// mirror -- because a cached answer held across one of those would describe
+// directories the operation has since changed; the next question that
+// needs the volume builds a fresh stretch rather than asking a stale
+// instrument, and a stretch that never meets a mutation is never rebuilt.
+type placeIndex struct {
+	resolver *placeResolver
+	places   map[string]bool
+}
+
+// newPlaceIndex resolves every name's place once, through the one resolver
+// the whole stretch will share, and keeps the canonical answers the
+// stretch's questions are members of.
+func newPlaceIndex(root *os.Root, names []string) *placeIndex {
+	resolver := newPlaceResolver(root)
+	places := make(map[string]bool, len(names))
+	for _, name := range names {
+		if canonical, ok := resolver.place(name); ok {
+			places[canonical] = true
+		}
+	}
+	return &placeIndex{resolver: resolver, places: places}
+}
+
+// holds answers whether the recorded spelling names a place the index's
+// set holds, and it is the volume-witnessed half of forget's and
+// copyEntries' ownership questions. When nothing the stretch compares
+// against resolved to a place at all, membership is impossible and the
+// volume is not asked: this is what makes Clear -- forget with an empty
+// current list -- answer every recorded entry without opening a single
+// directory.
+func (ix *placeIndex) holds(recorded string) bool {
+	if len(ix.places) == 0 {
+		return false
+	}
+	place, ok := ix.resolver.place(recorded)
+	return ok && ix.places[place]
+}
+
+// entryPathsOf is the entries' own paths, the spelling the presence index
+// is built from: the record and the rules file are carried as entries, and
+// the index asks places about them one spelling at a time.
+func entryPathsOf(entries []config.Entry) []string {
+	paths := make([]string, len(entries))
+	for i, entry := range entries {
+		paths[i] = entry.Path
+	}
+	return paths
 }

@@ -273,10 +273,16 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 	// place copied by an earlier run? -- decides a deletion, so it is
 	// asked of the volume and not of a fold: both wrong directions of a
 	// fold delete here.
-	recorded := make([]string, 0, len(previously))
-	for _, entry := range previously {
-		recorded = append(recorded, entry.Path)
-	}
+	recorded := entryPathsOf(previously)
+	// One placeIndex per mutation-free stretch of the loop, built the
+	// first time a source goes missing and kept across every vouch the
+	// stretch answers after it: the record is constant while nothing is
+	// copied, so one indexing of it serves the whole run of missing
+	// sources however long. A mirror is the real mutation the stretch
+	// must not be carried across -- what it cached watched the profile
+	// before the copy changed it -- so the stretch is dropped after one
+	// and the next missing source builds its own.
+	var stretch *placeIndex
 	for _, entry := range entries {
 		dst, err := within(entry.Path)
 		if err != nil {
@@ -300,7 +306,10 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 			// witness that can tell the two apart; taking a vanished source
 			// back here instead would act on a disappearance that is often
 			// temporary -- a drive not yet mounted, a tool not yet installed.
-			if recordVouches(newPlaceResolver(root), recorded, entry.Path) {
+			if stretch == nil {
+				stretch = newPlaceIndex(root, recorded)
+			}
+			if stretch.holds(entry.Path) {
 				copied = append(copied, entry)
 			}
 			continue
@@ -320,6 +329,13 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 		if err := mirror(src, dst, "", root, info, &left, newWalk(entry), prints, newPrints); err != nil {
 			return copied, newPrints, fmt.Errorf("copying %s: %w", entry.Path, err)
 		}
+		// A real copy happened, and every cached answer the stretch held
+		// described the profile before the copy changed it: the stretch
+		// dies here and the next missing source builds a fresh one. A run
+		// that copies nothing -- the ordinary warm run, every file skipped
+		// by its print -- never drops its stretch, which is what keeps its
+		// vouches linear.
+		stretch = nil
 	}
 	return copied, newPrints, nil
 }
@@ -331,32 +347,25 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 // tell them apart. Both of its wrong directions delete -- joined too much,
 // the record claims a place this machine never copied and Clear takes the
 // sandbox's own file for it; split too fine, it reads a copy it did make
-// as a name nothing vouches for -- so the question goes to sameEntryPlace,
-// which asks the volume, and it does not fall back when a spelling opens
-// nothing: the entry's own place is then missing from the profile, there
-// is no copy for the record to vouch for, and dropping the claim costs
-// nothing that exists. A vouch is a claim about a copy, and a claim about
-// a copy has to be witnessed by the copy.
+// as a name nothing vouches for -- so the question goes to the volume, and
+// it does not fall back when a spelling opens nothing: the entry's own
+// place is then missing from the profile, there is no copy for the record
+// to vouch for, and dropping the claim costs nothing that exists. A vouch
+// is a claim about a copy, and a claim about a copy has to be witnessed by
+// the copy.
 //
-// One resolver spans this whole question: the entry's place is resolved
-// once, the record's places are collected into a canonical-presence set
-// once, and the answer is membership in that set rather than a fresh
-// resolver and a fresh walk per recorded entry -- the common case, a
-// source the record never heard of, costs one resolution instead of one
-// per pass over the record. copyEntries' mirror for a present source falls
-// between two recordVouches calls, so the resolver must not span the loop:
-// a snapshot that watched one entry's copy would describe a profile the
-// next question is asked after.
+// This is the one-question convenience, the shape sameEntryPlace keeps for
+// one comparison: a stretch of instruments built for this entry alone and
+// thrown away with the answer. copyEntries holds one placeIndex across
+// each mutation-free stretch of its entry loop instead of a fresh one per
+// vouch, and drops it after the mirror that would turn its cached answers
+// into lies.
 func recordVouches(resolver *placeResolver, recorded []string, entry string) bool {
-	entryCanonical, ok := resolver.place(entry)
-	if !ok {
-		return false
-	}
-	places := make(map[string]bool, len(recorded))
+	index := &placeIndex{resolver: resolver, places: make(map[string]bool, len(recorded))}
 	for _, path := range recorded {
 		if canonical, ok := resolver.place(path); ok {
-			places[canonical] = true
+			index.places[canonical] = true
 		}
 	}
-	return places[entryCanonical]
+	return index.holds(entry)
 }

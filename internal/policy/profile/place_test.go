@@ -97,8 +97,9 @@ func legacySameEntryPlace(root *os.Root, first, second string, count *dirCounts)
 	return ok && opened == other
 }
 
-// legacyStillNamed is stillNamed as this branch found it: a fresh resolver
-// per current entry compared, no canonical-presence index and nothing kept
+// legacyStillNamed is forget's ownership question in the pairwise shape the
+// resolver work found: a fresh resolver per current entry compared, no
+// canonical-presence index and nothing kept
 // between comparisons, so a pass over P recorded entries against C current
 // ones walks the tree once per surviving pair. It is here and not in
 // production so the whole-Copy counter can put both shapes to one tree and
@@ -130,6 +131,39 @@ func legacyRecordVouches(root *os.Root, recorded []string, entry string, count *
 		}
 	}
 	return false
+}
+
+// legacyPerQuestionStillNamed is forget's ownership question as this fix
+// found it: the resolver was killed after every question, so a pass over
+// the record built a fresh resolver per recorded entry and enumerated the
+// profile root once per question -- every question's own opens and reads
+// looked perfectly linear, and the square hid in the children each
+// enumeration processed, which no counter was reading. It builds through
+// defaultPlaceResolver rather than the newPlaceResolver variable, so a
+// counting test's wrapper cannot swallow its resolvers, and it reports the
+// children its enumerations processed beside the answer, so the stretch
+// shape's numbers have something honest to stand against.
+func legacyPerQuestionStillNamed(root *os.Root, current []config.Entry, recorded string, count *dirCounts) (bool, int) {
+	resolver := defaultPlaceResolver(root)
+	cleaned := cleanEntryPath(recorded)
+	places := make(map[string]bool, len(current))
+	named := false
+	for _, entry := range current {
+		if cleanEntryPath(entry.Path) == cleaned {
+			named = true
+			break
+		}
+		if canonical, ok := resolver.place(entry.Path); ok {
+			places[canonical] = true
+		}
+	}
+	if !named {
+		recordedPlace, ok := resolver.place(recorded)
+		named = ok && places[recordedPlace]
+	}
+	count.opens += resolver.opens
+	count.reads += resolver.reads
+	return named, resolver.children
 }
 
 // legacyDedupe is DedupeEntries as the pairwise loop this branch replaced,
@@ -222,10 +256,12 @@ func TestDedupeEntriesResolvesEachEntryOnce(t *testing.T) {
 }
 
 // TestSameEntryPlaceSharesOneLookBetweenItsTwoSpellings pins the resolver's
-// other half. stillNamed and recordVouches now hold one resolver across each
-// whole question-set -- stillNamed across one recorded entry against the
-// whole current list, recordVouches across the whole record for one entry --
-// and this test pins the one-comparison seam sameEntryPlace itself keeps,
+// other half. forget and copyEntries now hold one resolver across each
+// mutation-free stretch of their loops -- forget over its recorded entries,
+// copyEntries over its missing sources -- and drop it after the real
+// mutation, forget's clearEntry and copyEntries' mirror, that would turn
+// its cached answers into lies. This test pins the one-comparison seam
+// sameEntryPlace itself keeps,
 // where the two spellings must not each walk the tree from scratch: the
 // second is asked under its own cleaned key and reads nothing the first has
 // not already read. One comparison over one place, the second spelling in the capitals
@@ -276,9 +312,9 @@ func TestSameEntryPlaceSharesOneLookBetweenItsTwoSpellings(t *testing.T) {
 // production path as it was found, and a test that dies between an install
 // and its stop leaves the wrapper installed, and the wrapper answers as
 // the constructor it wrapped, so nothing downstream can tell. The stop
-// reports how many resolvers were built and the opens and reads they paid
-// for together.
-func countingResolvers() func() (resolvers, opens, reads int) {
+// reports how many resolvers were built and the opens and reads and
+// resolutions and children and scans they paid for together.
+func countingResolvers() func() (resolvers, opens, reads, resolutions, children, scans int) {
 	var held []*placeResolver
 	previous := newPlaceResolver
 	newPlaceResolver = func(root *os.Root) *placeResolver {
@@ -286,46 +322,57 @@ func countingResolvers() func() (resolvers, opens, reads int) {
 		held = append(held, resolver)
 		return resolver
 	}
-	return func() (resolvers, opens, reads int) {
+	return func() (resolvers, opens, reads, resolutions, children, scans int) {
 		newPlaceResolver = previous
 		resolvers = len(held)
 		for _, resolver := range held {
 			opens += resolver.opens
 			reads += resolver.reads
+			resolutions += resolver.resolutions
+			children += resolver.children
+			scans += resolver.scans
 		}
 		held = nil
-		return resolvers, opens, reads
+		return resolvers, opens, reads, resolutions, children, scans
 	}
 }
 
 // TestAWarmCopyPaysResolverWorkOncePerEntryNotOncePerPair is the counter the
 // review asked for (P2-4), and it brackets a whole Copy rather than one
-// operation inside it: forget's stillNamed pass and copyEntries'
-// recordVouches calls are the two places a warm run used to build a fresh
-// resolver per pairwise comparison, and their bill arrived together -- an
-// already-copied profile whose bytes had not changed paid for every
-// recorded entry against every current one, on every run.
+// operation inside it: forget's pass over the record and copyEntries'
+// vouches for missing sources are the two places a warm run used to build a
+// fresh resolver per question -- and before that, per pairwise comparison
+// -- and their bill arrived together: an already-copied profile whose bytes
+// had not changed paid for every recorded entry against every current one,
+// on every run.
 //
 // The profile is warmed once, uncounted. What is counted is what a warm run
 // does when there is nothing left to copy: the entries respelled between
-// runs in reversed order and in the capitals the volume joins, so every
-// stillNamed question misses the cleaned-spelling short-circuit and has to
-// ask the volume about every current entry before the recorded one's place
-// turns up in the set; the sources deleted outright, so every entry takes
-// the recordVouches path instead of the copy; and one entry finally dropped
-// from the list, so forget's pass has to answer a false and take the copy
-// it leaves behind. Between the counted fills, the same three questions are
-// put to legacyStillNamed and legacyRecordVouches -- the old
-// one-resolver-per-pair shape -- over the same tree, before that tree is
-// mutated, and their answers are held to the new shape's, entry for entry.
+// runs in reversed order and in the capitals the volume joins, so no
+// recorded entry is answered by the cleaned-spelling set alone and forget
+// has to build the stretch's instruments and ask the volume; the sources
+// deleted outright, so every entry takes the vouch path instead of the
+// copy; and one entry finally dropped from the list, so forget's pass has
+// to answer a false, take the copy it leaves behind, and kill the stretch
+// whose cached answers the clear has just made into lies. Between the
+// counted fills, the same three questions are put to legacyStillNamed and
+// legacyRecordVouches -- the old one-resolver-per-pair shape -- over the
+// same tree, before that tree is mutated, and their answers are held to the
+// new shape's, entry for entry.
 //
-// On a volume that joins e0 and E0, a question costs at most one enumeration
-// of the profile root: its first miss opens the root, and everything after
-// that -- the respelled spellings, the rest of the record, the rest of the
-// current list -- is answered out of that snapshot, its byName index and its
-// alias book, whose opens are resolution and not enumeration. The old shape
-// walked both spellings' directories fresh for every pair its short-circuits
-// left standing.
+// The stretch shape's bill is one enumeration of the profile root per
+// mutation-free stretch: the stretch's build indexes the names it compares
+// against out of one snapshot, and every question after that -- the
+// respelled spellings, the rest of the record, the rest of the current list
+// -- is answered out of that snapshot, its byName index, its alias book and
+// its byCanonical index, whose opens are resolution and not enumeration.
+// The opens and reads counters alone cannot tell that shape from the
+// per-question one -- each question's own bill looked linear under both --
+// so resolutions, children and scans are counted beside them: how many
+// spellings were really walked, how many directory children the
+// enumerations processed, and how often the alias branch paid its sibling
+// scan. The old shape walked both spellings' directories fresh for every
+// pair its short-circuits left standing.
 func TestAWarmCopyPaysResolverWorkOncePerEntryNotOncePerPair(t *testing.T) {
 	if !fileSystemJoins(t, "e0", "E0") {
 		t.Skip("this volume holds e0 and E0 apart, so a respelling names a different place and there is nothing to count")
@@ -380,22 +427,41 @@ func TestAWarmCopyPaysResolverWorkOncePerEntryNotOncePerPair(t *testing.T) {
 	}
 
 	// Phase 2, the warm respelled run: no byte has changed, so this is the
-	// run that used to pay per pair.
+	// run that used to pay per pair. One stretch of instruments for
+	// forget's whole pass -- nothing is cleared, so nothing kills it --
+	// and copyEntries reaches for no stretch at all, because every source
+	// is still on the volume and the prints skip every file.
 	stop := countingResolvers()
 	defer stop()
 	copied := fill(t, dest)
-	resolvers, opens, reads := stop()
+	resolvers, opens, reads, resolutions, children, scans := stop()
 	totalResolvers, totalOpens, totalReads := resolvers, opens, reads
-	if resolvers != 6 {
-		t.Errorf("the warm respelled run built %d resolvers, want six: forget answered six recorded entries "+
-			"with six resolvers, and copyEntries found every source on the volume and never reached the record",
+	totalResolutions, totalChildren, totalScans := resolutions, children, scans
+	if resolvers != 1 {
+		t.Errorf("the warm respelled run built %d resolvers, want one: forget holds one stretch of instruments "+
+			"across its whole pass, and copyEntries found every source on the volume and never built one",
 			resolvers)
 	}
-	if opens != 6 || reads != 6 {
-		t.Errorf("the warm respelled run opened %d directories and read %d of them, want six of each: forget "+
-			"answered six recorded entries with six enumerated directories -- one snapshot of the profile root "+
-			"per question, not one per pair -- and the respelled spellings were answered out of that snapshot's "+
-			"alias book, whose opens are resolution and not enumeration", opens, reads)
+	if opens != 1 || reads != 1 {
+		t.Errorf("the warm respelled run opened %d directories and read %d of them, want one of each: the "+
+			"stretch enumerated the profile root once at its build, and every question after that -- the "+
+			"respelled spellings, the whole record -- is answered out of that snapshot's byName index and alias "+
+			"book, whose opens are resolution and not enumeration", opens, reads)
+	}
+	if resolutions != 12 {
+		t.Errorf("the warm respelled run resolved %d spellings, want twelve: the stretch's build indexed the six "+
+			"respelled current places once each, and the six recorded spellings were each resolved once against "+
+			"the volume -- every question after a spelling's first is answered from a memo", resolutions)
+	}
+	if children != 6 {
+		t.Errorf("the warm respelled run's one enumeration processed %d children, want six -- the profile "+
+			"root's own entries, counted once for the whole pass where the per-question shape counted them "+
+			"six times over", children)
+	}
+	if scans != 1 {
+		t.Errorf("the warm respelled run scanned the profile root's siblings %d times, want one: the first "+
+			"respelled spelling's scan filled the snapshot's byCanonical index, and the five after it read the "+
+			"index instead of scanning again", scans)
 	}
 	if !reflect.DeepEqual(pathsOf(copied), caps) {
 		t.Errorf("the record came back as %v, want %v: the record follows the new spellings, not the stored ones", pathsOf(copied), caps)
@@ -435,27 +501,38 @@ func TestAWarmCopyPaysResolverWorkOncePerEntryNotOncePerPair(t *testing.T) {
 			"spellings' directories fresh", legacyMissing.opens, legacyMissing.reads)
 	}
 
-	// Phase 3, every source gone: forget's answers come from the record and
-	// the rules spelling alike, and copyEntries' from the record alone -- but
-	// an answer by spelling only short-circuits the question it meets, and
-	// every current entry met ahead of the match still has its place indexed
-	// on the way.
+	// Phase 3, every source gone: forget's questions are all answered by
+	// the cleaned-spelling set -- the record follows the rules spellings
+	// after the last run -- so it builds nothing at all, and copyEntries
+	// builds one stretch for all six vouches, no mirror falling between
+	// them because there is nothing left to copy.
 	stop = countingResolvers()
 	copied = fill(t, dest)
-	resolvers, opens, reads = stop()
+	resolvers, opens, reads, resolutions, children, scans = stop()
 	totalResolvers, totalOpens, totalReads = totalResolvers+resolvers, totalOpens+opens, totalReads+reads
-	if resolvers != 12 {
-		t.Errorf("the run with every source gone built %d resolvers, want twelve: six stillNamed resolvers "+
-			"that asked the volume nothing -- the record and the rules spell the entries alike -- and six "+
-			"recordVouches resolvers, one per source that os.Stat could not find", resolvers)
+	totalResolutions, totalChildren, totalScans = totalResolutions+resolutions, totalChildren+children, totalScans+scans
+	if resolvers != 1 {
+		t.Errorf("the run with every source gone built %d resolvers, want one: forget answered every recorded "+
+			"entry out of the cleaned-spelling set without building anything, and copyEntries built one stretch "+
+			"of instruments for all six vouches", resolvers)
 	}
-	if opens != 11 || reads != 11 {
-		t.Errorf("the run with every source gone opened %d directories and read %d of them, want eleven of each: "+
-			"the twelve questions were answered with twelve resolvers and eleven snapshots of the profile root -- "+
-			"one per question that reached the volume, shared by every place that question asked about. Five of the "+
-			"six forget questions met a respelled current entry ahead of their spelling match and indexed its place "+
-			"on the way, and each of the six recordVouches questions resolved the entry's own place first; only the "+
-			"recorded entry whose match sat at the head of the list asked for none", opens, reads)
+	if opens != 1 || reads != 1 {
+		t.Errorf("the run with every source gone opened %d directories and read %d of them, want one of each: "+
+			"the vouch stretch enumerated the profile root once at its build, and every vouch after that is "+
+			"membership in the set the build collected", opens, reads)
+	}
+	if resolutions != 6 {
+		t.Errorf("the run with every source gone resolved %d spellings, want six: the record's six places, "+
+			"indexed once at the stretch's build; the six vouches themselves are cache hits, the vouched "+
+			"spelling being one the build indexed", resolutions)
+	}
+	if children != 6 {
+		t.Errorf("the run with every source gone's one enumeration processed %d children, want six -- the "+
+			"profile root's own entries, once for all six vouches instead of once per question", children)
+	}
+	if scans != 1 {
+		t.Errorf("the run with every source gone scanned the profile root's siblings %d times, want one: the "+
+			"first respelled record spelling's scan filled the snapshot's index, and the five after it read it", scans)
 	}
 	if !reflect.DeepEqual(pathsOf(copied), caps) {
 		t.Errorf("the record came back as %v, want %v: every entry stays on the record the copy's witness vouches for", pathsOf(copied), caps)
@@ -484,19 +561,33 @@ func TestAWarmCopyPaysResolverWorkOncePerEntryNotOncePerPair(t *testing.T) {
 	}
 	stop = countingResolvers()
 	copied = fill(t, dest)
-	resolvers, opens, reads = stop()
+	resolvers, opens, reads, resolutions, children, scans = stop()
 	totalResolvers, totalOpens, totalReads = totalResolvers+resolvers, totalOpens+opens, totalReads+reads
-	if resolvers != 11 {
-		t.Errorf("the run that dropped an entry built %d resolvers, want eleven: five stillNamed resolvers the "+
-			"record and the rules spelled alike, a sixth for the recorded entry the shortened list stopped "+
-			"naming, and five recordVouches resolvers for the sources still gone", resolvers)
+	totalResolutions, totalChildren, totalScans = totalResolutions+resolutions, totalChildren+children, totalScans+scans
+	if resolvers != 2 {
+		t.Errorf("the run that dropped an entry built %d resolvers, want two: forget's stretch, killed by the "+
+			"real clear of the entry the list dropped, and the fresh one copyEntries built for the vouches the "+
+			"sources still gone ask for", resolvers)
 	}
-	if opens != 10 || reads != 10 {
-		t.Errorf("the run that dropped an entry opened %d directories and read %d of them, want ten of each: "+
-			"eleven questions answered with ten snapshots of the profile root, one per question that reached the "+
-			"volume -- four forget questions whose respelled current entries sat ahead of their spelling matches, "+
-			"the recorded entry the list stopped naming, and the five sources os.Stat could not find. Only the "+
-			"first recorded entry's question, answered at the head of the list, asked for none", opens, reads)
+	if opens != 2 || reads != 2 {
+		t.Errorf("the run that dropped an entry opened %d directories and read %d of them, want two of each: "+
+			"one enumeration of the profile root before the clear, for forget's stretch, and one after it, for "+
+			"the vouch stretch -- the second stretch cannot read the first's snapshot, because the clear took "+
+			"the entry it described out of the directory", opens, reads)
+	}
+	if resolutions != 12 {
+		t.Errorf("the run that dropped an entry resolved %d spellings, want twelve: forget's stretch indexed "+
+			"the five shortened current places and asked the volume once about the recorded entry they stopped "+
+			"naming, and the vouch stretch indexed the six-entry record", resolutions)
+	}
+	if children != 11 {
+		t.Errorf("the run that dropped an entry's two enumerations processed %d children, want eleven -- six "+
+			"before the clear, five after it, the profile root's own count shrinking with the entry the clear "+
+			"took", children)
+	}
+	if scans != 2 {
+		t.Errorf("the run that dropped an entry scanned the profile root's siblings %d times, want two -- one "+
+			"per stretch, each enumeration needing the scan that fills its index", scans)
 	}
 	if !reflect.DeepEqual(pathsOf(copied), shortened) {
 		t.Errorf("the record came back as %v, want %v: the entry the list dropped goes, the entries it kept stay", pathsOf(copied), shortened)
@@ -511,20 +602,35 @@ func TestAWarmCopyPaysResolverWorkOncePerEntryNotOncePerPair(t *testing.T) {
 	}
 
 	// The review's point, as totals: the resolver's whole share of three
-	// warm runs is one enumeration of the profile root per question that
-	// reached it, while the pairwise shape re-walked both spellings of
-	// every pair its short-circuits left standing -- more than twice as
-	// hard at six entries, and the gap grows with the square.
-	if totalResolvers != 29 {
-		t.Errorf("the three counted runs built %d resolvers, want 29 -- six and twelve and eleven: one per "+
-			"stillNamed question and one per recordVouches question, whatever the lists they ask about hold",
-			totalResolvers)
+	// warm runs is four resolvers -- one per mutation-free stretch, and
+	// only the run that really clears something pays for a second -- and
+	// four enumerations of the profile root, one per stretch, while the
+	// pairwise shape re-walked both spellings of every pair its
+	// short-circuits left standing -- more than twice as hard at six
+	// entries, and the gap grows with the square.
+	if totalResolvers != 4 {
+		t.Errorf("the three counted runs built %d resolvers, want four: one per mutation-free stretch -- "+
+			"forget's whole pass in the warm run, the vouches' in the run with no sources, and a pair in the "+
+			"run whose real clear killed forget's stretch midway", totalResolvers)
 	}
-	if totalOpens != 27 || totalReads != 27 {
-		t.Errorf("the three counted runs opened %d directories and read %d of them, want 27 of each: "+
-			"twenty-nine questions, twenty-seven of which reached the volume, each for exactly one snapshot of the "+
-			"profile root shared by every place that question asked about -- the two whose spelling match sat at "+
-			"the head of the list asked for none", totalOpens, totalReads)
+	if totalOpens != 4 || totalReads != 4 {
+		t.Errorf("the three counted runs opened %d directories and read %d of them, want four of each: one "+
+			"enumeration of the profile root per stretch, whatever the number of questions the stretch answered",
+			totalOpens, totalReads)
+	}
+	if totalResolutions != 30 {
+		t.Errorf("the three counted runs resolved %d spellings, want 30 -- twelve and six and twelve: each "+
+			"stretch indexes the names it compares against once and answers each recorded spelling once, "+
+			"every question after a spelling's first a cache hit", totalResolutions)
+	}
+	if totalChildren != 23 {
+		t.Errorf("the three counted runs' enumerations processed %d children, want 23 -- six and six and "+
+			"eleven: the profile root's entries once per stretch, not once per question", totalChildren)
+	}
+	if totalScans != 4 {
+		t.Errorf("the three counted runs scanned the profile root's siblings %d times, want four -- one per "+
+			"stretch: the byCanonical index one scan fills serves every alias question the stretch asks after it",
+			totalScans)
 	}
 	legacyOpens := legacy.opens + legacyMissing.opens + legacyDropped.opens
 	legacyReads := legacy.reads + legacyMissing.reads + legacyDropped.reads
@@ -540,15 +646,133 @@ func TestAWarmCopyPaysResolverWorkOncePerEntryNotOncePerPair(t *testing.T) {
 	}
 }
 
+// TestAWarmForgetCountsChildrenOncePerStretchNotOncePerQuestion is the
+// complexity demonstration the review of 2026-09-24 (P2-1) asked for, and
+// it counts the thing the opens and reads counters cannot see: the children
+// each directory enumeration processes. The warm run where nothing changed
+// used to build a fresh resolver per recorded entry, so a pass over the
+// record enumerated the profile root once per question and processed the
+// root's children once per question -- E times E children over E entries --
+// while every question's own opens and reads looked perfectly linear, which
+// is why the six-entry test beside this one could not tell the shapes
+// apart. The stretch shape enumerates the root once for the whole pass, and
+// its one sibling scan serves every respelled spelling in the directory
+// through the snapshot's byCanonical index.
+func TestAWarmForgetCountsChildrenOncePerStretchNotOncePerQuestion(t *testing.T) {
+	if !fileSystemJoins(t, "e0", "E0") {
+		t.Skip("this volume holds e0 and E0 apart, so a respelling names a different place and there is nothing to count")
+	}
+	const k = 8
+	names := make([]string, 0, k)
+	for i := 0; i < k; i++ {
+		names = append(names, fmt.Sprintf("e%d", i))
+	}
+	// Reversed and capitalized, so no recorded entry is answered by the
+	// cleaned-spelling set alone and forget's stretch has to be built and
+	// the volume asked about every spelling.
+	caps := make([]string, 0, k)
+	for i := k - 1; i >= 0; i-- {
+		caps = append(caps, fmt.Sprintf("E%d", i))
+	}
+	capsEntries := config.Entries(caps)
+
+	home, dest := useProfile(t, names)
+	for _, name := range names {
+		write(t, filepath.Join(home, name, "keep.txt"), "copied")
+	}
+	// The warming run, uncounted: everything lands and the record comes
+	// back [e0..e7], the spellings the questions below are asked about.
+	fill(t, dest)
+
+	// The rules file respelled, and the per-question shape's answers and
+	// bill for the same eight questions, over the same tree the production
+	// run below is measured on. Nothing here mutates -- every recorded
+	// entry is still named, so nothing is cleared -- but the questions are
+	// put before the run all the same, so both shapes are held to one
+	// tree rather than to a tree and its aftermath.
+	if err := (&config.Config{Profile: config.Entries(caps)}).Save(); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy dirCounts
+	legacyChildren := 0
+	for _, name := range names {
+		named, children := legacyPerQuestionStillNamed(root, capsEntries, name, &legacy)
+		if !named {
+			t.Errorf("the per-question shape said the respelled list no longer names %s, and the run it describes would have cleared a copy the list still names", name)
+		}
+		legacyChildren += children
+	}
+	_ = root.Close()
+	if legacyChildren != k*k {
+		t.Errorf("the per-question shape processed %d children of the profile root across %d questions, want %d -- "+
+			"one enumeration of the root's %d children per question, the square the opens and reads counters could not see",
+			legacyChildren, k, k*k, k)
+	}
+	if legacy.opens != k || legacy.reads != k {
+		t.Errorf("the per-question shape clocked %d opens and %d reads over %d questions, want %d of each: one "+
+			"enumeration of the profile root per question, each bill looking perfectly linear on its own",
+			legacy.opens, legacy.reads, k, k)
+	}
+
+	// The production run over the same tree, the same eight questions: one
+	// stretch of instruments for forget's whole pass, one enumeration of
+	// the root shared by every question in it.
+	stop := countingResolvers()
+	copied := fill(t, dest)
+	resolvers, opens, reads, resolutions, children, scans := stop()
+	if resolvers != 1 {
+		t.Errorf("the warm respelled run built %d resolvers, want one: one stretch of instruments for forget's "+
+			"whole pass, and copyEntries found every source on the volume and never built one", resolvers)
+	}
+	if children != k {
+		t.Errorf("the stretch shape processed %d children across the same %d questions, want %d -- one "+
+			"enumeration of the profile root for the whole pass, not one per question", children, k, k)
+	}
+	if resolutions != 2*k {
+		t.Errorf("the stretch resolved %d spellings, want %d -- the %d respelled current places indexed once at "+
+			"the build and the %d recorded spellings answered once each, every question after a spelling's first "+
+			"a cache hit", resolutions, 2*k, k, k)
+	}
+	if scans != 1 {
+		t.Errorf("the alias branch scanned the root's siblings %d times, want one: the first respelled spelling's "+
+			"scan filled the snapshot's byCanonical index, and the seven after it read the index instead of "+
+			"scanning again", scans)
+	}
+	if opens != 1 || reads != 1 {
+		t.Errorf("the stretch shape opened %d directories and read %d of them, want one of each: the profile "+
+			"root, once for the whole pass", opens, reads)
+	}
+	if legacyChildren <= children {
+		t.Errorf("the per-question shape processed %d children against the stretch's %d over the same %d "+
+			"questions, and the review's point -- the gap grows with the square -- does not show at K=%d",
+			legacyChildren, children, k, k)
+	}
+	// The certificate that the cheaper shape answers the same: the run
+	// cleared nothing, so every copy the per-question shape said was still
+	// named survives it, and the record follows the new spellings.
+	if !reflect.DeepEqual(pathsOf(copied), caps) {
+		t.Errorf("the record came back as %v, want %v: the record follows the new spellings, not the stored ones", pathsOf(copied), caps)
+	}
+	for _, name := range names {
+		if _, err := os.Stat(filepath.Join(dest, name, "keep.txt")); err != nil {
+			t.Errorf("the destination's copy of %s did not survive the run that respelled it in the list: %v", name, err)
+		}
+	}
+}
+
 // TestAliasAnswersAreKeptForTheQuestionsThatFollow reads the resolver's own
 // books, because the opens/reads counters cannot see the machinery this
 // pins: an alias open is resolution, not enumeration, and is uncounted by
 // design. The exact-spelling index and the alias memo are what keep a
 // resolver's second question about one spelling from opening anything at
 // all -- the first alias query in a directory fills the snapshot's
-// sibling-canonical cache, and the second query about the same spelling,
-// reached through a different cleaned path, reads the memo instead of
-// opening the spelling and its siblings again.
+// sibling-canonical cache and its byCanonical index, and the questions after
+// it, the same spelling again or a different spelling of a sibling, read
+// those instead of opening the spelling and its siblings again.
 func TestAliasAnswersAreKeptForTheQuestionsThatFollow(t *testing.T) {
 	if !fileSystemJoins(t, "e5", "E5") {
 		t.Skip("this volume holds e5 and E5 apart, so there is no alias answer to keep")
@@ -556,6 +780,7 @@ func TestAliasAnswersAreKeptForTheQuestionsThatFollow(t *testing.T) {
 	dest := t.TempDir()
 	write(t, filepath.Join(dest, "e5", "x"), "x")
 	write(t, filepath.Join(dest, "e5", "y"), "y")
+	write(t, filepath.Join(dest, "e6", "z"), "z")
 
 	root, err := os.OpenRoot(dest)
 	if err != nil {
@@ -583,15 +808,15 @@ func TestAliasAnswersAreKeptForTheQuestionsThatFollow(t *testing.T) {
 	if !ok || !memo.ok || memo.canonical != "e5" {
 		t.Errorf("the alias book holds %v for E5 (present: %v), want the stored spelling e5 computed once and kept", memo, ok)
 	}
-	// The sibling scan ran once: the one child of "." has its canonical
-	// spelling kept in the snapshot, where the second query's scan read
-	// it.
+	// The sibling scan ran once: the two children of "." have their
+	// canonical spellings kept in the snapshot, where the questions after
+	// the scan read them.
 	snap, ok := resolver.dirs["."]
 	if !ok {
 		t.Fatal("the root was never snapshotted, so nothing here was measured")
 	}
-	if len(snap.canonical) != 1 {
-		t.Errorf("the sibling scan left %d canonical spellings in the root's snapshot (%v), want one -- e5, the only child",
+	if len(snap.canonical) != 2 {
+		t.Errorf("the sibling scan left %d canonical spellings in the root's snapshot (%v), want two -- e5 and e6, the only children",
 			len(snap.canonical), snap.canonical)
 	}
 	if kept, ok := snap.canonical["e5"]; !ok || kept == "" {
@@ -599,6 +824,40 @@ func TestAliasAnswersAreKeptForTheQuestionsThatFollow(t *testing.T) {
 	}
 	if _, ok := resolver.dirs["e5"]; !ok {
 		t.Error("e5 was never snapshotted, though both comparisons resolved a file inside it")
+	}
+
+	// A third comparison through a genuinely different alias spelling, one
+	// no earlier question asked about and the alias memo has never heard
+	// of: E6. The one sibling scan this resolver ever ran canonicalized
+	// both children of the root on its way past, so the snapshot's
+	// byCanonical index already holds e6's answer, and the question is
+	// served without a second scan -- only the directory the place itself
+	// sits in is newly enumerated, because the question genuinely needs
+	// its listing.
+	if !resolver.samePlace("E6/z", "e6/z") {
+		t.Fatal("the third spelling question was answered differently than the first")
+	}
+	if resolver.scans != 1 {
+		t.Errorf("three questions in one directory scanned its siblings %d times, want one: the first scan "+
+			"filled the snapshot's byCanonical index, and the questions after it read the index instead of scanning",
+			resolver.scans)
+	}
+	if resolver.opens != 3 || resolver.reads != 3 {
+		t.Errorf("three comparisons opened %d directories and read %d of them, want three of each: the root "+
+			"and e5 once between the first two questions, e6 once for the third's descent -- and no second "+
+			"enumeration of the root anywhere, the third question's alias being answered out of the index",
+			resolver.opens, resolver.reads)
+	}
+	e5Canonical, ok := snap.canonical["e5"]
+	if !ok || e5Canonical == "" {
+		t.Fatalf("the root's snapshot holds %v, and e5's canonical spelling is missing from it", snap.canonical)
+	}
+	if got, ok := snap.byCanonical[e5Canonical]; !ok || got.name != "e5" || !got.unique {
+		t.Errorf("the root's index holds %v for %s, want the stored name e5 marked unique", got, e5Canonical)
+	}
+	e6Canonical := snap.canonical["e6"]
+	if got, ok := snap.byCanonical[e6Canonical]; !ok || got.name != "e6" || !got.unique {
+		t.Errorf("the root's index holds %v for %s, want the stored name e6 marked unique", got, e6Canonical)
 	}
 }
 
