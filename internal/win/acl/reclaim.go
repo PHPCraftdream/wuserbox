@@ -17,10 +17,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/group"
-	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
@@ -61,6 +61,10 @@ func TakeBack(root string, subject Identity, pinned []string) error {
 			return err
 		}
 	}
+	// One memo for the whole walk: a tree's entries name the same few
+	// trustees from object to object, and the question each one answers is
+	// answered once here instead of once on every object that repeats it.
+	answers := newTrusteeAnswers()
 	return filepath.WalkDir(root, func(name string, entry fs.DirEntry, err error) error {
 		switch {
 		case err != nil:
@@ -81,7 +85,7 @@ func TakeBack(root string, subject Identity, pinned []string) error {
 			}
 			return nil
 		}
-		return takeBack(name, sandbox)
+		return takeBack(name, sandbox, answers)
 	})
 }
 
@@ -90,7 +94,7 @@ func TakeBack(root string, subject Identity, pinned []string) error {
 // onto it, once, in the same update -- measured on the narrowing side, once
 // the cap has landed the owner can no longer edit the list at all, so a cap
 // that arrives late arrives never (owner.go).
-func takeBack(path string, sandbox *identities) error {
+func takeBack(path string, sandbox *identities, answers *trusteeAnswers) error {
 	var dacl *aclHeader
 	var descriptor uintptr
 	if r, _, _ := procGetNamedSecurityInfo.Call(uintptr(unsafe.Pointer(w32.UTF16(path))),
@@ -142,7 +146,7 @@ func takeBack(path string, sandbox *identities) error {
 		// narrow every unexpected changing grant before a new restricted
 		// process can open the object. Keeping the old incremental update here
 		// left an explicit Everyone:Full Control beside the inherited grant.
-		carried, _ := carryRevokeEntries(held, sandbox.values, sandbox.holder, sandbox.system, sandbox.administrators)
+		carried, _ := carryRevokeEntries(held, sandbox.values, answers, sandbox.holder, sandbox.system, sandbox.administrators)
 		return writeWhole(path, carried, nil, nil, sandbox.ownerRights, sandbox.mark)
 	}
 
@@ -163,7 +167,7 @@ func takeBack(path string, sandbox *identities) error {
 		// deliberately relies on; a sandbox can write an Everyone:Full
 		// Control entry before revoke, and that entry must not survive the
 		// cap merely because it is explicit.
-		carried, _ := carryRevokeEntries(held, sandbox.values, sandbox.holder, sandbox.system, sandbox.administrators)
+		carried, _ := carryRevokeEntries(held, sandbox.values, answers, sandbox.holder, sandbox.system, sandbox.administrators)
 		return writeWhole(path, append(clear, carried...), nil, nil, sandbox.ownerRights, sandbox.mark)
 	}
 	if capPresent(held, sandbox.ownerRights) {
@@ -171,7 +175,7 @@ func takeBack(path string, sandbox *identities) error {
 		// revoke could have accepted an owner-rights entry while an
 		// unexpected explicit broad grant stood beside it. Normalize that
 		// list before treating the fast path as finished.
-		carried, changed := carryRevokeEntries(held, sandbox.values, sandbox.holder, sandbox.system, sandbox.administrators)
+		carried, changed := carryRevokeEntries(held, sandbox.values, answers, sandbox.holder, sandbox.system, sandbox.administrators)
 		if !changed {
 			return nil
 		}
@@ -198,12 +202,12 @@ func takeBack(path string, sandbox *identities) error {
 // changing grant is narrowed to its non-changing rights; otherwise a sandbox
 // could pre-write Everyone:Full Control and keep changing the object after
 // its own account entry and owner rights had been removed.
-func revokeCarry(access explicitAccess, operator, system, administrators uintptr) (explicitAccess, bool) {
+func revokeCarry(access explicitAccess, answers *trusteeAnswers, operator, system, administrators uintptr) (explicitAccess, bool) {
 	if access.mode != grantAccess || access.permissions&changing == 0 {
 		return access, true
 	}
 	if sameSID(access.trustee.name, operator) || sameSID(access.trustee.name, system) ||
-		sameSID(access.trustee.name, administrators) || sandboxGroup(access.trustee.name) {
+		sameSID(access.trustee.name, administrators) || answers.sandboxGroup(access.trustee.name) {
 		return access, true
 	}
 	access.permissions &^= changing
@@ -217,14 +221,14 @@ func revokeCarry(access explicitAccess, operator, system, administrators uintptr
 // silently remove recovery and system rights. changed reports whether any
 // entry was removed or narrowed, which is what invalidates the already-capped
 // fast path.
-func carryRevokeEntries(held []heldEntry, sandbox []uintptr, operator, system, administrators uintptr) ([]explicitAccess, bool) {
+func carryRevokeEntries(held []heldEntry, sandbox []uintptr, answers *trusteeAnswers, operator, system, administrators uintptr) ([]explicitAccess, bool) {
 	var carried []explicitAccess
 	changed := false
 	for _, one := range held {
 		if matchesSandboxIdentity(one.access.trustee.name, sandbox) {
 			continue
 		}
-		access, keep := revokeCarry(one.access, operator, system, administrators)
+		access, keep := revokeCarry(one.access, answers, operator, system, administrators)
 		if access.permissions != one.access.permissions || !keep {
 			changed = true
 		}
@@ -235,10 +239,128 @@ func carryRevokeEntries(held []heldEntry, sandbox []uintptr, operator, system, a
 	return carried, changed
 }
 
-// sandboxGroup recognizes only groups created by wuserbox. Resolving a SID
-// can fail for a stale or synthetic ACL entry; failing closed narrows that
-// entry rather than treating an unknown principal as trusted.
-func sandboxGroup(value uintptr) bool {
-	name, err := sid.Name(value)
-	return err == nil && group.IsSandbox(name)
+// A counter, for the close test of a revoke over a tree and anyone
+// diagnosing one: how many account-name lookups the revoke's classification
+// paid for. Each one used to be asked once per eligible entry on every
+// object, which is O(N·A) lookups about U distinct trustees, and each ask
+// is a sizing call, two buffers and a second call into the account
+// database. What the memo below asks once, this counts once; a hit is
+// answered out of the memo and costs nothing, so it is counted as nothing.
+var sandboxNameLookups atomic.Int64
+
+// maxSIDSubAuthorities is the most subauthorities an identifier carries.
+// A shape claiming more than that is either malformed or was never an
+// identifier, and either way there are no bytes to key on.
+const maxSIDSubAuthorities = 15
+
+// sidHeaderBytes is the front every identifier carries before its
+// subauthorities: the revision, the subauthority count, and the six bytes
+// of authority.
+const sidHeaderBytes = 8
+
+// sidKey carries the bytes that make up one identifier, copied out of the
+// descriptor they were read from, as a map key.
+//
+// It is keyed by CONTENT, never by the pointer the entry stood on: the
+// descriptor is freed the moment its object is written, and the heap hands
+// the same address to the next one, so an address key would answer one
+// identifier's question with another's answer -- the last object's trustee
+// standing in for this one's, and the answer being one of trust, that is a
+// door left open rather than a question asked. A SID is at most
+// sidHeaderBytes + 4*maxSIDSubAuthorities bytes.
+type sidKey struct {
+	length int
+	value  [sidHeaderBytes + 4*maxSIDSubAuthorities]byte
+}
+
+// trusteeKey copies the identifier at value into a key, refusing a pointer
+// there is nothing to read from: a nil one, or a shape claiming more
+// subauthorities than an identifier can hold. The caller then asks and
+// answers without the memo rather than trust bytes it could not read.
+//
+// The copy goes through CopySid rather than through the memory at the
+// pointer: the pointer is a raw address rather than a Go pointer, and
+// reaching the memory behind one of those directly is the thing the unsafe
+// rules refuse to name -- vet calls every such conversion a possible
+// misuse, so none is written here. CopySid reads the same bytes into a
+// buffer of this function's own in one call, and refuses a shape too large
+// for the buffer, which is the same refusal this makes.
+var procCopySid = w32.Advapi32.NewProc("CopySid")
+
+func trusteeKey(value uintptr) (sidKey, bool) {
+	if value == 0 {
+		return sidKey{}, false
+	}
+	var copied [sidHeaderBytes + 4*maxSIDSubAuthorities]byte
+	if r, _, _ := procCopySid.Call(sidHeaderBytes+4*maxSIDSubAuthorities,
+		uintptr(unsafe.Pointer(&copied[0])), value); r == 0 {
+		return sidKey{}, false
+	}
+	count := int(copied[1])
+	if count > maxSIDSubAuthorities {
+		return sidKey{}, false
+	}
+	var key sidKey
+	key.length = sidHeaderBytes + 4*count
+	copy(key.value[:], copied[:key.length])
+	return key, true
+}
+
+// trusteeAnswers remembers, for the length of one revoke, how each trustee's
+// identifier classified -- the question asked once per distinct identifier
+// instead of once per entry on every object. N objects carrying A eligible
+// entries each used to ask O(N·A) questions about at most U different
+// trustees; this is what makes that U.
+//
+// The memo is the operation's, the way identities is: TakeBack creates it,
+// and it is unreachable by the time TakeBack returns. An answer that
+// outlived its operation would answer the next operation's question, and
+// the next operation's descriptor hands the same addresses to different
+// trustees -- which is exactly what keying on content rather than on the
+// pointer refuses. One operation is one goroutine (filepath.WalkDir), so
+// nothing here is locked.
+type trusteeAnswers struct {
+	// ask is how a classification is settled, and is always accountNameOf
+	// in production: the seam every other account-name lookup in this
+	// package goes through, so a lookup that refuses can be stood in for
+	// in a test the way it already can everywhere else.
+	ask     func(uintptr) (string, error)
+	decided map[sidKey]bool
+}
+
+func newTrusteeAnswers() *trusteeAnswers {
+	return &trusteeAnswers{ask: accountNameOf, decided: make(map[sidKey]bool)}
+}
+
+// sandboxGroup answers the same question the unmemoized call did: does this
+// identifier name one of the groups wuserbox creates? Resolving an
+// identifier can fail for a stale or synthetic entry; failing closed
+// narrows that entry rather than treating an unknown principal as trusted.
+// What changed is only how often the question is asked -- once per distinct
+// identifier for the whole revoke, not once per entry on every object.
+//
+// A refused lookup is remembered as what it cost -- the narrowing (false)
+// -- and never as trust: a refusal says nothing good about the identifier,
+// so the answer it narrows with is the answer the next object gets, and a
+// hit can narrow, never broaden, because nothing enters the map that a real
+// lookup did not say. An identifier whose bytes cannot be read as an
+// identifier's shape is asked and answered every time, uncached: it is
+// asked rarely enough for that to cost nothing, and its absence from the
+// map is the honest record of a question this could not read.
+func (t *trusteeAnswers) sandboxGroup(value uintptr) bool {
+	key, keyed := trusteeKey(value)
+	if keyed {
+		if decided, hit := t.decided[key]; hit {
+			return decided
+		}
+	}
+	sandboxNameLookups.Add(1)
+	trusted := false
+	if name, err := t.ask(value); err == nil && group.IsSandbox(name) {
+		trusted = true
+	}
+	if keyed {
+		t.decided[key] = trusted
+	}
+	return trusted
 }
