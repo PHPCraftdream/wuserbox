@@ -306,10 +306,50 @@ func measureTheRelayShut(dir string) error {
 	}
 	ownPid := uint32(syscall.Getpid())
 
-	// CONTROL, and first: this process can open something at all.
-	if !canOpenRaw(ownPid, processAllAccess) {
-		return errors.New("this process could not open its own process object for everything, " +
-			"so the refusals measured below would mean nothing")
+	// CONTROL, and first the walk itself: a CREATE_NO_WINDOW process has a
+	// birth console's host of its own, spawned by the launch machinery, and
+	// once the walk has settled it must answer exactly one. The birth host
+	// is the one console host this process can name, and the object the
+	// launch does not touch, so the positive control below needs it pinned
+	// before anything is measured against it.
+	hosts, err := proc.ConsoleHostChildren(ownPid)
+	if err != nil {
+		return err
+	}
+	if len(hosts) == 0 {
+		return errors.New("a CREATE_NO_WINDOW process has a birth console's host; " +
+			"the walk answering none is a walk that has not caught up")
+	}
+	if len(hosts) != 1 {
+		return fmt.Errorf("this process has %d console hosts (%v) where its own birth console can have one; "+
+			"nothing measured against a walk this crowded would mean anything", len(hosts), hosts)
+	}
+
+	// CONTROL: can this seat open something at all. The birth host carries
+	// the account's ordinary default list, which grants the account itself
+	// everything, so its door must open -- and it is the one object the
+	// launch has not shut, which is why the question moved here from this
+	// process's own object.
+	if !canOpenRaw(hosts[0], processAllAccess) {
+		return fmt.Errorf("the birth console's host (%d) refuses this account everything, so the seat's opens "+
+			"would not be answered and the refusals measured below would mean nothing", hosts[0])
+	}
+
+	// CONTROL, and the direction inverted on purpose: the launch that started
+	// this fixture narrows every stub process to the account before its first
+	// instruction (internal/win/proc's narrowBeforeResume applies the same
+	// deny-first list Shield applies from inside, and its deny names the
+	// account itself, which the account is never an administrator to have an
+	// allow answer), so this open must be refused -- the shut the launch
+	// applies is part of the seat, and from a seat whose own door stands open
+	// this would not be the seat a real run measures from. The refusal is
+	// pinned so a launch that stops narrowing its stubs is caught here rather
+	// than silently measured from.
+	if canOpenRaw(ownPid, processAllAccess) {
+		return errors.New("this process's own process object opened for everything, but the launch that started " +
+			"this fixture narrows every stub process to the account before its first instruction " +
+			"(internal/win/proc's narrowBeforeResume), so from a seat whose own door stands open this would " +
+			"not be the seat a real run measures from")
 	}
 
 	// CONTROL: the door the review measured open on an unshielded host.
@@ -473,14 +513,20 @@ func measureTheRelayShut(dir string) error {
 // The controls come first, and their order is load-bearing. The walk is
 // settled before any list is taken, because the fixture child is born by
 // RunAsAccount with CREATE_NO_WINDOW and so has a birth console host of its
-// own that arrives in ConsoleHostChildren's walk late. The first control
-// opens this process itself for PROCESS_ALL_ACCESS by pid: the refusals
-// measured below would mean nothing if this process could not open anything
-// at all, and its own process object is unshielded and its own account's, so
-// the open must succeed. The second control stands up a bare pty's conhost
-// and opens it for PROCESS_ALL_ACCESS -- the exact door the review measured
-// open on an unshielded host -- and it must succeed too: if it is already
-// shut, nothing below is measuring the fix.
+// own that arrives in ConsoleHostChildren's walk late. The seat itself
+// arrives already shut to the account: RunAsAccount applies the same
+// deny-first list Shield applies from inside to the stub's process before its
+// first instruction (internal/win/proc's narrowBeforeResume), so this
+// process's own open for PROCESS_ALL_ACCESS must be refused, and the refusal
+// is part of the seat -- pinned so a launch that stops narrowing its stubs is
+// caught rather than silently measured from. The question of whether this
+// seat can open anything at all is answered instead by the birth console's
+// host -- the one console host the walk can name, spawned by the launch
+// itself with the account's ordinary list -- which must open for
+// PROCESS_ALL_ACCESS. The last control stands up a bare pty's conhost and
+// opens it for PROCESS_ALL_ACCESS -- the exact door the review measured open
+// on an unshielded host -- and it must succeed too: if it is already shut,
+// nothing below is measuring the fix.
 //
 // The bare pty's conhost is then left alive on purpose, through the relay's
 // creation and the door measurements both. That is a small measure in
