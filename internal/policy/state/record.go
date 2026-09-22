@@ -197,9 +197,21 @@ func (s *State) OfferMany(specs []grant.Spec) error {
 			s.Grants[index].Pending = true
 		} else {
 			s.Grants = append(s.Grants, spec)
+			// The append changed the list without a find in front of it,
+			// so the index is taught the new entry in place rather than
+			// dropped and rebuilt per spec: the key was just proven
+			// absent, so first-wins survives the patch, and a later spec
+			// for the same path finds the entry the scan would have
+			// found.
+			index := s.index()
+			index.byKey[index.key(spec.Path)] = len(s.Grants) - 1
 		}
 	}
 	if err := s.Save(); err != nil {
+		// The record goes back to what it was, and the index was taught
+		// entries of the list that failed on the way here: it describes
+		// neither the restored record nor the failed one, so it goes too.
+		s.dropIndex()
 		s.Grants = before
 		return err
 	}

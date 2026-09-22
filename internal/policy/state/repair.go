@@ -154,6 +154,9 @@ func (s *State) forget(path string) error {
 	if !found {
 		return nil
 	}
+	// The splice below moves every entry after index, and the index find
+	// answers from still describes the list as it stood before it.
+	s.dropIndex()
 	s.Grants = append(s.Grants[:index], s.Grants[index+1:]...)
 	return s.Save()
 }
