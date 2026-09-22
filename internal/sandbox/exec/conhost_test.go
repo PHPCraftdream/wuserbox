@@ -29,6 +29,7 @@ import (
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
+	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/token"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
@@ -368,7 +369,11 @@ func measureTheRelayShut(dir string) error {
 	if err != nil {
 		return err
 	}
-	relay, err := takeConsoleRelay()
+	account, err := sid.CurrentUser()
+	if err != nil {
+		return err
+	}
+	relay, err := takeConsoleRelay(account)
 	if err != nil {
 		return err
 	}

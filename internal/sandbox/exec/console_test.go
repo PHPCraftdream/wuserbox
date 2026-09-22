@@ -45,6 +45,21 @@ var (
 	procGetHandleInformation = w32.Kernel32.NewProc("GetHandleInformation")
 )
 
+// shutToNobody is who this file's relays are shut out of: an account SID
+// nothing on this machine answers to, the same trick shield_test.go's
+// nobodysGroup plays for the stub's groups and internal/win/proc's tests
+// play for theirs. The shut itself -- a console host closed door by door to
+// the account the run runs as -- is measured for real by
+// TestTheConsoleRelayShutsItsConhostToTheAccount, from a dedicated local
+// account's seat; what the tests here need from it is only that it succeeds,
+// on every machine they run on. Production hands the run's own account, and
+// a CI runner runs this suite as the built-in Administrator, SID ending
+// -500: the list refuses the account first and keeps the administrators an
+// allow only after it, so the real shut refused the seat asking and every
+// relay died at its creation, before the rendering, the pipes, the resizes
+// or the teardown these tests exist to measure was ever reached.
+const shutToNobody = "S-1-5-21-1111111111-2222222222-3333333333-727273"
+
 // TestOpenConsoleStreamsRepointsTheStandardStreamsAtARealConsole covers the
 // AllocConsole-free half of takeOwnConsole: openConsoleStreams opens the
 // console devices and installs them as this process's standard streams,
@@ -97,7 +112,7 @@ func TestTheConsoleRelayCarriesTheChildsRenderedOutput(t *testing.T) {
 	if err := procCreatePseudoConsole.Find(); err != nil {
 		t.Skip("CreatePseudoConsole is not available on this Windows build (ConPTY needs Windows 10 1809+)")
 	}
-	relay, err := takeConsoleRelay()
+	relay, err := takeConsoleRelay(shutToNobody)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +202,7 @@ func TestTheRelayPipeEndsStayOutOfTheInheritancePath(t *testing.T) {
 	if err := procCreatePseudoConsole.Find(); err != nil {
 		t.Skip("CreatePseudoConsole is not available on this Windows build (ConPTY needs Windows 10 1809+)")
 	}
-	relay, err := takeConsoleRelay()
+	relay, err := takeConsoleRelay(shutToNobody)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +258,7 @@ func TestTheRelayPumpCarriesRenderedBytesOutAndKeystrokesIn(t *testing.T) {
 	if err := procCreatePseudoConsole.Find(); err != nil {
 		t.Skip("CreatePseudoConsole is not available on this Windows build (ConPTY needs Windows 10 1809+)")
 	}
-	relay, err := takeConsoleRelay()
+	relay, err := takeConsoleRelay(shutToNobody)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +430,7 @@ func TestAResizeMessageReshapesTheRelayedConsole(t *testing.T) {
 	if err := procCreatePseudoConsole.Find(); err != nil {
 		t.Skip("CreatePseudoConsole is not available on this Windows build (ConPTY needs Windows 10 1809+)")
 	}
-	relay, err := takeConsoleRelay()
+	relay, err := takeConsoleRelay(shutToNobody)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -823,7 +838,7 @@ func TestTheRelayFinishDoesNotRestOnClosePseudoConsolesReturn(t *testing.T) {
 	if err := procCreatePseudoConsole.Find(); err != nil {
 		t.Skip("CreatePseudoConsole is not available on this Windows build (ConPTY needs Windows 10 1809+)")
 	}
-	relay, err := takeConsoleRelay()
+	relay, err := takeConsoleRelay(shutToNobody)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1301,7 +1316,7 @@ func TestALiveConsolesHungCloseIsStillBoundedByTheCeiling(t *testing.T) {
 	oldCeiling := relayDrainCeiling
 	relayDrainCeiling = 2 * time.Second
 	defer func() { relayDrainCeiling = oldCeiling }()
-	relay, err := takeConsoleRelay()
+	relay, err := takeConsoleRelay(shutToNobody)
 	if err != nil {
 		t.Fatal(err)
 	}

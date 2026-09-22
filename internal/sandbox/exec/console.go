@@ -34,7 +34,6 @@ import (
 	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/proc"
-	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
@@ -255,7 +254,7 @@ func shutBirthConsoleHost(shutOut string) error {
 // through. A failure refuses the console: the error goes back up, the stub
 // stops, the process exits, and the console it had just taken goes with it
 // rather than staying on with a host left open.
-func takeOwnConsole() (func(), error) {
+func takeOwnConsole(shutOut string) (func(), error) {
 	procFreeConsole.Call()
 	// The before-list is taken here, after FreeConsole and before
 	// AllocConsole, on purpose: the console just left may have a host on its
@@ -268,11 +267,7 @@ func takeOwnConsole() (func(), error) {
 	if r, _, callErr := procAllocConsole.Call(); r == 0 {
 		return nil, fmt.Errorf("allocating a console of its own: %w", callErr)
 	}
-	account, err := sid.CurrentUser()
-	if err != nil {
-		return nil, err
-	}
-	if err := shutNewConsoleHost(before, account); err != nil {
+	if err := shutNewConsoleHost(before, shutOut); err != nil {
 		return nil, err
 	}
 	oldStdin, oldStdout, oldStderr := os.Stdin, os.Stdout, os.Stderr
@@ -401,16 +396,20 @@ type consoleRelay struct {
 // shut is what closes it. The shut failing refuses the whole relay: nil
 // relay, error, the run goes on without a console rather than with one
 // whose host is open. That is the fail-closed shape P0-1 asks for, and it
-// is why the account and the before-list of hosts are taken at the top,
-// before anything is created: the account is the who the host is shut out
-// of, and the before-list is what shutNewConsoleHost tells the new host
+// is why the before-list of hosts is taken at the top, before anything is
+// created: the before-list is what shutNewConsoleHost tells the new host
 // apart from -- in relay mode this process already has its birth console's
-// host beside the one about to appear.
-func takeConsoleRelay() (*consoleRelay, error) {
-	account, err := sid.CurrentUser()
-	if err != nil {
-		return nil, err
-	}
+// host beside the one about to appear. The shutOut the host is shut out of
+// is handed in rather than taken here -- the same parameter
+// shutNewConsoleHost applies and the same account the run's stub names
+// everywhere else, computed once by the caller in the same pre-Shield
+// window -- and the tests that measure the relay's bytes, pipes, resizes
+// and teardown rather than the shut hand an identity nothing on the
+// machine answers to, because a runner's own identity would otherwise be
+// named first in the list's refusal and refuse the seat asking; the shut
+// itself is measured for real by this package's account-seated wiring
+// test.
+func takeConsoleRelay(shutOut string) (*consoleRelay, error) {
 	before, err := proc.ConsoleHostChildren(uint32(syscall.Getpid()))
 	if err != nil {
 		return nil, fmt.Errorf("listing this process's console hosts: %w", err)
@@ -455,7 +454,7 @@ func takeConsoleRelay() (*consoleRelay, error) {
 	// -- which ends the host with the console -- and refuses it: nil relay,
 	// error, the run goes on without a console rather than with one whose
 	// host is open.
-	if err := shutNewConsoleHost(before, account); err != nil {
+	if err := shutNewConsoleHost(before, shutOut); err != nil {
 		relay.close()
 		return nil, err
 	}

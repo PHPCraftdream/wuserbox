@@ -183,7 +183,7 @@ func Stub(args []string) error {
 	// back to the caller's bridge pipes by the deferred restore below, so the
 	// move costs the error path nothing.
 	if ownConsole {
-		restore, err := takeOwnConsole()
+		restore, err := takeOwnConsole(account)
 		if err != nil {
 			return err
 		}
@@ -192,7 +192,7 @@ func Stub(args []string) error {
 	var relay *consoleRelay
 	var pump *relayPump
 	if relayWanted {
-		r, err := takeConsoleRelay()
+		r, err := takeConsoleRelay(account)
 		if err != nil {
 			return err
 		}
