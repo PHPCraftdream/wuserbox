@@ -599,12 +599,27 @@ func handDownEntry(one explicitAccess, generations int, dir bool) (explicitAcces
 // underSkipped compares; a path that is not below root at all is an error
 // rather than a generation, and so is the root itself, which the sweep never
 // sees but a hand-down would have nowhere to land on.
+//
+// The first hop's separator usually waits at the head of what the cut leaves,
+// but a root spelled with its own final one -- a drive root like Q:\, whose
+// trailing separator normalization keeps, or a UNC share root -- has already
+// spent it on the cut, and what remains names the first generation outright:
+// there the count opens with the separator the root carried, not with one of
+// the remainder's. A neighbor is refused in either spelling: a terminated
+// root stops matching at the separator it ends in, so Q:\dir\ is no prefix
+// of Q:\dir2, and an unterminated one leaves the neighbor's own first
+// character at the head of the remainder, where a separator was wanted.
 func generationsBelow(root, path string) (int, error) {
+	terminated := strings.HasSuffix(root, string(filepath.Separator))
 	rest, ok := strings.CutPrefix(path, root)
-	if !ok || rest == "" || rest[0] != filepath.Separator {
+	if !ok || rest == "" || (!terminated && rest[0] != filepath.Separator) {
 		return 0, fmt.Errorf("%s is not below %s", path, root)
 	}
-	return strings.Count(rest, string(filepath.Separator)), nil
+	hops := strings.Count(rest, string(filepath.Separator))
+	if terminated && rest[0] != filepath.Separator {
+		hops++
+	}
+	return hops, nil
 }
 
 // narrowOwn takes the changing rights of Everyone, BUILTIN\Users and
