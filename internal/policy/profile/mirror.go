@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -241,26 +242,84 @@ func (copySink) file(src, dst string, root *os.Root, info os.FileInfo, left *int
 			return nil
 		}
 	}
-	if err := mirrorFile(src, dst, root); err != nil {
-		return err
-	}
-	// Recorded only once the copy is whole. A file whose write failed or
-	// was cut short gets no fingerprint, so the next run copies it instead
-	// of skipping on the strength of a print for a copy that never
-	// happened.
-	newPrints[key] = Print{Size: info.Size(), ModNanos: info.ModTime().UnixNano()}
-	return nil
-}
-
-func mirrorFile(src, dst string, root *os.Root) error {
-	in, err := os.Open(src)
+	taken, err := mirrorFile(src, dst, root, info.Size())
 	if err != nil {
 		return err
 	}
+	// Recorded only once the copy is whole, and the print is the opened
+	// source's own rather than the walk's: the FileInfo this function was
+	// handed was read before the copy began, and an ordinary writer to the
+	// source can move it between that reading and the bytes going in. The
+	// print mirrorFile answers with was read off the handle the bytes
+	// actually came through, after the transfer confirmed the source did
+	// not move while it was being read, so it describes the file that
+	// went in rather than the one the walk happened to measure. A file
+	// whose write failed, was cut short, or was refused for having grown
+	// past what was declared gets no fingerprint, so the next run copies
+	// it instead of skipping on the strength of a print for a copy that
+	// never happened.
+	newPrints[key] = taken
+	return nil
+}
+
+// openSource is the one place a copy's read of a source begins, and it is
+// a variable for the same reason newPlaceResolver in fold.go is: the
+// window the ceiling's stale measurement lives in sits between the walk's
+// os.Stat of a source and the open this is, and the test that pins that
+// window has to be able to stand inside it and grow the file the walk
+// already measured, the way the volume would if something wrote it
+// between the two.
+var openSource = os.Open
+
+// mirrorFile carries one source file into its place at dst and answers with
+// the print of the file it copied.
+//
+// charged is what the budget was debited for this file -- the walk's own
+// measure of it -- and it does two jobs. It bounds the copy stream itself,
+// because the ceiling counted a measurement and a stream bounded by nothing
+// but that measurement is open to exactly what changed it: the walk Stat'ed
+// the source, then this opens it, and something as ordinary as a program
+// saving its own settings in between leaves this holding a file larger than
+// the budget was ever told about. And it is the yardstick the opened source
+// is held against when the copy starts -- more bytes under the name the walk
+// measured than the walk measured is a different file than the one the run
+// set out to move, and the copy refuses before the destination is touched,
+// since carrying the larger file whole would be carrying past the ceiling
+// and carrying it cut short would be writing a mixture nobody asked for.
+// A re-Stat alone would answer neither question: what bounds a live stream
+// is a check against the bytes as they go, not a second reading of the
+// same measurement.
+//
+// The print comes from the opened handle rather than the walk's stale
+// FileInfo, and it is earned only after the transfer is confirmed whole:
+// the handle is re-Stat'ed once the bytes are down, and a size or a stamp
+// that moved under the copy means what landed may be part of the file that
+// was there and part of the one that replaced it. No print may claim a
+// mixture -- a print is what lets a later run skip a copy, and skipping on
+// the strength of bytes nobody can describe is how a stale copy outlives
+// every correction.
+func mirrorFile(src, dst string, root *os.Root, charged int64) (Print, error) {
+	in, err := openSource(src)
+	if err != nil {
+		return Print{}, err
+	}
 	defer func() { _ = in.Close() }()
+	// The opened handle's own measure, before anything else: this is the
+	// size and the stamp the transfer will be asked to stand still for,
+	// and the last reading taken before the destination is touched. The
+	// walk's measure said what the budget was debited; this one says what
+	// is actually here, and the two disagreeing is a source that changed
+	// under the run, which is refused rather than carried.
+	opened, err := in.Stat()
+	if err != nil {
+		return Print{}, err
+	}
+	if opened.Size() > charged {
+		return Print{}, fmt.Errorf("%s measured %d bytes when the walk counted it and holds %d when the copy opened it, and a copy of the larger would not be the copy the budget was counted for: the source changed between the two readings, and the run refuses rather than carry what it never declared", src, charged, opened.Size())
+	}
 	if parent := filepath.Dir(dst); parent != "." {
 		if err := root.MkdirAll(parent, 0o755); err != nil {
-			return err
+			return Print{}, err
 		}
 	}
 	// os.Root pins the pathname, not the file object. A sandbox can leave a
@@ -272,29 +331,89 @@ func mirrorFile(src, dst string, root *os.Root) error {
 	// below.
 	if info, readable := lookAt(root, dst); readable {
 		if info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
-			return fmt.Errorf("refusing to overwrite %s: destination is a symbolic link or reparse point", dst)
+			return Print{}, fmt.Errorf("refusing to overwrite %s: destination is a symbolic link or reparse point", dst)
 		}
 		if info.Mode().IsRegular() {
 			full := filepath.Join(root.Name(), filepath.FromSlash(dst))
 			outside, err := pathid.OutsideNames(root.Name(), full)
 			if err != nil {
-				return fmt.Errorf("checking destination %s for external hard links: %w", dst, err)
+				return Print{}, fmt.Errorf("checking destination %s for external hard links: %w", dst, err)
 			}
 			if len(outside) > 0 {
-				return fmt.Errorf("refusing to overwrite %s: it is also hard-linked outside the sandbox profile (%s)",
+				return Print{}, fmt.Errorf("refusing to overwrite %s: it is also hard-linked outside the sandbox profile (%s)",
 					dst, strings.Join(outside, ", "))
 			}
 		}
 	}
 	out, err := root.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
-		return err
+		return Print{}, err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	if _, err := copyBounded(out, in, charged); err != nil {
 		_ = out.Close()
-		return err
+		return Print{}, err
 	}
-	return out.Close()
+	// The transfer is down, and the last thing it owes is proof the source
+	// held still while it was read. What this catches is the same ordinary
+	// writer the size check above catches, arrived through the door the
+	// size check cannot close: a rewrite that keeps the size, or a write
+	// that landed after the copy began. Either way the bytes in the
+	// destination may be part of one file and part of another, and no
+	// refusal here means no print means the next run copies the file
+	// again -- which is the whole of what an uncertain copy can honestly
+	// ask for.
+	settled, err := in.Stat()
+	if err != nil {
+		_ = out.Close()
+		return Print{}, err
+	}
+	if settled.Size() != opened.Size() || settled.ModTime().UnixNano() != opened.ModTime().UnixNano() {
+		_ = out.Close()
+		return Print{}, fmt.Errorf("%s held %d bytes stamped %d when the copy opened it and %d bytes stamped %d when it finished, and what was written may be part of the file that was there and part of the one that replaced it: the run refuses rather than record a print for the mixture", src, opened.Size(), opened.ModTime().UnixNano(), settled.Size(), settled.ModTime().UnixNano())
+	}
+	return Print{Size: opened.Size(), ModNanos: opened.ModTime().UnixNano()}, out.Close()
+}
+
+// copyBounded copies in to out while the running total stays within limit,
+// and refuses the moment the source offers a byte past it. The limit is the
+// allocation the budget debited for this file -- the same charged the
+// ceiling counted before the copy began -- and that is the whole reason the
+// two have to be one number: a ceiling checked against a measurement, with
+// a stream after it bounded by nothing, is a ceiling only for the files
+// that sit still, and a source that grows between the walk and the copy
+// would carry past it on the very pass that reported success. A stream that
+// would exceed the limit is a source that changed under the run's
+// measurement, and the refusal is the ceiling hole this exists to close.
+// The chunk that would go past is never written, so what lands in the
+// destination never holds more than the budget paid for, whatever the
+// source does; what the source does with the rest is the next run's
+// question, and the entry stays on the copied list to be cleared either
+// way.
+func copyBounded(out io.Writer, in io.Reader, limit int64) (int64, error) {
+	buf := make([]byte, 32<<10)
+	var total int64
+	for {
+		n, rerr := in.Read(buf)
+		if n > 0 {
+			if total+int64(n) > limit {
+				return total, fmt.Errorf("the copy reached %d bytes of its %d-byte measure and the source still had more to give, which is a source that changed after it was measured: writing the rest would carry %d past what the budget was told of", total, limit, total+int64(n)-limit)
+			}
+			w, werr := out.Write(buf[:n])
+			total += int64(w)
+			if werr != nil {
+				return total, werr
+			}
+			if w < n {
+				return total, io.ErrShortWrite
+			}
+		}
+		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				return total, nil
+			}
+			return total, rerr
+		}
+	}
 }
 
 // finishDir drops whatever dst holds that this run did not put there, so a

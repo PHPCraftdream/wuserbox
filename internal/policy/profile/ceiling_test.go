@@ -1,10 +1,12 @@
 package profile
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/PHPCraftdream/wuserbox/internal/policy/config"
 )
@@ -113,5 +115,142 @@ func TestAStoppedCopyIsStillOnTheListToClear(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dest, "big")); err == nil {
 		t.Error("what the stopped copy left behind is still in the profile")
+	}
+}
+
+// TestACopyPastItsBudgetRefusesWhenTheSourceGrowsAfterItWasMeasured is the
+// stale measurement the logical ceiling is built on. The walk Stats a source,
+// the budget is debited for what that Stat said, and only then is the file
+// opened for copying -- and between those two readings the file is the
+// volume's, not the run's: an ordinary program saving its own settings makes
+// the source grow without anything about the run being unusual. A copy that
+// trusted the walk's measure all the way to the bytes would carry past the
+// budget on exactly the pass that reported success, so the copy itself has
+// to hold the opened file against what was declared, and refuse rather than
+// carry what was never declared.
+func TestACopyPastItsBudgetRefusesWhenTheSourceGrowsAfterItWasMeasured(t *testing.T) {
+	home, dest := useProfile(t, []string{"big"})
+	write(t, filepath.Join(home, "big", "one.txt"), strings.Repeat("x", 40))
+
+	previous := openSource
+	openSource = func(name string) (*os.File, error) {
+		// The walk measured this file at forty bytes and the budget was
+		// debited forty; the volume, not this test, decides what the file
+		// holds by the time the copy opens it. Standing inside the seam the
+		// copy reads through, the file grows to eighty before the open goes
+		// through -- the same move a writer to the source makes between the
+		// walk's Stat and the copy, and the budget stays at forty.
+		f, err := os.OpenFile(name, os.O_WRONLY|os.O_APPEND, 0o644)
+		if err == nil {
+			if _, werr := f.WriteString(strings.Repeat("y", 40)); werr != nil {
+				_ = f.Close()
+				return nil, werr
+			}
+			if cerr := f.Close(); cerr != nil {
+				return nil, cerr
+			}
+			return previous(name)
+		}
+		return nil, err
+	}
+	defer func() { openSource = previous }()
+
+	root, err := os.OpenRoot(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The budget equals the measured size exactly: the logical check has
+	// forty to spend and spends it, so any refusal has to come from the
+	// copy itself rather than from the counting.
+	copied, prints, err := copyEntries(home, root, []config.Entry{{Path: "big"}}, nil, 40, nil)
+	_ = root.Close()
+	if err == nil {
+		t.Fatal("a copy whose source grew past its budget was allowed to finish")
+	}
+	if !strings.Contains(err.Error(), "one.txt") {
+		t.Errorf("the refusal does not name the file that grew: %v", err)
+	}
+	if strings.Contains(err.Error(), "MB into the sandbox's profile") {
+		t.Errorf("the refusal is the counting's, which had exactly enough for this file, not the copy's: %v", err)
+	}
+	// A stopped copy stays on the list to clear, the rule
+	// TestAStoppedCopyIsStillOnTheListToClear pins, whatever stopped it.
+	if len(copied) != 1 || copied[0].Path != "big" {
+		t.Fatalf("the stopped entry came back as %v, and the caller has nothing to clear", copied)
+	}
+	// No print for a copy that never happened: a fingerprint here would
+	// vouch for bytes the run refused.
+	if len(prints) != 0 {
+		t.Errorf("a refused copy left %d fingerprints behind, want none", len(prints))
+	}
+	// The refusal came before the destination was ever opened, so nothing
+	// was written past the limit, or at all.
+	if _, err := os.Stat(filepath.Join(dest, "big", "one.txt")); !os.IsNotExist(err) {
+		t.Errorf("the destination holds a copy after the refusal: %v", err)
+	}
+}
+
+// TestTheBoundedCopyWritesNotOneBytePastItsLimit is the bound under the
+// refusal above, on its own: whatever the source offers and however it
+// offers it, the bytes that reach the destination never go past the limit,
+// and a source that stops short of it or lands exactly on it copies whole.
+// The plain strings.Reader case is the source that offers everything at
+// once, where the refusal lands before a single byte is written; the
+// one-byte reader stands in for a source that dribbles, where the limit is
+// filled exactly and the refusal arrives with the next byte -- the two
+// shapes the write-nothing-past rule can be caught holding in.
+func TestTheBoundedCopyWritesNotOneBytePastItsLimit(t *testing.T) {
+	var out bytes.Buffer
+
+	// More offered at once than the limit allows: refusal, and the
+	// destination holds nothing, not one byte of the oversized chunk.
+	n, err := copyBounded(&out, strings.NewReader(strings.Repeat("z", 60)), 40)
+	if err == nil {
+		t.Fatal("a copy with more to give than its budget was allowed to finish")
+	}
+	if n != 0 || out.Len() != 0 {
+		t.Errorf("the copy moved %d bytes and the destination holds %d, want nothing written of a chunk the limit refused", n, out.Len())
+	}
+
+	// More offered a byte at a time: the limit fills exactly, and the byte
+	// past it is refused without being written.
+	out.Reset()
+	n, err = copyBounded(&out, iotest.OneByteReader(strings.NewReader(strings.Repeat("z", 60))), 40)
+	if err == nil {
+		t.Fatal("a copy past its budget was allowed to finish")
+	}
+	if n != 40 || out.Len() != 40 {
+		t.Errorf("the copy moved %d bytes and the destination holds %d, want exactly the limit's 40 and nothing past it", n, out.Len())
+	}
+
+	// Fewer than the limit: an ordinary short copy, and it succeeds whole.
+	out.Reset()
+	n, err = copyBounded(&out, strings.NewReader("short"), 40)
+	if err != nil {
+		t.Fatalf("a copy under its budget was refused: %v", err)
+	}
+	if n != 5 || out.String() != "short" {
+		t.Errorf("the copy moved %d bytes and the destination holds %q, want all five", n, out.String())
+	}
+
+	// Exactly the limit: the boundary is inclusive, and the copy succeeds.
+	out.Reset()
+	n, err = copyBounded(&out, strings.NewReader(strings.Repeat("z", 40)), 40)
+	if err != nil {
+		t.Fatalf("a copy exactly its budget was refused: %v", err)
+	}
+	if n != 40 || out.Len() != 40 {
+		t.Errorf("the copy moved %d bytes and the destination holds %d, want 40 of each", n, out.Len())
+	}
+
+	// No limit and nothing to copy: zero-length files are ordinary, and
+	// copying nothing is succeeding.
+	out.Reset()
+	n, err = copyBounded(&out, strings.NewReader(""), 0)
+	if err != nil {
+		t.Fatalf("an empty copy at a zero budget was refused: %v", err)
+	}
+	if n != 0 || out.Len() != 0 {
+		t.Errorf("an empty copy moved %d bytes and the destination holds %d, want nothing at all", n, out.Len())
 	}
 }
