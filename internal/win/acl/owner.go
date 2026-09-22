@@ -219,29 +219,79 @@ var accountNameOf = func(value uintptr) (string, error) {
 	return sid.Name(value)
 }
 
-// identitiesFor resolves, once, everything an operation needs to know about
-// account: the identifier itself, and -- because entries go out under a
-// group's name while files a sandbox makes are owned by its account --
-// every member of the local group the identifier names.
+// Identity is the identifier an operation acts for, and what the caller
+// vouches for about it. The two travel together because the same refusal
+// from the lookup means opposite things about the two, and the caller --
+// not this package, reading tea leaves off a shared errno -- is the one
+// that knows which of them it handed over.
 //
-// The lookup behind it answers one of three ways, and the three are not the
-// same answer. Where the identifier names a principal, the local group
-// behind it is asked for its members, and a member that cannot be resolved
-// fails the whole list -- a member of a group that exists must not come out
-// as a shorter list, which quietly protects less. Where the lookup answers
-// that no principal anywhere maps to the identifier -- sid.NoneMapped, the
-// refusal for a well-formed SID naming nothing, a synthetic identifier in
-// tests -- the one identifier is the whole, correct answer: nothing exists
-// to have a group, so there is none to ask, and the lookup itself says so.
-// Any other answer is a lookup that failed for reasons nobody here controls
-// -- a domain controller out of reach, an access refusal, a resolution that
+// SandboxGroup is the production shape: the identifier of the local group
+// a sandbox goes by, a group that exists. An operation needs everything
+// about it -- the name, and then the members, because entries go out
+// under a group's name while files a sandbox makes are owned by its
+// account -- so any lookup that falls short refuses the operation before
+// anything is read or written. NoneMapped is no exception: the same errno
+// also answers when a name resolution runs out of time, which is not
+// proof that the group is absent, and an operation that went ahead on the
+// one identifier would stop recognizing what the sandbox owns.
+//
+// IdentifierAlone vouches for the opposite: the identifier names nothing
+// beyond itself, so there is no group behind it to ask, and NoneMapped is
+// the lookup confirming exactly that -- the fact a synthetic identifier
+// in tests stands on, and a self-standing identifier nobody claims a
+// group behind. What refuses a SandboxGroup is the whole, correct answer
+// here; no other failure is, and a lookup that fails for reasons nobody
+// controls refuses under either promise.
+type Identity struct {
+	account     string
+	standsAlone bool
+}
+
+// SandboxGroup hands an operation the identifier of the local group the
+// sandbox goes by, and asks the whole answer about it: any lookup that
+// falls short, NoneMapped included, refuses the operation.
+func SandboxGroup(account string) Identity {
+	return Identity{account: account}
+}
+
+// IdentifierAlone hands an operation an identifier that names nothing
+// beyond itself, and accepts the lookup's NoneMapped as confirmation of
+// exactly that.
+func IdentifierAlone(account string) Identity {
+	return Identity{account: account, standsAlone: true}
+}
+
+// identitiesFor resolves, once, everything an operation needs to know
+// about the identity it was handed: the identifier itself, and -- because
+// entries go out under a group's name while files a sandbox makes are
+// owned by its account -- every member of the local group it names, where
+// the caller has said there is one (Identity, above).
+//
+// The lookup behind it answers in ways that are not the same answer, and
+// which of them may stand for "the identifier is the whole of it" is the
+// caller's promise, not this function's guess. Where the identifier names
+// a principal, the local group behind it is asked for its members, and a
+// member that cannot be resolved fails the whole list -- a member of a
+// group that exists must not come out as a shorter list, which quietly
+// protects less. Where the caller vouched the identifier stands alone,
+// the lookup's NoneMapped -- its refusal for a well-formed SID naming
+// nothing, a synthetic identifier in tests -- is the answer itself:
+// nothing exists to have a group, so there is none to ask, and the one
+// identifier already collected is the whole, correct answer. Every other
+// answer is a lookup that failed for reasons nobody here controls -- a
+// domain controller out of reach, an access refusal, a resolution that
 // ran out of time -- and an unknown result must not come out as a list at
-// all. It used to: the reason was dropped on the floor and the list fell
-// back to the group's identifier alone, so the owner comparisons and the
-// explicit-ACE removals downstream stopped recognizing what the sandbox
-// owns, and a narrowing or a revoke could finish successfully having
-// protected less than it promised. The operation refuses instead, before
-// anything has been read or written.
+// all. It used to come out as a list anyway, and one errno stood apart
+// from even the rule that stops that: NoneMapped was read as proof the
+// identifier names nothing, for every caller at once, because that is
+// what it means for a synthetic identifier in tests. But the same errno
+// is also
+// LookupAccountSidW's answer when a name resolution times out, so it is
+// not, by itself, proof of anything -- and handed a sandbox's own
+// existing group, an operation that accepted it would run on half an
+// identity, its owner comparisons and explicit-ACE removals blind to what
+// the sandbox owns. The caller now says which promise it is making, and
+// the operation holds it to that and nothing else.
 //
 // The group answers with names, and a name is not SID text. Measured on
 // this desk, non-elevated:
@@ -253,10 +303,10 @@ var accountNameOf = func(value uintptr) (string, error) {
 // So a member's name parsed as SID text fails for every real member.
 // Members are resolved with LookupAccountNameW instead, and one that cannot
 // be resolved fails the whole list.
-func identitiesFor(account string) (*identities, error) {
+func identitiesFor(subject Identity) (*identities, error) {
 	identityResolutions.Add(1)
 	sandbox := &identities{}
-	value, err := sandbox.parse(account)
+	value, err := sandbox.parse(subject.account)
 	if err != nil {
 		sandbox.End()
 		return nil, err
@@ -265,14 +315,18 @@ func identitiesFor(account string) (*identities, error) {
 	sandbox.values = []uintptr{value}
 	name, err := accountNameOf(value)
 	if err != nil {
-		if errors.Is(err, sid.NoneMapped) {
-			// Nothing anywhere maps to this identifier, and the lookup
-			// said so itself: the identifier stands alone, and the one
-			// already collected is the whole answer.
+		if errors.Is(err, sid.NoneMapped) && subject.standsAlone {
+			// The caller vouched that this identifier names nothing
+			// beyond itself, and the lookup says the same: nothing
+			// exists to have a group, so the one already collected is
+			// the whole answer.
 			return sandbox, nil
 		}
 		sandbox.End()
-		return nil, fmt.Errorf("resolving %s: %w", account, err)
+		if errors.Is(err, sid.NoneMapped) {
+			return nil, fmt.Errorf("resolving %s, the group an operation on this sandbox has to know: %w", subject.account, err)
+		}
+		return nil, fmt.Errorf("resolving %s: %w", subject.account, err)
 	}
 	members, err := localGroupMembers(name)
 	if err != nil {

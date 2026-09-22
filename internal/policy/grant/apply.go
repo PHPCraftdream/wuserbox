@@ -29,12 +29,19 @@ import (
 // to Isolate: the sweep it runs needs it to tell an object the operator
 // pinned in its own right from one a sandbox only made to look that way
 // (internal/win/acl/owner.go).
+//
+// The account handed in is the sandbox group's own identifier (State.SID),
+// and it is handed over as a group that exists: if Windows cannot answer
+// every question about it -- its name, then its members -- the grant
+// refuses before it writes, NoneMapped included, because that errno also
+// answers when a name resolution runs out of time and is not proof the
+// group is gone.
 func Apply(account, path string, kind Kind, pinned []string) error {
 	entries := kind.Entries()
 	if len(entries) == 0 {
 		return fmt.Errorf("unknown grant kind %q", kind)
 	}
 	return lock.HoldTree(path, func() error {
-		return acl.Isolate(path, account, entries, kind.IsolationReach(), pinned)
+		return acl.Isolate(path, identityOf(account), entries, kind.IsolationReach(), pinned)
 	})
 }

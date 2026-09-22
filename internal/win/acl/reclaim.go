@@ -24,7 +24,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/win/w32"
 )
 
-// TakeBack takes account's entries off root and everything under it, and caps
+// TakeBack takes the identity's entries off root and everything under it, and caps
 // what the owner of an object the sandbox owns holds implicitly -- the same
 // cap the sweep writes (owner.go), written here on the way out rather than on
 // the way in.
@@ -39,8 +39,8 @@ import (
 //
 // Unlike the sweep, the walk takes the root itself too: the sweep skips it
 // because Isolate publishes it, and nothing publishes here.
-func TakeBack(root, account string, pinned []string) error {
-	sandbox, err := identitiesFor(account)
+func TakeBack(root string, subject Identity, pinned []string) error {
+	sandbox, err := identitiesFor(subject)
 	if err != nil {
 		return err
 	}

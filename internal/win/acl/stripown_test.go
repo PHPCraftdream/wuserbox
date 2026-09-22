@@ -34,7 +34,7 @@ func TestAStripPassResolvesIdentitiesOnceForTheWholeTree(t *testing.T) {
 	resolutions := identityResolutions.Load()
 	lookups := memberLookups.Load()
 
-	pass, err := BeginStripOwn(user)
+	pass, err := BeginStripOwn(IdentifierAlone(user))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestASingleStripOwnResolvesOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolutions := identityResolutions.Load()
-	if err := StripOwn(file, unusedAccount); err != nil {
+	if err := StripOwn(file, IdentifierAlone(unusedAccount)); err != nil {
 		t.Fatal(err)
 	}
 	if got := identityResolutions.Load() - resolutions; got != 1 {

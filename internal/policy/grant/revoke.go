@@ -15,8 +15,12 @@ import (
 // pinned is the record's own paths for this account, passed straight through
 // to TakeBack: a directory this same account holds in its own right, granted
 // separately, is left alone rather than taken down with the tree above it.
+//
+// The account is handed over as the group that exists, the same way Apply
+// hands it over: any lookup about it that falls short stops the revoke
+// before the walk starts.
 func Revoke(account, path string, pinned []string) error {
 	return lock.HoldTree(path, func() error {
-		return acl.TakeBack(path, account, pinned)
+		return acl.TakeBack(path, identityOf(account), pinned)
 	})
 }

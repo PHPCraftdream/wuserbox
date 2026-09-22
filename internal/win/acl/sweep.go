@@ -599,8 +599,8 @@ func narrowOwn(path string, sandbox *identities, hand []explicitAccess, pinned p
 // Stripping the account's entry here too would undo a narrowed grant the
 // sweep wrote moments ago in the same update -- an owned object's own entry
 // is no longer only ever an orphaned copy the way an inherited one would be.
-func StripOwn(path, account string) error {
-	pass, err := BeginStripOwn(account)
+func StripOwn(path string, subject Identity) error {
+	pass, err := BeginStripOwn(subject)
 	if err != nil {
 		return err
 	}
@@ -609,9 +609,10 @@ func StripOwn(path, account string) error {
 }
 
 // BeginStripOwn resolves, once, everything a pass needs to know about
-// account: the identifier itself, and -- because entries go out under a
-// group's name while files a sandbox makes are owned by its account --
-// every member of the local group the identifier names. The pass owns what
+// the identity it was handed: the identifier itself, and -- because
+// entries go out under a group's name while files a sandbox makes are
+// owned by its account -- every member of the local group the identifier
+// names. The pass owns what
 // its answer stands on, the same way Isolate and TakeBack own theirs
 // (owner.go): the member identifiers are Go values the pass itself holds,
 // the parsed account identifier is system memory freed when the pass ends,
@@ -619,8 +620,8 @@ func StripOwn(path, account string) error {
 // membership decides a revoke, so membership that changed since the last
 // pass must be asked again, which is why this is a context with a lifetime
 // and not a cache.
-func BeginStripOwn(account string) (*identities, error) {
-	return identitiesFor(account)
+func BeginStripOwn(subject Identity) (*identities, error) {
+	return identitiesFor(subject)
 }
 
 // Strip takes the account's entries off one object, the same decision

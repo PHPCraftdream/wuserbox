@@ -29,7 +29,7 @@ func TestIsolateNarrowsSharedWriteSetOnTheDirectoryItself(t *testing.T) {
 	}
 
 	entries := []ACE{{Access: AccessModify, Inheritance: InheritObjects | InheritContainers}}
-	if err := Isolate(dir, unusedAccount, entries, InheritObjects|InheritContainers, nil); err != nil {
+	if err := Isolate(dir, IdentifierAlone(unusedAccount), entries, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if holds(t, dir, "Everyone", "(M)") {
@@ -73,7 +73,7 @@ func TestIsolateNarrowsSharedWriteHandedDownFromAbove(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Isolate(child, unusedAccount, []ACE{
+	if err := Isolate(child, IdentifierAlone(unusedAccount), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
@@ -98,7 +98,7 @@ func TestIsolateAddsNothingWhereThoseTwoHadNothing(t *testing.T) {
 	if holds(t, dir, "Everyone", "") {
 		t.Skip("this machine leaves Everyone an entry on a protected directory")
 	}
-	if err := Isolate(dir, unusedAccount, []ACE{
+	if err := Isolate(dir, IdentifierAlone(unusedAccount), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
@@ -125,7 +125,7 @@ func TestIsolateLeavesTheUserAbleToWrite(t *testing.T) {
 		t.Skipf("the user could not write here to begin with: %v", err)
 	}
 
-	if err := Isolate(dir, unusedAccount, []ACE{
+	if err := Isolate(dir, IdentifierAlone(unusedAccount), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
@@ -190,7 +190,7 @@ func TestAGrantTakesWriteFromAuthenticatedUsersToo(t *testing.T) {
 	if !writableBy(root, sid.Authenticated) {
 		t.Fatal("the entry this test is about was not applied, so it is testing nothing")
 	}
-	if err := Isolate(root, unusedAccount, []ACE{
+	if err := Isolate(root, IdentifierAlone(unusedAccount), []ACE{
 		{Access: AccessModify, Inheritance: InheritObjects | InheritContainers},
 	}, InheritObjects|InheritContainers, nil); err != nil {
 		t.Fatal(err)
