@@ -1592,33 +1592,116 @@ func TestTheBirthHostsGuardTreatsAnInheritedConsoleAsAQuietNoOp(t *testing.T) {
 }
 
 // TestTheBirthHostsGuardShutsTheOneHostOfAConsoleOfItsOwn is the shape the
-// production stub arrives in, measured at the seam: the list answers one --
-// this process alone on a console of its own -- and the guard must not
-// read that as a no-op either. aBarePtyConhost stands up a real console
-// host of this process's, the poll finds it by the same walk production
-// runs, and ShieldConhost shuts it, so the guard comes back with nil only
-// after a real shut of a real host. On the ordinary desk's seat the shut's
-// door list is measured directly -- the host no longer opens for
-// PROCESS_ALL_ACCESS, the exact door the wiring test measured open before
-// the shut; on an elevated seat the list's deliberate administrators allow
-// answers every door, so there is nothing to refuse-measure and the nil
-// alone is the assertion.
+// production stub arrives in, measured at the seam and in the fixture
+// account's seat: the list answers one -- this process alone on a console of
+// its own -- and the guard must not read that as a no-op either. The seat is
+// built in account_test.go: a dedicated local account, this binary started as
+// it with RunAsAccount, the whole choreography below run inside that child,
+// every failure a returned error the exit code carries. The old seat was the
+// test process's own identity -- the CI runner's built-in Administrator, SID
+// ending -500 -- and ShieldConhost's refusal of that SID first, ahead of the
+// administrators' allow in the list, is what answered there; from the
+// account's seat the door measurements are the direct answer again.
+//
+// The host the guard shuts is the child's own birth host, and it is real, not
+// stood up by a pty: the fixture child is born by RunAsAccount with
+// CREATE_NO_WINDOW, which console.go documents as a console with no window,
+// hosted by a conhost started before any of this code ran -- the exact shape
+// the guard exists for. That is also why this test no longer needs a Windows
+// new enough for ConPTY: no pty is built anywhere in it, and the
+// CreatePseudoConsole availability skip the pty once required is gone with
+// it.
+//
+// The doors are measured before and after the guard runs: the birth host must
+// open for PROCESS_ALL_ACCESS before the shut -- what the shut is measured
+// against -- and must open for nothing after it. The list read is pinned at
+// the package's getConsoleProcessList seam rather than trusted from the
+// machine: the guard's contract is pinned, not the console environment -- the
+// honest answer for this child would also be one (its own birth console, one
+// process attached), but the injection is what keeps the guard's shape the
+// subject instead of the machine's console state.
 func TestTheBirthHostsGuardShutsTheOneHostOfAConsoleOfItsOwn(t *testing.T) {
-	if err := procCreatePseudoConsole.Find(); err != nil {
-		t.Skip("CreatePseudoConsole is not available on this Windows build (ConPTY needs Windows 10 1809+)")
+	requireAdministrator(t)
+	a := aShutAccount(t, "shld0dea0012")
+	_, work, exe := fixtureTree(t, a)
+	a.runFixture(t, exe, work, birthFixtureFlag)
+}
+
+// birthFixtureFlag dispatches this binary, started as the fixture account, to
+// the birth guard's choreography.
+const birthFixtureFlag = "-wuserbox-birth-fixture"
+
+// birthFixture is the program this binary becomes when it is started as the
+// fixture account. The exit code is the verdict and diagnosis.txt is the
+// words that explain a failure -- the same split the relay fixture works on.
+func birthFixture(dir string) int {
+	if err := measureTheBirthShut(dir); err != nil {
+		return fixtureFailed(dir, err)
 	}
-	_, hostPid := aBarePtyConhost(t)
+	return 0
+}
+
+// measureTheBirthShut is the guard's whole choreography, in the account's
+// seat: the birth host is found by the walk production polls, its one open
+// door is measured, the guard runs against the pinned one-process list, and
+// the same door is measured shut.
+func measureTheBirthShut(dir string) error {
+	// The seat here is the fixture account's ordinary token, and a fresh
+	// local account is never an administrator unless the fixture made it
+	// one -- this fixture does not; the assertion keeps the measurement
+	// honest if that ever changes.
+	if token.IsAdmin() {
+		return errors.New("from an elevated seat the shut's deliberate administrators allow " +
+			"answers every door by design, so nothing below would be a measurement")
+	}
+	// The birth host lags the process it hosts -- measured about 150 ms, the
+	// lag console.go polls with this same step and ceiling -- so the walk is
+	// polled until it answers exactly one. Zero hosts is the walk not having
+	// caught up, not a child without a console: a CREATE_NO_WINDOW process
+	// has a birth console's host.
+	deadline := time.Now().Add(birthHostPollWant)
+	var hostPid uint32
+	for {
+		hosts, err := proc.ConsoleHostChildren(uint32(syscall.Getpid()))
+		if err != nil {
+			return err
+		}
+		if len(hosts) == 1 {
+			hostPid = hosts[0]
+			break
+		}
+		if len(hosts) > 1 {
+			return fmt.Errorf("this process has %d console hosts (%v) where its own birth console can have one; "+
+				"nothing measured against a walk this crowded would mean anything", len(hosts), hosts)
+		}
+		if time.Now().After(deadline) {
+			return errors.New("a CREATE_NO_WINDOW process has a birth console's host; " +
+				"the walk answering none is a walk that has not caught up")
+		}
+		time.Sleep(birthHostPollStep)
+	}
+	// CONTROL, and the one the old in-process test never took: the door the
+	// shut is measured against must be open first.
+	if !canOpenRaw(hostPid, processAllAccess) {
+		return fmt.Errorf("the birth console's host (%d) already refuses this account everything, "+
+			"so the shut below would be measuring nothing", hostPid)
+	}
+	// The guard's contract is pinned, not the console environment: the honest
+	// answer for this child would also be one -- its own birth console, one
+	// process attached -- but the injection is what keeps the guard's shape
+	// the subject instead of the machine's console state.
 	old := getConsoleProcessList
 	getConsoleProcessList = func([]uint32) (int, error) { return 1, nil }
-	t.Cleanup(func() { getConsoleProcessList = old })
+	defer func() { getConsoleProcessList = old }()
 	account, err := sid.CurrentUser()
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
 	if err := shutBirthConsoleHost(account); err != nil {
-		t.Fatalf("the guard refused a console of this process's own that had exactly one host: %v", err)
+		return fmt.Errorf("the guard refused a console of this process's own that had exactly one host: %w", err)
 	}
-	if !token.IsAdmin() && canOpen(t, hostPid, processAllAccess) {
-		t.Errorf("the birth host the guard shut (%d) still opens for everything; the shut never landed", hostPid)
+	if canOpenRaw(hostPid, processAllAccess) {
+		return fmt.Errorf("the birth host the guard shut (%d) still opens for everything; the shut never landed", hostPid)
 	}
+	return nil
 }

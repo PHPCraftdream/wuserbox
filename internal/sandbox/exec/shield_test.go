@@ -38,6 +38,17 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 3 && os.Args[1] == gateChildFlag {
 		os.Exit(runGateChild(os.Args[2], os.Args[3]))
 	}
+	// The fixture children of the account-seated shut tests are this binary
+	// again, dispatched by argument and started as the fixture account; like
+	// the gate child they sit ahead of the driver check, because they inherit
+	// the driver's environment too. The exit code is the verdict and the work
+	// directory argument is where the diagnosis file is written.
+	if len(os.Args) > 2 && os.Args[1] == relayFixtureFlag {
+		os.Exit(relayFixture(os.Args[2]))
+	}
+	if len(os.Args) > 2 && os.Args[1] == birthFixtureFlag {
+		os.Exit(birthFixture(os.Args[2]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == probeFlag {
 		os.Exit(runProbe())
 	}
