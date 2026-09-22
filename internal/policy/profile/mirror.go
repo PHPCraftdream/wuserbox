@@ -216,7 +216,8 @@ func clearWhatIsNotADirectory(root *os.Root, dst string) (plain bool, err error)
 // no skip, the structure question marked changed, the removal or creation
 // below attempted anyway, and the one that cannot be done is the error the
 // caller reports. A caller that would read unreadable as absent must ask
-// the error itself, the way clearEntry and clearWhatIsNotADirectory do: a
+// the error itself, the way clearEntry, clearWhatIsNotADirectory and
+// cleanDir's descendant question do: a
 // name the volume refuses to describe -- an ordinary program's exclusive
 // hold on it, most commonly -- is not a name the volume reports gone, and
 // reading one as the other is how a take-back reports success over a copy
