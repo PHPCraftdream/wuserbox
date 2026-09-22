@@ -246,8 +246,14 @@ type canonicalChild struct {
 // entry it compares against one unchanged current list, copyEntries over
 // every missing source it vouches against one unchanged record -- and
 // both throw the resolver and the presence index it serves away the
-// moment the real mutation happens, forget's clearEntry and copyEntries'
-// mirror, building the next stretch's only when a question needs it. What
+// moment a real mutation happens -- forget's clearEntry that took
+// something back, copyEntries' mirror that made, took, or replaced a name
+// -- building the next stretch's only when a question needs it. A rewrite
+// of the bytes of a file that already stood, and a clear that found
+// nothing to take back, are not mutations in this sense: they change no
+// name any cached answer describes, and the stretch outlives them, which
+// is what keeps a mixed warm run -- missing sources between unchanged
+// present ones -- linear. What
 // no resolver may do is outlive the run that built it: the volume answers
 // for the moment of asking, and a cache carried across CLI runs would
 // answer a later question with an earlier disk.
@@ -494,11 +500,15 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 // question of the stretch out of the set and the resolver's memos rather
 // than out of a fresh walk per question -- that is what makes the unchanged
 // run linear where the shapes before it paid once per pair. The stretch
-// dies with its last real mutation -- forget's clearEntry, copyEntries'
-// mirror -- because a cached answer held across one of those would describe
+// dies with its last real mutation -- forget's clearEntry that took
+// something back, copyEntries' mirror that made, took, or replaced a name
+// -- because a cached answer held across one of those would describe
 // directories the operation has since changed; the next question that
 // needs the volume builds a fresh stretch rather than asking a stale
 // instrument, and a stretch that never meets a mutation is never rebuilt.
+// The mutation is the name's, not the byte's: a mirror that rewrote a
+// standing file's bytes changed no listing and no canonical answer, and
+// ends nothing.
 type placeIndex struct {
 	resolver *placeResolver
 	places   map[string]bool

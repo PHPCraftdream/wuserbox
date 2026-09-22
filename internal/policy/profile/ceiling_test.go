@@ -42,7 +42,7 @@ func TestTheCopyStopsWhenItHasCarriedEnough(t *testing.T) {
 	// Empty maps rather than nil: the file that finishes before the
 	// refusal still gets its fingerprint recorded, and a nil map would
 	// panic on the write.
-	err = mirror(filepath.Join(home, "big"), "big", "", root, info, &left, newWalk(config.Entry{Path: "big"}), map[string]Print{}, map[string]Print{})
+	_, err = mirror(filepath.Join(home, "big"), "big", "", root, info, &left, newWalk(config.Entry{Path: "big"}), map[string]Print{}, map[string]Print{})
 	if err == nil {
 		t.Fatal("a copy past its budget was allowed to finish")
 	}

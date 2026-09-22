@@ -954,6 +954,282 @@ func TestAScanThatSkippedASiblingDoesNotPoisonTheOnesItKept(t *testing.T) {
 	}
 }
 
+// TestAMixedWarmCopyKeepsItsStretchAcrossTheMirrorsThatChangedNothing is the
+// complexity demonstration the review of 2026-09-25 (P2-1) asked for, and it
+// counts the shape the two warm tests beside it cannot meet: a list that
+// alternates missing sources with present ones whose bytes have not changed.
+// Every present entry's mirror goes through the fingerprint fast-path and
+// changes nothing -- no byte moved, no name moved -- and the loop used to
+// kill the stretch of instruments after every mirror all the same, so a run
+// over E entries half of them missing built E/2 resolvers, enumerated the
+// profile root E/2 times and indexed the record E/2 times over -- E/2 full
+// indexes of E entries, the square the review measured at four and eight
+// entries while openSource was never called once. The mirrors that changed
+// no name now end nothing, and the whole run pays for one stretch.
+func TestAMixedWarmCopyKeepsItsStretchAcrossTheMirrorsThatChangedNothing(t *testing.T) {
+	for _, k := range []int{4, 8} {
+		t.Run(fmt.Sprintf("entries=%d", k), func(t *testing.T) {
+			names := make([]string, 0, k)
+			for i := 0; i < k; i++ {
+				names = append(names, fmt.Sprintf("m%d", i))
+			}
+			home, dest := useProfile(t, names)
+			for _, name := range names {
+				write(t, filepath.Join(home, name), "abcd")
+			}
+
+			// The warming run, uncounted: everything lands, and the
+			// record comes back spelled the way the rules file spells
+			// it, so forget answers every recorded entry out of the
+			// cleaned-spelling set and builds nothing -- the whole
+			// counted bill below is copyEntries'.
+			fill(t, dest)
+
+			// Half the sources go, every other one, the mixed shape the
+			// review measured. The prints the warming run kept still
+			// describe every source left standing, so no present entry
+			// can be copied: openSource is wired to fail the run if it
+			// is ever reached, which makes the control two-sided -- a
+			// skip that broke would refuse the fill, not quietly pass.
+			for i := 0; i < k; i += 2 {
+				if err := os.Remove(filepath.Join(home, names[i])); err != nil {
+					t.Fatal(err)
+				}
+			}
+			previous := openSource
+			openSource = func(string) (*os.File, error) {
+				return nil, fmt.Errorf("a warm run opened a source to copy it, and the skip this test is built on did not happen")
+			}
+			defer func() { openSource = previous }()
+
+			stop := countingResolvers()
+			copied := fill(t, dest)
+			resolvers, opens, reads, resolutions, children, scans := stop()
+
+			if resolvers != 1 {
+				t.Errorf("the mixed warm run over %d entries built %d resolvers, want one: the missing sources share one stretch of instruments, and the mirrors between them changed no name the stretch describes", k, resolvers)
+			}
+			if opens != 1 || reads != 1 {
+				t.Errorf("the mixed warm run over %d entries opened %d directories and read %d of them, want one of each: the stretch's one indexing of the record enumerates the profile root once", k, opens, reads)
+			}
+			if resolutions != k {
+				t.Errorf("the mixed warm run over %d entries resolved %d spellings, want %d: the record's places, indexed once at the stretch's build, every vouch after that a cache hit", k, resolutions, k)
+			}
+			if children != k {
+				t.Errorf("the mixed warm run over %d entries processed %d children, want %d: one enumeration of the profile root's %d entries for the whole run, where the shape this replaces counted them once per missing source", k, children, k, k)
+			}
+			if scans != 0 {
+				t.Errorf("the mixed warm run scanned the profile root's siblings %d times, want none: every spelling is exact, so no alias branch runs", scans)
+			}
+			if !reflect.DeepEqual(pathsOf(copied), names) {
+				t.Errorf("the record came back as %v, want %v: the entries whose sources went stay vouched for, the entries whose sources stand stay on the list", pathsOf(copied), names)
+			}
+			for _, name := range names {
+				if got := read(t, filepath.Join(dest, name)); got != "abcd" {
+					t.Errorf("the destination's copy of %s was disturbed by the run: %q", name, got)
+				}
+			}
+		})
+	}
+}
+
+// TestARewriteKeepsTheStretchAndACreatedNameEndsIt pins the line the
+// stretch now dies on, both sides of it. The source that changed since the
+// last run is carried in again -- mirrorFile rewrites the bytes of a file
+// that already stood, under the name it already had -- and the stretch the
+// missing sources share must survive it: no listing and no canonical answer
+// describes bytes. The destination that lost a file is made whole again by
+// the same mirrorFile, and that one is structure: a name made is a listing
+// changed, and the stretch dies on it, so the missing source after it asks
+// a fresh resolver rather than a cache that watched the profile before the
+// name was made. The first half is the fix; the second is the invariant the
+// fix must not weaken.
+func TestARewriteKeepsTheStretchAndACreatedNameEndsIt(t *testing.T) {
+	// The rewrite half: m0's source is gone, r1's source changed, m2's
+	// source is gone, and the mirror between the two vouches rewrites a
+	// standing file's bytes. One stretch answers both vouches.
+	home, dest := useProfile(t, []string{"m0", "r1", "m2"})
+	write(t, filepath.Join(home, "m0"), "abcd")
+	write(t, filepath.Join(home, "r1"), "abcd")
+	write(t, filepath.Join(home, "m2"), "abcd")
+	fill(t, dest)
+
+	write(t, filepath.Join(home, "r1"), "new bytes")
+	if err := os.Remove(filepath.Join(home, "m0")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(home, "m2")); err != nil {
+		t.Fatal(err)
+	}
+
+	stop := countingResolvers()
+	copied := fill(t, dest)
+	resolvers, opens, reads, resolutions, children, scans := stop()
+	if resolvers != 1 {
+		t.Errorf("the run whose one mirror rewrote standing bytes built %d resolvers, want one: the bytes are not the names the stretch describes", resolvers)
+	}
+	if opens != 1 || reads != 1 {
+		t.Errorf("the rewrite run opened %d directories and read %d of them, want one of each: one indexing of the record for both vouches", opens, reads)
+	}
+	if resolutions != 3 {
+		t.Errorf("the rewrite run resolved %d spellings, want three: the record's three places, indexed once at the stretch's build, both vouches cache hits", resolutions)
+	}
+	if children != 3 {
+		t.Errorf("the rewrite run processed %d children, want three: the profile root's three entries, once", children)
+	}
+	if scans != 0 {
+		t.Errorf("the rewrite run scanned the profile root's siblings %d times, want none: every spelling is exact, so no alias branch runs", scans)
+	}
+	if got := read(t, filepath.Join(dest, "r1")); got != "new bytes" {
+		t.Errorf("the rewritten source did not land: %q", got)
+	}
+	if !reflect.DeepEqual(pathsOf(copied), []string{"m0", "r1", "m2"}) {
+		t.Errorf("the record came back as %v, want all three entries", pathsOf(copied))
+	}
+
+	// The created-name half: c1's copy is gone from the destination, its
+	// source stands, and the mirror between the two vouches makes the name
+	// again. The stretch dies on it, and the last vouch builds a fresh
+	// resolver -- two, where the rewrite half above held one.
+	home2, dest2 := useProfile(t, []string{"m0", "c1", "m2"})
+	write(t, filepath.Join(home2, "m0"), "abcd")
+	write(t, filepath.Join(home2, "c1"), "abcd")
+	write(t, filepath.Join(home2, "m2"), "abcd")
+	fill(t, dest2)
+
+	if err := os.Remove(filepath.Join(dest2, "c1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(home2, "m0")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(home2, "m2")); err != nil {
+		t.Fatal(err)
+	}
+
+	stop = countingResolvers()
+	copied = fill(t, dest2)
+	resolvers, opens, reads, resolutions, children, scans = stop()
+	if resolvers != 2 {
+		t.Errorf("the run whose mirror made the lost name again built %d resolvers, want two: a name made is structure, the stretch dies on it, and the vouch after it builds fresh instruments", resolvers)
+	}
+	if opens != 2 || reads != 2 {
+		t.Errorf("the create run opened %d directories and read %d of them, want two of each: one indexing before the name was made and one after it", opens, reads)
+	}
+	if resolutions != 6 {
+		t.Errorf("the create run resolved %d spellings, want six: the record's three places indexed once per stretch", resolutions)
+	}
+	if children != 5 {
+		t.Errorf("the create run processed %d children, want five: the root's two entries before the name was made and three after it", children)
+	}
+	if scans != 0 {
+		t.Errorf("the create run scanned the profile root's siblings %d times, want none: every spelling is exact, so no alias branch runs", scans)
+	}
+	if got := read(t, filepath.Join(dest2, "c1")); got != "abcd" {
+		t.Errorf("the lost copy was not made whole again: %q", got)
+	}
+	if !reflect.DeepEqual(pathsOf(copied), []string{"m0", "c1", "m2"}) {
+		t.Errorf("the record came back as %v, want all three entries", pathsOf(copied))
+	}
+}
+
+// TestAClearThatTookNothingBackKeepsTheStretchAndOneThatClearedEndsIt pins
+// the same line on the take-back, where clearEntry's own answer is the
+// question: stale entries whose copies are already gone from the profile
+// answer false, take nothing back, and share one stretch of instruments --
+// the shape that used to rebuild after every clear, whatever the clear had
+// done -- while a clear that really removed a name ends the stretch, and
+// the question after it asks a fresh resolver. forget is called directly,
+// with the record and the list a run would hand it, so the counted bill is
+// the take-back's alone.
+func TestAClearThatTookNothingBackKeepsTheStretchAndOneThatClearedEndsIt(t *testing.T) {
+	// Nothing taken: a0 and a1 left the list and their copies are already
+	// gone from the profile; k0 stays named and stands. Both clears find
+	// an empty place, and one stretch answers both questions.
+	dest := t.TempDir()
+	write(t, filepath.Join(dest, "k0"), "kept")
+	previous := []config.Entry{{Path: "a0"}, {Path: "a1"}, {Path: "k0"}}
+	current := []config.Entry{{Path: "k0"}}
+
+	root, err := os.OpenRoot(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := countingResolvers()
+	if err := forget(root, previous, current); err != nil {
+		t.Fatal(err)
+	}
+	resolvers, opens, reads, resolutions, children, scans := stop()
+	_ = root.Close()
+
+	if resolvers != 1 {
+		t.Errorf("the pass whose clears took nothing back built %d resolvers, want one: a clear that found nothing to take changed no name, and the next question reads the same instruments", resolvers)
+	}
+	if opens != 1 || reads != 1 {
+		t.Errorf("the nothing-taken pass opened %d directories and read %d of them, want one of each: the stretch's one indexing of the current list", opens, reads)
+	}
+	if resolutions != 3 {
+		t.Errorf("the nothing-taken pass resolved %d spellings, want three: k0 indexed at the stretch's build, a0 and a1 asked once each and answered by the volume's nothing", resolutions)
+	}
+	if children != 1 {
+		t.Errorf("the nothing-taken pass processed %d children, want one: the profile root's one standing entry, once for the whole pass", children)
+	}
+	if scans != 0 {
+		t.Errorf("the nothing-taken pass scanned the profile root's siblings %d times, want none: every spelling is exact, so no alias branch runs", scans)
+	}
+	if got := read(t, filepath.Join(dest, "k0")); got != "kept" {
+		t.Errorf("the surviving entry was disturbed by the clears beside it: %q", got)
+	}
+
+	// Something taken: b0 and b1 left the list and their copies stand. The
+	// first clear removes a real name, the stretch dies on it, and the
+	// second question builds a fresh resolver -- two, where the
+	// nothing-taken pass above held one. This half is the invariant: a
+	// clearEntry that stopped answering true would leave this stretch
+	// carrying its answers across a real deletion.
+	dest = t.TempDir()
+	write(t, filepath.Join(dest, "b0"), "stale")
+	write(t, filepath.Join(dest, "b1"), "stale")
+	write(t, filepath.Join(dest, "k0"), "kept")
+	previous = []config.Entry{{Path: "b0"}, {Path: "b1"}, {Path: "k0"}}
+
+	root, err = os.OpenRoot(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop = countingResolvers()
+	if err := forget(root, previous, current); err != nil {
+		t.Fatal(err)
+	}
+	resolvers, opens, reads, resolutions, children, scans = stop()
+	_ = root.Close()
+
+	if resolvers != 2 {
+		t.Errorf("the pass whose first clear removed a name built %d resolvers, want two: the real clear ends the stretch, and the question after it builds fresh instruments", resolvers)
+	}
+	if opens != 2 || reads != 2 {
+		t.Errorf("the real-clear pass opened %d directories and read %d of them, want two of each: one indexing before the first clear and one after it", opens, reads)
+	}
+	if resolutions != 4 {
+		t.Errorf("the real-clear pass resolved %d spellings, want four: k0 indexed once per stretch, b0 and b1 asked once each", resolutions)
+	}
+	if children != 5 {
+		t.Errorf("the real-clear pass processed %d children, want five: the root's three entries before the first clear and two after it", children)
+	}
+	if scans != 0 {
+		t.Errorf("the real-clear pass scanned the profile root's siblings %d times, want none: every spelling is exact, so no alias branch runs", scans)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "b0")); !os.IsNotExist(err) {
+		t.Errorf("the stale b0 survived its clear: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "b1")); !os.IsNotExist(err) {
+		t.Errorf("the stale b1 survived its clear: %v", err)
+	}
+	if got := read(t, filepath.Join(dest, "k0")); got != "kept" {
+		t.Errorf("the surviving entry was disturbed by the clears beside it: %q", got)
+	}
+}
+
 // BenchmarkDedupeEntriesThePairwiseWay runs the loop this branch replaced
 // over the same warm tree as BenchmarkDedupeEntries, so the resolver's
 // saving stands as one number beside another rather than an adjective. It
