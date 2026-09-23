@@ -128,16 +128,14 @@ func (r *placeResolver) retract(spelling string) bool {
 		delete(r.aliasIn, parent)
 		// The holding directory's listing is amended in place: the
 		// taken name leaves every snapshot index and the child list.
+		// removeSnapshotChild is the hand that knows the shape -- it
+		// takes the byName row, the child slot and the canonical
+		// answer with it -- and its rebuildCanonical already covers
+		// every case the eager row deletions used to cover, the
+		// taken path's answer standing or falling with what the
+		// volume still holds under it.
 		if snap, ok := r.dirs[parent]; ok && snap.ok {
-			taken := filepath.Base(removed)
-			delete(snap.byName, taken)
-			snap.children = withoutChild(snap.children, taken)
-			if takenPath, known := snap.canonical[taken]; known {
-				delete(snap.byCanonical, takenPath)
-				delete(snap.canonical, taken)
-				delete(snap.canonicalNames[takenPath], taken)
-				r.rebuildCanonical(snap, takenPath)
-			}
+			r.removeSnapshotChild(&snap, filepath.Base(removed))
 			r.dirs[parent] = snap
 		}
 	} else if statErr != nil {

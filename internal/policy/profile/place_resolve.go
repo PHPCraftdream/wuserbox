@@ -92,10 +92,11 @@ func (r *placeResolver) canonicalEntryPath(path string) placeResult {
 					complete := true
 					var scanErr error
 					for _, child := range snap.children {
-						if _, known := snap.canonical[child.Name()]; known {
+						name := child.Name()
+						if _, known := snap.canonical[name]; known {
 							continue
 						}
-						childFile, err := r.root.Open(filepath.Join(current, child.Name()))
+						childFile, err := r.root.Open(filepath.Join(current, name))
 						if err != nil {
 							complete = false
 							scanErr = err
@@ -109,37 +110,66 @@ func (r *placeResolver) canonicalEntryPath(path string) placeResult {
 							scanErr = childErr
 							continue
 						}
-						snap.canonical[child.Name()] = childPath
-					}
-					snap.canonicalComplete = complete
-					// The index is rebuilt out of the canonical answers this
-					// snapshot keeps, after every scan, rather than extended
-					// in place: a scan only starts because some spelling's
-					// answer was missing, and the children an earlier
-					// partial scan already answered -- a sibling whose open
-					// or canonicalization failed once and succeeds now --
-					// are seen again on the way past. Re-observing one
-					// child is not two names for one path, and marking it
-					// so made the index refuse spellings this resolver had
-					// itself resolved a moment before. The rebuild keeps
-					// the index exactly the fold of the snapshot's answers
-					// at every scan: one stored name per canonical path,
-					// not unique once two names carry it -- hard links --
-					// however many scans it took to see them.
-					clear(snap.byCanonical)
-					clear(snap.canonicalNames)
-					for name, childPath := range snap.canonical {
+						snap.canonical[name] = childPath
+						// The index is extended in place, beside the
+						// canonical row the answer just got, rather than
+						// cleared and rebuilt out of the whole snapshot's
+						// answers on every scan. The children an earlier
+						// scan already answered are exactly the ones this
+						// loop skips, so a scan adds only the answers it
+						// newly computed: a retried scan re-observes
+						// nothing, and an inner membership map is built
+						// once per canonical path a snapshot first stored
+						// a name under instead of once for every known path
+						// on every scan. That rebuild is the cumulative
+						// allocation work the reviews of 2026-09-30 (round
+						// 11) and 2026-09-23 (round 12) measured: with B
+						// unchanged neighbors and M changed names it paid
+						// O(B·M+M²) for answers the increment already held.
+						//
+						// A second observation of one child cannot read
+						// as a second stored name, because there is no
+						// second observation to make: the child the scan
+						// re-met is the name already stored under that
+						// path, and the guard keeps the two apart. Only a
+						// genuinely second stored name carrying one
+						// canonical path -- hard links -- demotes
+						// uniqueness, exactly as the scan's own
+						// matches != 1 refused it, so the answers an
+						// earlier partial scan managed to keep stay
+						// answered.
+						//
+						// refresh and retract keep the index the exact
+						// fold of the snapshot's canonical answers the
+						// same way: they point at the rows they change and
+						// let rebuildCanonical fold what stays, so no hand
+						// needs to know how many scans it took to reach
+						// the answers it is amending.
 						if snap.canonicalNames[childPath] == nil {
 							snap.canonicalNames[childPath] = make(map[string]bool)
+							r.canonicalMaps++
 						}
 						snap.canonicalNames[childPath][name] = true
 						if prior, seen := snap.byCanonical[childPath]; seen {
-							prior.unique = false
-							snap.byCanonical[childPath] = prior
+							if prior.name != name {
+								prior.unique = false
+								snap.byCanonical[childPath] = prior
+							}
 						} else {
 							snap.byCanonical[childPath] = canonicalChild{name: name, unique: true}
 						}
 					}
+					snap.canonicalComplete = complete
+					// The snapshot goes back into the resolver's table,
+					// because snapshot hands its look by value: the maps
+					// inside it are shared and the completeness flag is
+					// not, so a scan that left it on the copy it holds
+					// would let the next rebuildCanonical read a stale
+					// false and drop the unique answer this scan has just
+					// witnessed. Writing it down here is the pattern every
+					// other mutating hand already uses, and the flag the
+					// next update reads is this scan's own.
+					r.dirs[current] = snap
 					// Canonical paths retain the stored directory-entry spelling. Hard
 					// links therefore match only the name Windows actually resolved,
 					// rather than merging every name for the same file identity.

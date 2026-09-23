@@ -70,7 +70,7 @@ func TestAWarmCopyPaysResolverWorkOncePerEntryNotOncePerPair(t *testing.T) {
 	stop := countingResolvers()
 	defer stop()
 	copied := fill(t, dest)
-	resolvers, opens, reads, resolutions, children, scans, _ := stop()
+	resolvers, opens, reads, resolutions, children, scans, _, _ := stop()
 	totalResolvers, totalOpens, totalReads := resolvers, opens, reads
 	totalResolutions, totalChildren, totalScans := resolutions, children, scans
 	if resolvers != 1 {
@@ -144,7 +144,7 @@ func TestAWarmCopyPaysResolverWorkOncePerEntryNotOncePerPair(t *testing.T) {
 	// them because there is nothing left to copy.
 	stop = countingResolvers()
 	copied = fill(t, dest)
-	resolvers, opens, reads, resolutions, children, scans, _ = stop()
+	resolvers, opens, reads, resolutions, children, scans, _, _ = stop()
 	totalResolvers, totalOpens, totalReads = totalResolvers+resolvers, totalOpens+opens, totalReads+reads
 	totalResolutions, totalChildren, totalScans = totalResolutions+resolutions, totalChildren+children, totalScans+scans
 	if resolvers != 1 {
@@ -197,7 +197,7 @@ func TestAWarmCopyPaysResolverWorkOncePerEntryNotOncePerPair(t *testing.T) {
 	}
 	stop = countingResolvers()
 	copied = fill(t, dest)
-	resolvers, opens, reads, resolutions, children, scans, _ = stop()
+	resolvers, opens, reads, resolutions, children, scans, _, _ = stop()
 	totalResolvers, totalOpens, totalReads = totalResolvers+resolvers, totalOpens+opens, totalReads+reads
 	totalResolutions, totalChildren, totalScans = totalResolutions+resolutions, totalChildren+children, totalScans+scans
 	if resolvers != 2 {
@@ -359,7 +359,7 @@ func TestAWarmForgetCountsChildrenOncePerStretchNotOncePerQuestion(t *testing.T)
 	// the root shared by every question in it.
 	stop := countingResolvers()
 	copied := fill(t, dest)
-	resolvers, opens, reads, resolutions, children, scans, _ := stop()
+	resolvers, opens, reads, resolutions, children, scans, _, _ := stop()
 	if resolvers != 1 {
 		t.Errorf("the warm respelled run built %d resolvers, want one: one stretch of instruments for forget's "+
 			"whole pass, and copyEntries found every source on the volume and never built one", resolvers)

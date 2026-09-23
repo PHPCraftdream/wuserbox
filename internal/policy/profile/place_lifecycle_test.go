@@ -28,7 +28,7 @@ func TestARewriteKeepsTheStretchAndACreatedNameEndsIt(t *testing.T) {
 
 	stop := countingResolvers()
 	copied := fill(t, dest)
-	resolvers, opens, reads, resolutions, children, scans, _ := stop()
+	resolvers, opens, reads, resolutions, children, scans, _, _ := stop()
 	if resolvers != 1 {
 		t.Errorf("the run whose one mirror rewrote standing bytes built %d resolvers, want one: the bytes are not the names the stretch describes", resolvers)
 	}
@@ -73,7 +73,7 @@ func TestARewriteKeepsTheStretchAndACreatedNameEndsIt(t *testing.T) {
 
 	stop = countingResolvers()
 	copied = fill(t, dest2)
-	resolvers, opens, reads, resolutions, children, scans, _ = stop()
+	resolvers, opens, reads, resolutions, children, scans, _, _ = stop()
 	if resolvers != 1 {
 		t.Errorf("the run whose mirror made the lost name again built %d resolvers, want one: the stretch updates the created name in place", resolvers)
 	}
@@ -126,7 +126,7 @@ func TestAClearThatTookNothingBackKeepsTheStretchAndOneThatClearedRetractsItsAns
 	if err := forget(root, previous, current); err != nil {
 		t.Fatal(err)
 	}
-	resolvers, opens, reads, resolutions, children, scans, visits := stop()
+	resolvers, opens, reads, resolutions, children, scans, visits, _ := stop()
 	_ = root.Close()
 
 	if resolvers != 1 {
@@ -180,7 +180,7 @@ func TestAClearThatTookNothingBackKeepsTheStretchAndOneThatClearedRetractsItsAns
 	if err := forget(root, previous, current); err != nil {
 		t.Fatal(err)
 	}
-	resolvers, opens, reads, resolutions, children, scans, visits = stop()
+	resolvers, opens, reads, resolutions, children, scans, visits, _ = stop()
 	_ = root.Close()
 
 	if resolvers != 1 {
