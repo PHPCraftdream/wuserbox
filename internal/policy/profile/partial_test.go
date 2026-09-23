@@ -81,7 +81,7 @@ func TestAForgetThatTakesHalfTheRecordBackRetractsItsAnswersNotRebuilds(t *testi
 			}
 			stop := countingResolvers()
 			copied := fill(t, dest)
-			resolvers, opens, reads, resolutions, children, scans, visits := stop()
+			resolvers, opens, reads, resolutions, children, scans, visits, _ := stop()
 
 			if resolvers != 1 {
 				t.Errorf("the pass that took half the record back built %d resolvers, want one: the real clears retract the answers each made false and the stretch survives them, where the shape the review of 2026-09-26 (P3-1) replaced ended the stretch on the first clear and rebuilt for every clear after it", resolvers)
@@ -178,7 +178,7 @@ func TestAnAliasSpelledStretchSurvivesItsRealClearsByRetraction(t *testing.T) {
 	}
 	stop := countingResolvers()
 	copied := fill(t, dest)
-	resolvers, opens, reads, resolutions, children, scans, visits := stop()
+	resolvers, opens, reads, resolutions, children, scans, visits, _ := stop()
 
 	if resolvers != 1 {
 		t.Errorf("the pass whose two real clears sat between alias-spelled questions built %d resolvers, want one: each clear retracts the answers it made false and the stretch -- the presence set with it -- answers the questions after, one stretch across both real clears, the retractions keeping the survivors' index where the replaced shape rebuilt per clear", resolvers)
@@ -290,7 +290,7 @@ func TestAClearThatSparesAnExcludedChildLeavesTheHoldingDirectoryStanding(t *tes
 			}
 			stop := countingResolvers()
 			copied := fill(t, dest)
-			resolvers, opens, reads, resolutions, children, scans, visits := stop()
+			resolvers, opens, reads, resolutions, children, scans, visits, _ := stop()
 
 			if resolvers != 1 {
 				t.Errorf("the pass whose clears left their entries standing built %d resolvers, want one: a clear that spared an excluded child retracts the answers it made false out of the standing listing and the stretch survives it, where the shape the review of 2026-09-28 (P3-1) replaced took the holding directory's snapshot and rebuilt for every clear after it", resolvers)

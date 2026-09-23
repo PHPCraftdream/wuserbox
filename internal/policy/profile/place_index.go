@@ -94,6 +94,7 @@ func (r *placeResolver) refreshSnapshots(path string) error {
 		snap.canonical[name] = canonical
 		if snap.canonicalNames[canonical] == nil {
 			snap.canonicalNames[canonical] = make(map[string]bool)
+			r.canonicalMaps++
 		}
 		snap.canonicalNames[canonical][name] = true
 		r.rebuildCanonical(snap, canonical)
@@ -103,24 +104,28 @@ func (r *placeResolver) refreshSnapshots(path string) error {
 	return nil
 }
 
+// removeSnapshotChild takes one name out of a snapshot's listing and its
+// answers, and it asks nothing for a name the listing never held: the byName
+// rows are the witness, because canonical rows are only ever written beside
+// byName rows -- snapshot() builds the two from the same enumeration, the
+// alias scan writes a child's canonical answer under a name it read out of
+// the listing, and refresh writes both rows for the name it just re-added.
+// A name with no byName row therefore holds no canonical row, no child slot
+// and no membership to take back, and the guard is what keeps a refresh's
+// unchanged neighbors from being walked over twice per changed name -- the
+// filter this replaces cost every neighbor of every changed name, even
+// where the name was not in the listing at all.
 func (r *placeResolver) removeSnapshotChild(snap *dirSnapshot, name string) {
+	if _, known := snap.byName[name]; !known {
+		return
+	}
 	delete(snap.byName, name)
-	snap.children = withoutChild(snap.children, name)
+	snap.takeChild(name)
 	if canonical := snap.canonical[name]; canonical != "" {
 		delete(snap.canonical, name)
 		delete(snap.canonicalNames[canonical], name)
 		r.rebuildCanonical(*snap, canonical)
 	}
-}
-
-func withoutChild(children []os.DirEntry, name string) []os.DirEntry {
-	kept := children[:0]
-	for _, child := range children {
-		if child.Name() != name {
-			kept = append(kept, child)
-		}
-	}
-	return kept
 }
 
 func (r *placeResolver) rebuildCanonical(snap dirSnapshot, canonical string) {

@@ -50,19 +50,37 @@ type placeResult struct {
 // question spelled it that way, from opening the siblings all over again.
 // A canonical path two names carry -- hard links -- is kept marked not
 // unique and refused, exactly as the scan's own matches != 1 refused.
-// The index is rebuilt from the snapshot's canonical answers after every
-// scan rather than extended across them, so re-walking children an
-// earlier partial scan already answered cannot mark them ambiguous: only
-// a second stored name carrying one canonical path does that. Like
-// canonical, it keeps what the scan managed: a sibling the scan could not
-// canonicalize has no entry here, and the next alias question about that
-// spelling asks the volume again.
+// The index is extended in place, one answer at a time, rather than
+// rebuilt from the snapshot's canonical answers after every scan: each scan
+// adds only the answers it newly computed, because the children an earlier
+// scan already answered are the ones it skips on the way past. A retried
+// scan therefore re-observes nothing -- the one it re-met is the name
+// already stored under that path -- so a second observation cannot read as
+// a second stored name, and only a genuinely second stored name carrying
+// one canonical path demotes uniqueness. The same holds across the other
+// hands that amend these books: refresh and retract point at the rows they
+// change and let rebuildCanonical fold the answers that stay, so the index
+// remains exactly the fold of the snapshot's canonical answers however many
+// scans and updates it took to reach them. Like canonical, it keeps what
+// the scan managed: a sibling the scan could not canonicalize has no entry
+// here, and the next alias question about that spelling asks the volume
+// again.
 //
 // retract's point update is the one hand that amends these books after
 // the fact: the taken child's rows leave byName, canonical and
 // byCanonical, and what stays is what the volume still holds.
 type dirSnapshot struct {
-	children          []os.DirEntry
+	children []os.DirEntry
+	// childAt holds the same listing under the same names as a map, name to
+	// the slot it sits in. A name that leaves the listing -- one mirror's
+	// refresh, one clear's take-back -- is a single lookup and a single
+	// swap of the last child into the vacated slot, instead of a filter over
+	// every neighbor that was left, and the old shape paid that filter
+	// twice per changed name even when the listing never held it. The
+	// order of children is no one's answer: its only reader is the alias
+	// scan, which walks the list whole and keeps whatever it manages to
+	// canonicalize however the list happens to sit.
+	childAt           map[string]int
 	byName            map[string]string
 	canonical         map[string]string
 	byCanonical       map[string]canonicalChild
@@ -87,6 +105,29 @@ type canonicalChild struct {
 	unique bool
 }
 
+// takeChild takes one name out of the snapshot's listing, and it costs one
+// lookup plus one swap rather than a pass over every neighbor left. The
+// child that sat last moves into the vacated slot and its own index is
+// rewritten, so the listing stays exactly the enumeration minus that name.
+// A name the listing never held answers immediately, which is what makes a
+// refresh's unchanged neighbors free: the caller asks about the stored
+// names, and a name that was not in the listing is not in it now.
+func (snap *dirSnapshot) takeChild(name string) {
+	if snap.childAt == nil {
+		return
+	}
+	at, known := snap.childAt[name]
+	if !known {
+		return
+	}
+	last := len(snap.children) - 1
+	moved := snap.children[last]
+	snap.children[at] = moved
+	snap.childAt[moved.Name()] = at
+	snap.children = snap.children[:last]
+	delete(snap.childAt, name)
+}
+
 // placeResolver answers the ownership question for one operation, and it
 // is what keeps the answering from growing with the square of the entries
 // compared. The review of 2026-09-20 (P2-5) measured the shape: resolving
@@ -105,17 +146,18 @@ type canonicalChild struct {
 // structural mirror. Both keep unrelated answers and discard all state at
 // the end of the operation.
 //
-// opens, reads, resolutions, children, scans and visits are the measurement
-// the review's close tests hold the resolver to: every open of a directory
-// made to enumerate it, every ReadDir, every spelling resolved that the
-// places memo had not already answered, the number of children those
+// opens, reads, resolutions, children, scans, visits and canonicalMaps are the
+// measurement the review's close tests hold the resolver to: every open of a
+// directory made to enumerate it, every ReadDir, every spelling resolved that
+// the places memo had not already answered, the number of children those
 // ReadDirs actually processed, and the sibling scans the alias branch ran
 // that its byCanonical index did not save, with visits the book entries a
-// retraction pulled. The last four are the counters the earlier review's
-// opens and reads could not stand in for -- a warm pass can look linear by
-// those and still pay per pair -- and they are what pins the stretch shape.
-// The alias branch's opens of stored spellings are resolution, not
-// enumeration, and are not counted. The numbers are read, never used to
+// retraction pulled and canonicalMaps the membership maps a directory's
+// canonical answers had built. The last five are the counters the earlier
+// review's opens and reads could not stand in for -- a warm pass can look
+// linear by those and still pay per pair -- and they are what pins the
+// stretch shape. The alias branch's opens of stored spellings are resolution,
+// not enumeration, and are not counted. The numbers are read, never used to
 // decide.
 type placeResolver struct {
 	root       *os.Root
@@ -159,6 +201,17 @@ type placeResolver struct {
 	resolutions int
 	children    int
 	scans       int
+	// canonicalMaps is the counter beside scans and visits, and it is the
+	// shape the round-11 and round-12 reviews asked for beside them: the
+	// inner membership maps a directory's canonical answers had to build,
+	// one per canonical path a snapshot first stored a name under. The
+	// shape it replaced cleared and rebuilt the whole set on every scan,
+	// so B unchanged neighbors and M changed names paid O(BM+M^2)
+	// cumulative allocation work for answers the increment already held;
+	// each scan now builds a map only for a path it has just answered.
+	// Like the others it is read by the counting tests and used to
+	// decide nothing.
+	canonicalMaps int
 	// visits is the retraction-shaped counter beside scans: the book
 	// entries one retraction pulled -- snapshot keys, witnessed
 	// spellings, alias answers -- where the scanned loops it replaced
@@ -297,8 +350,13 @@ func (r *placeResolver) snapshot(dir string) (dirSnapshot, bool) {
 	for _, child := range children {
 		byName[child.Name()] = child.Name()
 	}
+	childAt := make(map[string]int, len(children))
+	for at, child := range children {
+		childAt[child.Name()] = at
+	}
 	snap := dirSnapshot{
 		children:       children,
+		childAt:        childAt,
 		byName:         byName,
 		canonical:      make(map[string]string),
 		byCanonical:    make(map[string]canonicalChild),

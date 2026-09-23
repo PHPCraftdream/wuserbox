@@ -311,8 +311,9 @@ func TestSameEntryPlaceSharesOneLookBetweenItsTwoSpellings(t *testing.T) {
 // and its stop leaves the wrapper installed, and the wrapper answers as
 // the constructor it wrapped, so nothing downstream can tell. The stop
 // reports how many resolvers were built and the opens and reads and
-// resolutions and children and scans and visits they paid for together.
-func countingResolvers() func() (resolvers, opens, reads, resolutions, children, scans, visits int) {
+// resolutions and children and scans and visits and canonical maps they
+// paid for together.
+func countingResolvers() func() (resolvers, opens, reads, resolutions, children, scans, visits, canonicalMaps int) {
 	var held []*placeResolver
 	previous := newPlaceResolver
 	newPlaceResolver = func(root *os.Root) *placeResolver {
@@ -320,7 +321,7 @@ func countingResolvers() func() (resolvers, opens, reads, resolutions, children,
 		held = append(held, resolver)
 		return resolver
 	}
-	return func() (resolvers, opens, reads, resolutions, children, scans, visits int) {
+	return func() (resolvers, opens, reads, resolutions, children, scans, visits, canonicalMaps int) {
 		newPlaceResolver = previous
 		resolvers = len(held)
 		for _, resolver := range held {
@@ -330,9 +331,10 @@ func countingResolvers() func() (resolvers, opens, reads, resolutions, children,
 			children += resolver.children
 			scans += resolver.scans
 			visits += resolver.visits
+			canonicalMaps += resolver.canonicalMaps
 		}
 		held = nil
-		return resolvers, opens, reads, resolutions, children, scans, visits
+		return resolvers, opens, reads, resolutions, children, scans, visits, canonicalMaps
 	}
 }
 

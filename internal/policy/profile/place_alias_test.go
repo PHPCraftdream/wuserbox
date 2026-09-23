@@ -324,7 +324,7 @@ func TestAMixedWarmCopyKeepsItsStretchAcrossTheMirrorsThatChangedNothing(t *test
 
 			stop := countingResolvers()
 			copied := fill(t, dest)
-			resolvers, opens, reads, resolutions, children, scans, _ := stop()
+			resolvers, opens, reads, resolutions, children, scans, _, canonicalMaps := stop()
 
 			if resolvers != 1 {
 				t.Errorf("the mixed warm run over %d entries built %d resolvers, want one: the missing sources share one stretch of instruments, and the mirrors between them changed no name the stretch describes", k, resolvers)
@@ -340,6 +340,9 @@ func TestAMixedWarmCopyKeepsItsStretchAcrossTheMirrorsThatChangedNothing(t *test
 			}
 			if scans != 0 {
 				t.Errorf("the mixed warm run scanned the profile root's siblings %d times, want none: every spelling is exact, so no alias branch runs", scans)
+			}
+			if canonicalMaps != 0 {
+				t.Errorf("the mixed warm run over %d entries built %d canonical membership maps, want none: no alias branch scanned a sibling and no structural mirror added a name, so nothing had a membership to keep", k, canonicalMaps)
 			}
 			if !reflect.DeepEqual(pathsOf(copied), names) {
 				t.Errorf("the record came back as %v, want %v: the entries whose sources went stay vouched for, the entries whose sources stand stay on the list", pathsOf(copied), names)
@@ -381,7 +384,7 @@ func TestAMixedCopyRefreshesStructuralMirrorsWithoutReindexingTheRecord(t *testi
 
 			stop := countingResolvers()
 			copied := fill(t, dest)
-			resolvers, opens, reads, resolutions, children, scans, _ := stop()
+			resolvers, opens, reads, resolutions, children, scans, _, canonicalMaps := stop()
 			if resolvers != 1 || opens != 1 || reads != 1 || children != k/2 {
 				t.Errorf("alternating structural mirrors over %d entries built %d resolvers, opened/read %d/%d directories and processed %d children; want one resolver and one initial index of %d standing entries", k, resolvers, opens, reads, children, k/2)
 			}
@@ -390,6 +393,9 @@ func TestAMixedCopyRefreshesStructuralMirrorsWithoutReindexingTheRecord(t *testi
 			}
 			if scans > k/2 {
 				t.Errorf("the %d-entry refresh scanned %d alias sibling lists, more than one per changed name", k, scans)
+			}
+			if canonicalMaps != k {
+				t.Errorf("the %d-entry refresh built %d canonical membership maps, want %d: one per answered canonical path -- %d survivors canonicalized by the first recreate's scan, and one per recreated name -- where the shape this replaces cleared and rebuilt every directory's maps on every scan", k, canonicalMaps, k, k/2)
 			}
 			if !reflect.DeepEqual(pathsOf(copied), names) {
 				t.Errorf("the record came back as %v, want %v", pathsOf(copied), names)
