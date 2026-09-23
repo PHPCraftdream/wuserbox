@@ -375,6 +375,48 @@ func TestThePlanRefusesTheNegativeDepthACopyRefuses(t *testing.T) {
 	}
 }
 
+// TestThePlanRefusesThePathsACopyRefuses is the third of the pre-flight
+// refusals through Plan's door: an entry whose path does not land inside the
+// profile at all. A --dry-run asked about a rule the real fill would refuse
+// has to refuse it too, before describing anything, and with the run's own
+// words -- the refusal here is within's, moved earlier, so the same spelling
+// gets the same sentence from a preview that gets it from a copy. Two
+// answers to "what is wrong with this path" are how a --dry-run comes to
+// describe a fill that would lose data.
+func TestThePlanRefusesThePathsACopyRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		path, wantSubstring string
+	}{
+		{".", "names the profile root itself"},
+		{"../outside", "does not name anything inside the profile"},
+		{"auth.json.", "ends in dots or spaces"},
+		{"NTUSER~1.DAT", "8.3 short name"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			_, dest := useProfileEntries(t, []config.Entry{{Path: tc.path}})
+
+			cleanup, plans, err := Plan(dest, nil)
+			if err == nil {
+				t.Fatal("the plan described a run Copy refuses to start")
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstring) {
+				t.Errorf("the refusal did not name the path: %v", err)
+			}
+			if cleanup != nil || plans != nil {
+				t.Errorf("a refused plan came back with content: cleanup %+v, entries %+v", cleanup, plans)
+			}
+
+			_, _, copyErr := Copy(dest, nil, nil)
+			if copyErr == nil {
+				t.Fatal("the copy itself accepted what the plan refuses")
+			}
+			if copyErr.Error() != err.Error() {
+				t.Errorf("the plan and the copy refused the same file with different words:\nplan: %v\ncopy: %v", err, copyErr)
+			}
+		})
+	}
+}
+
 // TestThePlanOfAMissingDestinationAsksTheSuspiciousNameAsWritten is the
 // nil-root regression. A preview asked about a sandbox that does not exist
 // yet has no root to open, and the resolved question -- the one that opens
