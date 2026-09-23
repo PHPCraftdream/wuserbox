@@ -1,0 +1,305 @@
+package profile
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
+)
+
+// refreshMutation updates one parent listing after a mirror changed a name.
+// It keeps unrelated sibling resolutions and their canonical-presence
+// answers intact. Directory generations invalidate dependent aliases/misses.
+func (r *placeResolver) refreshMutation(path, parent, dependencyDir string) error {
+	path = cleanEntryPath(path)
+	target := filepath.Join(parent, filepath.Base(path))
+	actual := ""
+	file, openErr := r.root.Open(target)
+	if openErr == nil {
+		actual, openErr = pathid.Canonical(file.Name())
+		_ = file.Close()
+		if openErr == nil && actual == "" {
+			return fmt.Errorf("resolving profile path after mirror changed %s: canonical path is empty", path)
+		}
+	} else if !os.IsNotExist(openErr) {
+		return fmt.Errorf("refreshing profile resolver after mirror changed %s: %w", path, openErr)
+	}
+	if openErr != nil && actual == "" && !os.IsNotExist(openErr) {
+		return fmt.Errorf("resolving profile path after mirror changed %s: %w", path, openErr)
+	}
+	actualEntry := ""
+	if actual != "" {
+		actualEntry = filepath.Join(parent, filepath.Base(actual))
+	}
+	r.dirVersion[parent]++
+	if dependencyDir != "" && dependencyDir != parent {
+		r.dirVersion[dependencyDir]++
+	}
+	r.dirVersion[path]++
+	if actualEntry != "" && actualEntry != path {
+		r.dirVersion[actualEntry]++
+	}
+
+	if err := r.refreshSnapshots(target); err != nil {
+		return fmt.Errorf("updating profile path after mirror changed %s: %w", path, err)
+	}
+	if actual != "" {
+		info, statErr := r.root.Lstat(actualEntry)
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return fmt.Errorf("checking profile path after mirror changed %s: %w", path, statErr)
+		}
+		if statErr == nil && info.IsDir() {
+			r.dropDir(actualEntry)
+		}
+	}
+	for dir := filepath.Clean(path); dir != "."; dir = filepath.Dir(dir) {
+		if snap, ok := r.dirs[dir]; ok && !snap.ok {
+			r.dropDir(dir)
+		}
+	}
+	return nil
+}
+
+func (r *placeResolver) refreshSnapshots(path string) error {
+	current := "."
+	for _, component := range strings.Split(cleanEntryPath(path), string(filepath.Separator)) {
+		if snap, ok := r.dirs[current]; ok && !snap.ok {
+			r.dropDir(current)
+		}
+		snap, ok := r.dirs[current]
+		if !ok {
+			return nil
+		}
+		childPath := filepath.Join(current, component)
+		file, err := r.root.Open(childPath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return err
+			}
+			r.removeSnapshotChild(&snap, component)
+			r.dirs[current] = snap
+			return nil
+		}
+		canonical, err := pathid.Canonical(file.Name())
+		_ = file.Close()
+		if err != nil {
+			return err
+		}
+		name := filepath.Base(canonical)
+		r.removeSnapshotChild(&snap, component)
+		r.removeSnapshotChild(&snap, name)
+		snap.byName[name] = name
+		snap.canonical[name] = canonical
+		if snap.canonicalNames[canonical] == nil {
+			snap.canonicalNames[canonical] = make(map[string]bool)
+		}
+		snap.canonicalNames[canonical][name] = true
+		r.rebuildCanonical(snap, canonical)
+		r.dirs[current] = snap
+		current = filepath.Join(current, name)
+	}
+	return nil
+}
+
+func (r *placeResolver) removeSnapshotChild(snap *dirSnapshot, name string) {
+	delete(snap.byName, name)
+	snap.children = withoutChild(snap.children, name)
+	if canonical := snap.canonical[name]; canonical != "" {
+		delete(snap.canonical, name)
+		delete(snap.canonicalNames[canonical], name)
+		r.rebuildCanonical(*snap, canonical)
+	}
+}
+
+func withoutChild(children []os.DirEntry, name string) []os.DirEntry {
+	kept := children[:0]
+	for _, child := range children {
+		if child.Name() != name {
+			kept = append(kept, child)
+		}
+	}
+	return kept
+}
+
+func (r *placeResolver) rebuildCanonical(snap dirSnapshot, canonical string) {
+	names := snap.canonicalNames[canonical]
+	switch len(names) {
+	case 0:
+		delete(snap.canonicalNames, canonical)
+		delete(snap.byCanonical, canonical)
+	case 1:
+		if !snap.canonicalComplete {
+			delete(snap.byCanonical, canonical)
+			return
+		}
+		for name := range names {
+			snap.byCanonical[canonical] = canonicalChild{name: name, unique: true}
+		}
+	default:
+		name := ""
+		for child := range names {
+			if name == "" || child < name {
+				name = child
+			}
+		}
+		snap.byCanonical[canonical] = canonicalChild{name: name, unique: false}
+	}
+}
+
+// placeIndex is one operation's resolver and canonical-presence set.
+// forget updates it with retract after clears; copyEntries updates only the
+// changed subtree after mirrors. Unchanged recorded places stay indexed,
+// keeping mixed copy runs linear in their recorded entries.
+type placeIndex struct {
+	resolver *placeResolver
+	paths    map[string]string
+	members  map[string]map[string]bool
+	byPath   *placePathNode
+}
+
+type placePathNode struct {
+	children map[string]*placePathNode
+	paths    map[string]bool
+}
+
+func (n *placePathNode) add(path string) {
+	if n.children == nil {
+		n.children = make(map[string]*placePathNode)
+	}
+	parts := strings.Split(cleanEntryPath(path), string(filepath.Separator))
+	for _, part := range parts {
+		key := foldedName(part)
+		if n.children == nil {
+			n.children = make(map[string]*placePathNode)
+		}
+		if n.children[key] == nil {
+			n.children[key] = &placePathNode{}
+		}
+		n = n.children[key]
+	}
+	if n.paths == nil {
+		n.paths = make(map[string]bool)
+	}
+	n.paths[cleanEntryPath(path)] = true
+}
+
+func (n *placePathNode) under(path string) []string {
+	parts := strings.Split(cleanEntryPath(path), string(filepath.Separator))
+	for _, part := range parts {
+		n = n.children[foldedName(part)]
+		if n == nil {
+			return nil
+		}
+	}
+	var paths []string
+	var walk func(*placePathNode)
+	walk = func(node *placePathNode) {
+		for path := range node.paths {
+			paths = append(paths, path)
+		}
+		for _, child := range node.children {
+			walk(child)
+		}
+	}
+	walk(n)
+	return paths
+}
+
+// newPlaceIndex resolves every name's place once, through the one resolver
+// the whole stretch will share, and keeps the canonical answers the
+// stretch's questions are members of.
+func newPlaceIndex(root *os.Root, names []string) *placeIndex {
+	resolver := newPlaceResolver(root)
+	index := &placeIndex{
+		resolver: resolver,
+		paths:    make(map[string]string, len(names)),
+		members:  make(map[string]map[string]bool, len(names)),
+		byPath:   &placePathNode{},
+	}
+	for _, name := range names {
+		index.byPath.add(name)
+		index.index(name)
+	}
+	return index
+}
+
+func (ix *placeIndex) index(spelling string) {
+	key := cleanEntryPath(spelling)
+	canonical, ok := ix.resolver.place(spelling)
+	if !ok {
+		delete(ix.paths, key)
+		return
+	}
+	ix.paths[key] = canonical
+	if ix.members[canonical] == nil {
+		ix.members[canonical] = make(map[string]bool)
+	}
+	ix.members[canonical][key] = true
+}
+
+// refresh keeps one operation-local index current after a mirror. Only
+// recorded names at or below the changed entry are revisited; other places
+// retain their canonical answers and the resolver's snapshots.
+func (ix *placeIndex) refresh(path string) error {
+	changed := ix.byPath.under(path)
+	parent := filepath.Dir(cleanEntryPath(path))
+	dependencyDir := ""
+	canonical, resolved := ix.resolver.place(path)
+	if resolved {
+		parent = filepath.Dir(canonical)
+		dependencyDir = ix.resolver.places[cleanEntryPath(path)].directory
+		for _, place := range ix.resolver.placesUnder(canonical) {
+			for key := range ix.members[place] {
+				changed = append(changed, key)
+			}
+		}
+	} else if miss, ok := ix.resolver.places[cleanEntryPath(path)]; ok && miss.directory != "" {
+		dependencyDir = miss.directory
+	}
+	ix.resolver.retract(path)
+	for _, key := range changed {
+		ix.resolver.retract(key)
+		if canonical, ok := ix.paths[key]; ok {
+			delete(ix.members[canonical], key)
+			if len(ix.members[canonical]) == 0 {
+				delete(ix.members, canonical)
+			}
+			delete(ix.paths, key)
+		}
+		delete(ix.resolver.places, key)
+	}
+	if err := ix.resolver.refreshMutation(path, parent, dependencyDir); err != nil {
+		return err
+	}
+	for _, key := range changed {
+		ix.index(key)
+	}
+	return nil
+}
+
+func (r *placeResolver) placesUnder(path string) []string {
+	subtree := []string{path}
+	for i := 0; i < len(subtree); i++ {
+		for child := range r.dirChildren[subtree[i]] {
+			subtree = append(subtree, child)
+		}
+	}
+	return subtree
+}
+
+// holds answers whether the recorded spelling names a place the index's
+// set holds, and it is the volume-witnessed half of forget's and
+// copyEntries' ownership questions. When nothing the stretch compares
+// against resolved to a place at all, membership is impossible and the
+// volume is not asked: this is what makes Clear -- forget with an empty
+// current list -- answer every recorded entry without opening a single
+// directory.
+func (ix *placeIndex) holds(recorded string) bool {
+	if len(ix.members) == 0 {
+		return false
+	}
+	place, ok := ix.resolver.place(recorded)
+	return ok && len(ix.members[place]) > 0
+}

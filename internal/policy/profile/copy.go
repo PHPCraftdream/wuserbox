@@ -281,19 +281,9 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 	// asked of the volume and not of a fold: both wrong directions of a
 	// fold delete here.
 	recorded := entryPathsOf(previously)
-	// One placeIndex per mutation-free stretch of the loop, built the
-	// first time a source goes missing and kept across every vouch the
-	// stretch answers after it: the record is constant while nothing is
-	// copied, so one indexing of it serves the whole run of missing
-	// sources however long. A mirror that changes the destination's
-	// structure -- makes, takes, or replaces a name -- is the real mutation
-	// the stretch must not be carried across -- what it cached watched the
-	// profile before the copy changed it -- so the stretch is dropped after
-	// one and the next missing source builds its own. A mirror that only
-	// rewrote the bytes of a file that already stood, or skipped the file
-	// by its print, changed no name the stretch describes, and the mixed
-	// warm run -- missing sources between unchanged present ones -- keeps
-	// its one indexing instead of paying for one per no-op.
+	// One placeIndex serves every missing source. Structural mirrors amend
+	// only the changed entry's subtree and its containing directory, so the
+	// unchanged recorded names remain indexed across the whole operation.
 	var stretch *placeIndex
 	for _, entry := range entries {
 		dst, err := within(entry.Path)
@@ -338,23 +328,19 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 		// list, and what had landed stayed in the sandbox's profile for good
 		// because nothing left knew it was there.
 		copied = append(copied, entry)
-		changed, err := mirror(src, dst, "", root, info, &left, newWalk(entry), prints, newPrints, &scratch)
+		mutations, err := mirror(src, dst, "", root, info, &left, newWalk(entry), prints, newPrints, &scratch)
 		if err != nil {
 			return copied, newPrints, fmt.Errorf("copying %s: %w", entry.Path, err)
 		}
-		// A mirror that changed the destination's structure -- made,
-		// took, or replaced a name, the file created where none stood
-		// among them -- left every cached answer the stretch held
-		// describing a profile that is no longer there: the stretch dies
-		// here and the next missing source builds a fresh one. A mirror
-		// that only rewrote the bytes of a file that already stood, or
-		// skipped the file by its print, changed no name the stretch
-		// describes, and a run that interleaves such mirrors with missing
-		// sources keeps its one stretch of instruments instead of
-		// rebuilding it for every no-op -- the mixed warm run this used
-		// to square.
-		if changed {
-			stretch = nil
+		// A structural mirror amends only the index entries under this
+		// destination. Rewriting bytes or skipping by the source print
+		// leaves the index untouched.
+		if stretch != nil {
+			for _, path := range mutations {
+				if err := stretch.refresh(path); err != nil {
+					return copied, newPrints, err
+				}
+			}
 		}
 	}
 	return copied, newPrints, nil
@@ -381,10 +367,13 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 // vouch, and drops it after the mirror that would turn its cached answers
 // into lies.
 func recordVouches(resolver *placeResolver, recorded []string, entry string) bool {
-	index := &placeIndex{resolver: resolver, places: make(map[string]bool, len(recorded))}
+	index := &placeIndex{resolver: resolver, members: make(map[string]map[string]bool, len(recorded))}
 	for _, path := range recorded {
 		if canonical, ok := resolver.place(path); ok {
-			index.places[canonical] = true
+			if index.members[canonical] == nil {
+				index.members[canonical] = make(map[string]bool)
+			}
+			index.members[canonical][cleanEntryPath(path)] = true
 		}
 	}
 	return index.holds(entry)

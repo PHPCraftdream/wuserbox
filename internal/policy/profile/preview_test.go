@@ -441,3 +441,48 @@ func TestThePlanOfAMissingDestinationAsksTheSuspiciousNameAsWritten(t *testing.T
 		t.Errorf("the plan of a missing destination did not count the one file it would copy: %+v", plan)
 	}
 }
+
+func TestThePlanOfAMissingDestinationRefusesReservedCleanup(t *testing.T) {
+	for _, pattern := range []string{"NTUSER.DAT", "**/UsrClass.dat"} {
+		t.Run(pattern, func(t *testing.T) {
+			_, dest := useCleanup(t, nil, []string{pattern})
+			if err := os.RemoveAll(dest); err != nil {
+				t.Fatal(err)
+			}
+
+			cleanup, entries, err := Plan(dest, nil)
+			if err == nil {
+				t.Fatal("the plan accepted a reserved cleanup glob because the destination was absent")
+			}
+			if cleanup != nil || entries != nil {
+				t.Errorf("a refused plan returned content: cleanup %+v, entries %+v", cleanup, entries)
+			}
+
+			if err := os.Mkdir(dest, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			_, _, copyErr := Copy(dest, nil, nil)
+			if copyErr == nil {
+				t.Fatal("Copy accepted the reserved cleanup glob")
+			}
+			if copyErr.Error() != err.Error() {
+				t.Errorf("Plan and Copy refused differently:\nplan: %v\ncopy: %v", err, copyErr)
+			}
+		})
+	}
+}
+
+func TestThePlanOfAMissingDestinationLeavesAnOrdinaryNoMatchCleanupEmpty(t *testing.T) {
+	_, dest := useCleanup(t, nil, []string{"cache/*.tmp"})
+	if err := os.RemoveAll(dest); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup, entries, err := Plan(dest, nil)
+	if err != nil {
+		t.Fatalf("an ordinary no-match cleanup glob was refused: %v", err)
+	}
+	if len(cleanup) != 0 || len(entries) != 0 {
+		t.Errorf("the plan for a missing destination was not empty: cleanup %+v, entries %+v", cleanup, entries)
+	}
+}

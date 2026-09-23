@@ -28,6 +28,30 @@ func useCleanup(t *testing.T, profile []string, cleanup []string) (home, dest st
 	return home, dest
 }
 
+func TestPreviewCleanupChecksReservedGlobsWithoutADestination(t *testing.T) {
+	for _, pattern := range []string{"NTUSER.DAT", "**/UsrClass.dat"} {
+		t.Run(pattern, func(t *testing.T) {
+			plans, err := previewCleanup(nil, config.Masks([]string{pattern}))
+			if err == nil {
+				t.Fatal("a missing destination made a reserved cleanup glob look safe")
+			}
+			if len(plans) != 0 {
+				t.Errorf("a refused cleanup returned plans: %+v", plans)
+			}
+		})
+	}
+}
+
+func TestPreviewCleanupAllowsANonmatchingGlobWithoutADestination(t *testing.T) {
+	plans, err := previewCleanup(nil, config.Masks([]string{"cache/*.tmp"}))
+	if err != nil {
+		t.Fatalf("an ordinary glob with no destination was refused: %v", err)
+	}
+	if len(plans) != 0 {
+		t.Errorf("an ordinary glob with no destination returned plans: %+v", plans)
+	}
+}
+
 // TestCleanupClearsAMatchingFile checks glob 1 of the design: a glob names a
 // file already sitting in the sandbox's own profile, and a fill takes it
 // away. Fails without the cleanup wiring, since nothing else in Copy ever

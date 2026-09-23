@@ -1,0 +1,145 @@
+package profile
+
+import (
+	"path/filepath"
+	"strings"
+
+	"github.com/PHPCraftdream/wuserbox/internal/win/pathid"
+)
+
+// canonicalEntryPath resolves the stored directory-entry spelling without
+// collapsing hard links. A path within refuses -- absolute, or climbing out
+// -- and a missing component has no witnessed place. The walk reads each
+// directory from the resolver's snapshot; the one opening left in an exact
+// match's absence is the alias branch below, where the volume itself has
+// to say which stored spelling a name resolves onto. That branch's whole
+// answer is kept in the resolver's alias memo and its siblings' canonical
+// spellings in the snapshot, and the snapshot's byCanonical index holds
+// the same scan's answers for every other spelling of the same place, so
+// a second question about one spelling -- or a first question about a
+// different spelling of it -- in a directory this resolver has already
+// scanned opens nothing at all.
+func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
+	clean := cleanEntryPath(path)
+	if clean == "." || filepath.IsAbs(clean) || clean == ".." ||
+		strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	r.lastDependentDir = ""
+	current := "."
+	for _, component := range strings.Split(clean, string(filepath.Separator)) {
+		snap, ok := r.snapshot(current)
+		if !ok {
+			r.lastDependentDir = current
+			return "", false
+		}
+		chosen := snap.byName[component]
+		if chosen == "" {
+			r.lastDependentDir = current
+			// Go's Unicode fold is only a candidate. NTFS has a
+			// per-volume table, so open the spelling itself before
+			// accepting a case-insensitive directory entry.
+			aliasPath := filepath.Join(current, component)
+			if memo, seen := r.alias[aliasPath]; seen && memo.version == r.dirVersion[current] {
+				chosen = memo.canonical
+			} else {
+				delete(r.alias, aliasPath)
+				opened, err := r.root.Open(aliasPath)
+				if err != nil {
+					r.noteAlias(current, aliasPath, placeResult{})
+					r.lastDependentDir = current
+					return "", false
+				}
+				openedPath, err := pathid.Canonical(opened.Name())
+				_ = opened.Close()
+				if err != nil {
+					r.noteAlias(current, aliasPath, placeResult{})
+					r.lastDependentDir = current
+					return "", false
+				}
+				// A sibling scan here already ran for an earlier alias
+				// spelling and canonicalized every child on its way
+				// past, so this spelling's answer is in the snapshot's
+				// index whether or not the alias memo has heard of it;
+				// only a canonical path the index has never seen asks
+				// the volume for the siblings again.
+				if indexed, seen := snap.byCanonical[openedPath]; seen {
+					if indexed.unique {
+						chosen = indexed.name
+						r.noteAlias(current, aliasPath, placeResult{canonical: chosen, ok: true})
+					} else {
+						r.noteAlias(current, aliasPath, placeResult{})
+						r.lastDependentDir = current
+						return "", false
+					}
+				} else {
+					r.scans++
+					complete := true
+					for _, child := range snap.children {
+						if _, known := snap.canonical[child.Name()]; known {
+							continue
+						}
+						childFile, err := r.root.Open(filepath.Join(current, child.Name()))
+						if err != nil {
+							complete = false
+							continue
+						}
+						var childErr error
+						childPath, childErr := pathid.Canonical(childFile.Name())
+						_ = childFile.Close()
+						if childErr != nil {
+							complete = false
+							continue
+						}
+						snap.canonical[child.Name()] = childPath
+					}
+					snap.canonicalComplete = complete
+					// The index is rebuilt out of the canonical answers this
+					// snapshot keeps, after every scan, rather than extended
+					// in place: a scan only starts because some spelling's
+					// answer was missing, and the children an earlier
+					// partial scan already answered -- a sibling whose open
+					// or canonicalization failed once and succeeds now --
+					// are seen again on the way past. Re-observing one
+					// child is not two names for one path, and marking it
+					// so made the index refuse spellings this resolver had
+					// itself resolved a moment before. The rebuild keeps
+					// the index exactly the fold of the snapshot's answers
+					// at every scan: one stored name per canonical path,
+					// not unique once two names carry it -- hard links --
+					// however many scans it took to see them.
+					clear(snap.byCanonical)
+					clear(snap.canonicalNames)
+					for name, childPath := range snap.canonical {
+						if snap.canonicalNames[childPath] == nil {
+							snap.canonicalNames[childPath] = make(map[string]bool)
+						}
+						snap.canonicalNames[childPath][name] = true
+						if prior, seen := snap.byCanonical[childPath]; seen {
+							prior.unique = false
+							snap.byCanonical[childPath] = prior
+						} else {
+							snap.byCanonical[childPath] = canonicalChild{name: name, unique: true}
+						}
+					}
+					// Canonical paths retain the stored directory-entry spelling. Hard
+					// links therefore match only the name Windows actually resolved,
+					// rather than merging every name for the same file identity.
+					if answer, seen := snap.byCanonical[openedPath]; !seen || !answer.unique {
+						r.noteAlias(current, aliasPath, placeResult{})
+						r.lastDependentDir = current
+						return "", false
+					}
+					chosen = snap.byCanonical[openedPath].name
+					r.noteAlias(current, aliasPath, placeResult{canonical: chosen, ok: true})
+				}
+			}
+		}
+		if chosen == "" {
+			r.lastDependentDir = current
+			return "", false
+		}
+		current = filepath.Join(current, chosen)
+	}
+	return current, true
+}
