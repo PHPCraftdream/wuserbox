@@ -213,6 +213,141 @@ func TestAnAliasSpelledStretchSurvivesItsRealClearsByRetraction(t *testing.T) {
 	}
 }
 
+// TestAClearThatSparesAnExcludedChildLeavesTheHoldingDirectoryStanding is
+// the take-back half of the review of 2026-09-28 (P3-1),
+// docs/reviews/security-performance-review-2026-09-28-round8.md: an entry
+// carrying an exclusion is cleared by the limits-bearing walk, and what
+// the exclusion protects stays -- so the entry's own directory stands
+// through its clear, and the directory that held it keeps the listing it
+// held all along. The retraction read any answer but the volume's nothing
+// as the scope-whole shape and took the holding directory's snapshot with
+// the place, so the next question of the pass re-enumerated the directory
+// the clear never touched: k entries half-cleared paid the build plus one
+// re-enumeration of the root per standing clear, k/2+1 enumerations of k
+// children between them, the square beside the one the whole-entry shape
+// had already lost. This asks the fixture the review measured: k
+// directories of two files each, the recorded auth.json the clear takes
+// and the excluded keep.txt the clear spares, the list keeping half the
+// entries under the capitals the volume joins, so every recorded entry is
+// put to the volume and every clear of the taken half leaves its entry
+// standing.
+//
+// The pins are the instruments the whole-entry test holds its pass to,
+// and they are the review's point in numbers: one stretch, one
+// enumeration, k children -- linear where the taken-snapshot shape's
+// children held the re-enumerations the standing clears kept paying --
+// and the retractions pulling exactly what the clears made false, the
+// taken spelling's witness each, k/2 in all, where taking the holding
+// directory's books pulled the alias answers beside them and re-asked
+// every one of the volume after. A standing name is the volume's own
+// witness: retract's Lstat of the place the clear worked on answers with
+// the directory still there, the answers gone false all live beneath it
+// where the subtree walk has already been, and the holding directory's
+// books stay as the clear found them. The fail-closed neighbor is not
+// relaxed: an answer that is neither the volume's nothing nor its
+// witness still takes the whole scope, as it did before this test
+// existed.
+func TestAClearThatSparesAnExcludedChildLeavesTheHoldingDirectoryStanding(t *testing.T) {
+	for _, k := range []int{4, 8} {
+		t.Run(fmt.Sprintf("k%d", k), func(t *testing.T) {
+			if !fileSystemJoins(t, "e0", "E0") {
+				t.Skip("this volume holds e0 and E0 apart, so a respelling names a different place and there is nothing to count")
+			}
+			names := make([]string, 0, k)
+			entries := make([]config.Entry, 0, k)
+			for i := 0; i < k; i++ {
+				name := fmt.Sprintf("e%d", i)
+				names = append(names, name)
+				entries = append(entries, config.Entry{Path: name, Exclude: config.Masks([]string{"keep.txt"})})
+			}
+			// The keep half, respelled in the capitals the volume joins
+			// and reversed, so no recorded entry is answered by spelling
+			// alone and every one of them is put to the volume -- the
+			// taken half by the questions its clears answer, the keep
+			// half by the presence set those questions are checked
+			// against.
+			kept := make([]config.Entry, 0, k/2)
+			for i := k - 1; i >= k/2; i-- {
+				kept = append(kept, config.Entry{Path: fmt.Sprintf("E%d", i), Exclude: config.Masks([]string{"keep.txt"})})
+			}
+
+			home, dest := useProfileEntries(t, entries)
+			for _, name := range names {
+				write(t, filepath.Join(home, name, "auth.json"), "copied")
+			}
+			// The warming run, uncounted: auth.json lands in every entry
+			// and the record comes back spelling them the way the rules
+			// file did. keep.txt is the sandbox's own file, written
+			// beside the copies and named by the exclusion: the copy
+			// never carried it and the take-back must spare it.
+			fill(t, dest)
+			for _, name := range names {
+				write(t, filepath.Join(dest, name, "keep.txt"), "sandbox")
+			}
+
+			if err := (&config.Config{Profile: kept}).Save(); err != nil {
+				t.Fatal(err)
+			}
+			stop := countingResolvers()
+			copied := fill(t, dest)
+			resolvers, opens, reads, resolutions, children, scans, visits := stop()
+
+			if resolvers != 1 {
+				t.Errorf("the pass whose clears left their entries standing built %d resolvers, want one: a clear that spared an excluded child retracts the answers it made false out of the standing listing and the stretch survives it, where the shape the review of 2026-09-28 (P3-1) replaced took the holding directory's snapshot and rebuilt for every clear after it", resolvers)
+			}
+			if resolutions != k+k/2 {
+				t.Errorf("the pass resolved %d spellings, want %d -- the keep half indexed once at the stretch's build and every recorded entry put to the volume once each, the survivors' resolutions kept through the standing clears", resolutions, k+k/2)
+			}
+			if opens != 1 || reads != 1 {
+				t.Errorf("the pass opened %d directories and read %d of them, want one of each: the stretch's build, the pass's only enumeration -- the clear left the entry's own directory standing and the holding directory's listing never changed, so retract keeps the snapshot the volume witnesses standing, where the replaced shape took it with the place and paid one re-enumeration of the root per standing clear", opens, reads)
+			}
+			if children != k {
+				t.Errorf("the pass processed %d children, want %d -- the build's one enumeration, where the replaced shape's counter held the re-enumerations the standing clears kept paying, k of them down to the keep half, the square the review of 2026-09-28 (P3-1) measured", children, k)
+			}
+			if scans != 1 {
+				t.Errorf("the alias branch scanned the root's siblings %d times, want one: the build's first respelled spelling filled the snapshot's byCanonical index, and the questions after the standing clears read it as it stands, no name in it gone", scans)
+			}
+			if visits != k/2 {
+				t.Errorf("the pass pulled %d book entries in retractions, want %d -- each standing clear takes back exactly what it made false, the taken spelling's witnessed resolution, and nothing from the directory that held it, whose listing and alias answers answered truly all along", visits, k/2)
+			}
+			// The certificate that the cheaper shape answers the same:
+			// the record follows the new spellings, the taken half's
+			// directories stand with the excluded file in them, and the
+			// keep half stands untouched.
+			want := make([]string, 0, k/2)
+			for _, entry := range kept {
+				want = append(want, entry.Path)
+			}
+			if !reflect.DeepEqual(pathsOf(copied), want) {
+				t.Errorf("the record came back as %v, want %v: the record follows the new spellings, not the stored ones", pathsOf(copied), want)
+			}
+			for i := 0; i < k; i++ {
+				name := fmt.Sprintf("e%d", i)
+				info, err := os.Stat(filepath.Join(dest, name))
+				if i < k/2 && (err != nil || !info.IsDir()) {
+					t.Errorf("the cleared %s's own directory did not stand through the clear: %v -- the fixture stands on the exclusion sparing something under it", name, err)
+				}
+				if i < k/2 && err == nil {
+					if got := read(t, filepath.Join(dest, name, "keep.txt")); got != "sandbox" {
+						t.Errorf("the excluded keep.txt did not outlive the clear of %s: %q", name, got)
+					}
+					if _, err := os.Stat(filepath.Join(dest, name, "auth.json")); !os.IsNotExist(err) {
+						t.Errorf("the taken auth.json survived the clear of %s: %v", name, err)
+					}
+				}
+				if i >= k/2 {
+					if got := read(t, filepath.Join(dest, name, "keep.txt")); got != "sandbox" {
+						t.Errorf("the kept %s's excluded keep.txt was disturbed by the clears beside it: %q", name, got)
+					}
+					if got := read(t, filepath.Join(dest, name, "auth.json")); got != "copied" {
+						t.Errorf("the kept %s's copy was disturbed by the clears beside it: %q", name, got)
+					}
+				}
+			}
+		})
+	}
+}
+
 // TestRetractTakesBackExactlyTheAnswersTheClearMadeFalse reads the
 // resolver's own books, because the counting tests above see the bill and
 // not the retraction that earns it. The review of 2026-09-26 (P3-1),

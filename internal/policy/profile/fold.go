@@ -258,10 +258,10 @@ type canonicalChild struct {
 // record back re-index the surviving half once per clear, and now retract
 // the answers each clear made false instead -- the taken place's snapshot
 // and every snapshot beneath it, its spellings' witnessed resolutions,
-// the alias book's say in the directory that held it, and the taken
-// name's rows in the holding directory's own listing when the volume
-// witnesses the name gone -- and keep the rest, so the stretch outlives
-// its clears. A rewrite
+// and, when the volume witnesses the taken name gone, the alias book's
+// say in the directory that held it and the taken name's rows in that
+// directory's own listing, amended in place -- and keep the rest, so the
+// stretch outlives its clears. A rewrite
 // of the bytes of a file that already stood, and a clear that found
 // nothing to take back, are not mutations in this sense: they change no
 // name any cached answer describes, and the stretch outlives them, which
@@ -639,14 +639,25 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 // volume holds now, witnessed at the same clear that took the name, and
 // a spelling the gone name would have answered is put to the volume
 // again at the alias branch's open and refused by it, exactly as a fresh
-// enumeration would have had it refused. The other shape left the
-// entry's own directory standing -- a limits-bearing clear that spared
-// something under it -- and then nothing narrower than the whole former
-// scope is witnessed: the holding directory's snapshot goes with the
-// place, the way it went before this shape, and the answer stays correct
-// whatever the clear did. Any Lstat answer but the volume's own nothing
-// takes the second shape; a deletion is never guessed narrower than it
-// was witnessed.
+// enumeration would have had it refused. The second shape comes in two,
+// and the volume's own Lstat answer tells them apart. The directory the
+// clear left standing -- a limits-bearing clear that spared something
+// under the entry, an exclusion's charge among it -- stands under the
+// same name it held all along: the holding directory's listing is the
+// one it held before the clear, the taken name's row the row the volume
+// holds now, and every answer the clear made false lives beneath the
+// place, where the subtree walk has already been. The snapshot stands
+// with the survivors' enumeration and identity in it, and nothing after
+// the clear pays a re-enumeration of the holding directory for a listing
+// the clear never touched -- the square a pass of such clears paid when
+// the snapshot went with the place, one whole re-enumeration per clear,
+// the review of 2026-09-28 (P3-1) measured. Any other answer -- an error
+// that is neither the volume's nothing nor its witness of the standing
+// name -- leaves the question of whether the name went open, and nothing
+// narrower than the former whole scope is witnessed: the holding
+// directory's snapshot goes with the place, the way it went before this
+// shape, and the answer stays correct whatever the clear did. A deletion
+// is never guessed narrower than it was witnessed, in either direction.
 //
 // The spelling is answered out of the memo a question asked a moment ago
 // filled: holds resolved the recorded entry to ask the volume about it,
@@ -720,13 +731,15 @@ func (r *placeResolver) retract(spelling string) bool {
 			}
 			r.dirs[parent] = snap
 		}
-	} else if _, ok := r.dirs[parent]; ok {
-		// The name the clear worked on, or the question of whether it
-		// went, outlived the clear: nothing narrower than the former
-		// whole scope is witnessed, so the holding directory's
-		// snapshot goes with the place and the next question reads
-		// what then stands.
-		r.dropDir(parent)
+	} else if statErr != nil {
+		// Neither the volume's nothing nor its witness of the standing
+		// name: the question of whether the name went outlived the
+		// clear, nothing narrower than the former whole scope is
+		// witnessed, and the holding directory's snapshot goes with the
+		// place, the way it went before the standing answer kept it.
+		if _, ok := r.dirs[parent]; ok {
+			r.dropDir(parent)
+		}
 	}
 	return true
 }
