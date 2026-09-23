@@ -282,27 +282,26 @@ type sidKey struct {
 // pointer: the pointer is a raw address rather than a Go pointer, and
 // reaching the memory behind one of those directly is the thing the unsafe
 // rules refuse to name -- vet calls every such conversion a possible
-// misuse, so none is written here. CopySid reads the same bytes into a
-// buffer of this function's own in one call, and refuses a shape too large
-// for the buffer, which is the same refusal this makes.
+// misuse, so none is written here. CopySid reads the same bytes into the
+// scratch the memo already owns in one call, and refuses a shape too large
+// for that buffer, which is the same refusal this makes.
 var procCopySid = w32.Advapi32.NewProc("CopySid")
 
-func trusteeKey(value uintptr) (sidKey, bool) {
+func (t *trusteeAnswers) trusteeKey(value uintptr) (sidKey, bool) {
 	if value == 0 {
 		return sidKey{}, false
 	}
-	var copied [sidHeaderBytes + 4*maxSIDSubAuthorities]byte
 	if r, _, _ := procCopySid.Call(sidHeaderBytes+4*maxSIDSubAuthorities,
-		uintptr(unsafe.Pointer(&copied[0])), value); r == 0 {
+		uintptr(unsafe.Pointer(&t.scratch[0])), value); r == 0 {
 		return sidKey{}, false
 	}
-	count := int(copied[1])
+	count := int(t.scratch[1])
 	if count > maxSIDSubAuthorities {
 		return sidKey{}, false
 	}
 	var key sidKey
 	key.length = sidHeaderBytes + 4*count
-	copy(key.value[:], copied[:key.length])
+	copy(key.value[:], t.scratch[:key.length])
 	return key, true
 }
 
@@ -326,6 +325,19 @@ type trusteeAnswers struct {
 	// in a test the way it already can everywhere else.
 	ask     func(uintptr) (string, error)
 	decided map[sidKey]bool
+
+	// scratch is the buffer CopySid fills while a key is formed, and it
+	// lives on the memo because //go:uintptrescapes forces whatever buffer
+	// CopySid fills to escape: a buffer born with each ask went to the heap
+	// on every ask, hit or miss, where one the memo already owns is paid
+	// for once when the memo is made and reused ask after ask. Reuse is
+	// race-free because one memo belongs to one TakeBack, and one TakeBack
+	// is one goroutine -- filepath.WalkDir walks synchronously -- so no two
+	// asks are ever in flight at once. What the map sees stays safe, too:
+	// the key is copied out of the scratch before trusteeKey returns, so
+	// nothing in the map references the scratch when the next ask
+	// overwrites it.
+	scratch [sidHeaderBytes + 4*maxSIDSubAuthorities]byte
 }
 
 func newTrusteeAnswers() *trusteeAnswers {
@@ -348,7 +360,7 @@ func newTrusteeAnswers() *trusteeAnswers {
 // asked rarely enough for that to cost nothing, and its absence from the
 // map is the honest record of a question this could not read.
 func (t *trusteeAnswers) sandboxGroup(value uintptr) bool {
-	key, keyed := trusteeKey(value)
+	key, keyed := t.trusteeKey(value)
 	if keyed {
 		if decided, hit := t.decided[key]; hit {
 			return decided

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"unsafe"
 
 	"github.com/PHPCraftdream/wuserbox/internal/win/sid"
 )
@@ -223,14 +224,42 @@ func TestTheTrusteeAnswersEndWithTheirOperation(t *testing.T) {
 	}
 }
 
+// freshScratchKey forms a key the way every ask did before the scratch
+// moved into the memo: CopySid filling an array born with the call. It is
+// the "before" of the allocation comparison below, kept in the test so the
+// two sides of it are measured by the same compiler on the same run.
+func freshScratchKey(value uintptr) (sidKey, bool) {
+	if value == 0 {
+		return sidKey{}, false
+	}
+	var copied [sidHeaderBytes + 4*maxSIDSubAuthorities]byte
+	if r, _, _ := procCopySid.Call(sidHeaderBytes+4*maxSIDSubAuthorities,
+		uintptr(unsafe.Pointer(&copied[0])), value); r == 0 {
+		return sidKey{}, false
+	}
+	count := int(copied[1])
+	if count > maxSIDSubAuthorities {
+		return sidKey{}, false
+	}
+	var key sidKey
+	key.length = sidHeaderBytes + 4*count
+	copy(key.value[:], copied[:key.length])
+	return key, true
+}
+
 // TestARepeatAnswerAsksNothingAndAllocatesNothing is the hit path on its
 // own: no object, no walk, one identifier already asked about. A repeat
-// answer asks Windows nothing -- the counter does not move -- and reaches
-// for the heap not once, because the key is an array rather than a slice
-// and the lookup is a map access on it. Native asks and Go allocations are
-// counted separately here, as they are everywhere in this package: one is a
-// call into the account database, the other is the heap, and the memo is
-// built to spend neither twice.
+// answer asks Windows nothing -- the counter does not move -- and pays at
+// most the key formation over the memo's own scratch, which is strictly
+// less than the fresh-buffer key every ask used to form: //go:uintptrescapes
+// forces the buffer CopySid fills to escape, so an array born with each
+// call went to the heap on every ask, hit or miss. That "before" is kept
+// beside the fix as freshScratchKey so both sides of the comparison are
+// measured by the same compiler on the same run rather than one remembered
+// from another. Native asks and Go allocations are counted separately
+// here, as they are everywhere in this package: one is a call into the
+// account database, the other is the heap, and the memo is built to spend
+// neither twice.
 func TestARepeatAnswerAsksNothingAndAllocatesNothing(t *testing.T) {
 	everyone, err := sid.Parse(sid.Everyone)
 	if err != nil {
@@ -241,19 +270,19 @@ func TestARepeatAnswerAsksNothingAndAllocatesNothing(t *testing.T) {
 	// The key is content: the bytes of the identifier, eight of header and
 	// one subauthority's worth for S-1-1-0, and a pointer there is nothing
 	// at the end of is refused rather than keyed.
-	key, ok := trusteeKey(everyone)
+	answers := newTrusteeAnswers()
+	key, ok := answers.trusteeKey(everyone)
 	if !ok {
 		t.Fatal("a well-formed identifier could not be keyed")
 	}
 	if key.length != 12 {
 		t.Fatalf("the key on %s is %d bytes, want 12", sid.Everyone, key.length)
 	}
-	if _, ok := trusteeKey(0); ok {
+	if _, ok := answers.trusteeKey(0); ok {
 		t.Fatal("a nil pointer was keyed")
 	}
 
 	before := sandboxNameLookups.Load()
-	answers := newTrusteeAnswers()
 	if answers.sandboxGroup(everyone) {
 		t.Fatal("Everyone is not one of the groups wuserbox creates, and was answered as if it were")
 	}
@@ -264,15 +293,24 @@ func TestARepeatAnswerAsksNothingAndAllocatesNothing(t *testing.T) {
 	// AllocsPerRun runs the closure once before it measures it, which is
 	// why the measured runs are hits: the memo is already populated by the
 	// ask above, exactly as a second object's repeat entry would find it.
-	// Zero is not the bar: forming the key itself calls CopySid, and
-	// //go:uintptrescapes forces the buffer that call fills to the heap on
-	// every call, hit or miss -- reading the native bytes any other way is
-	// the unsafe.Pointer misuse this package refuses to write. The bar a
-	// hit must clear is the key's own unavoidable cost and nothing more:
-	// the memo lookup after it must add no allocation of its own.
-	keyAllocs := testing.AllocsPerRun(100, func() { _, _ = trusteeKey(everyone) })
-	if allocs := testing.AllocsPerRun(100, func() { answers.sandboxGroup(everyone) }); allocs != keyAllocs {
-		t.Errorf("a repeat answer allocated %v times per call, want exactly the key's own %v -- the memo lookup added its own", allocs, keyAllocs)
+	// Zero is not the bar for the hit path -- the variadic call adapter of
+	// LazyProc.Call may still allocate, and reading the native bytes any
+	// other way is the unsafe.Pointer misuse this package refuses to
+	// write. The bar is the one the fix sets: a repeat answer pays at most
+	// the key formation over the memo's own scratch, strictly less than
+	// the fresh-buffer cost every ask paid before, and the memo lookup
+	// behind it adds nothing.
+	fresh := testing.AllocsPerRun(100, func() { _, _ = freshScratchKey(everyone) })
+	if fresh == 0 {
+		t.Fatal("the fresh-buffer key allocates nothing, so the escape this fix removes no longer happens and the comparison below has no premise -- a loud failure beats a vacuous pass")
+	}
+	shared := testing.AllocsPerRun(100, func() { _, _ = answers.trusteeKey(everyone) })
+	hit := testing.AllocsPerRun(100, func() { answers.sandboxGroup(everyone) })
+	if hit >= fresh {
+		t.Errorf("a repeat answer allocated %v times per call, want strictly less than the fresh-buffer key's %v", hit, fresh)
+	}
+	if hit != shared {
+		t.Errorf("a repeat answer allocated %v times per call, want exactly the shared-scratch key's own %v -- the memo lookup added its own", hit, shared)
 	}
 	if got := sandboxNameLookups.Load() - before; got != 1 {
 		t.Fatalf("a repeat answer asked Windows again: %d asks in total, want 1", got)
