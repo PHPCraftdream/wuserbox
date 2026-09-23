@@ -67,7 +67,12 @@ func forget(root *os.Root, previously []config.Entry, current []config.Entry) er
 		if stretch == nil {
 			stretch = newPlaceIndex(root, entryPathsOf(current))
 		}
-		if stretch.holds(entry.Path) {
+		// An answer nobody got proceeds, because every step below asks the
+		// volume itself and stops on what it cannot finish -- clearEntry's
+		// Lstat, the reserved questions, the walks -- so nothing is deleted
+		// on an answer nobody got. The only answer that skips the entry here
+		// is a witnessed held one.
+		if vouch, _ := stretch.vouches(entry.Path); vouch == vouchHeld {
 			continue
 		}
 		// A recorded entry whose name the volume resolves onto a reserved
@@ -77,7 +82,16 @@ func forget(root *os.Root, previously []config.Entry, current []config.Entry) er
 		// honor the spelling to the letter. Spared rather than refused for
 		// the reason clearEntry spares: nobody editing a rules file wrote
 		// this spelling, an earlier run of this tool did.
-		if reservedAtResolved(root, filepath.ToSlash(cleanEntryPath(entry.Path))) {
+		if answer, cause := reservedAtResolved(root, filepath.ToSlash(cleanEntryPath(entry.Path))); answer != notReserved {
+			if answer == reservedUnknown {
+				// Sparing a known reserved object stands; reporting a
+				// finished take-back over an object whose identity
+				// could not be checked is what the round-12 review
+				// traced through the NoAI record wipe, and the run
+				// stops instead, with the record standing for the
+				// retry.
+				return reservedStop(filepath.ToSlash(cleanEntryPath(entry.Path)), cause)
+			}
 			continue
 		}
 		stale, err := withinRecorded(entry.Path)
@@ -196,17 +210,23 @@ func clearEntry(root *os.Root, stale string, entry config.Entry) (bool, error) {
 	// than refused; reserved.go records why this spares where
 	// refuseReservedCleanup refuses.
 	rel := filepath.ToSlash(stale)
-	if reservedAtResolved(root, rel) {
+	switch answer, cause := reservedAtResolved(root, rel); answer {
+	case isReserved:
 		return false, nil
+	case reservedUnknown:
+		return false, reservedStop(rel, cause)
 	}
 	if entry.Bare() {
 		// An entry over a directory the hive sits under -- AppData
 		// leaving the list, most commonly -- takes the hive with it by
 		// the roots. What around it is ours still goes: the same walk
 		// the limits-bearing branch uses, clearing around the hive.
-		if reservedWithinResolved(root, rel) {
+		switch answer, cause := reservedWithinResolved(root, rel); answer {
+		case isReserved:
 			_, taken, err := clearKeepingReserved(root, stale)
 			return taken, err
+		case reservedUnknown:
+			return false, reservedStop(rel, cause)
 		}
 		// RemoveAll answers nil for a name that is not there, and the
 		// stretch's question needs the two told apart: asked here, where
@@ -322,7 +342,10 @@ func clearKeeping(root *os.Root, dir, rel string, w *walk, kept, removed *bool) 
 			// two differ. Whatever the sandbox made of the hive's name,
 			// nothing under a name the tables reserve was ever ours to
 			// sort, and reporting it kept is what leaves it so.
-			if reservedAtResolved(root, filepath.ToSlash(childPath)) {
+			if answer, cause := reservedAtResolved(root, filepath.ToSlash(childPath)); answer != notReserved {
+				if answer == reservedUnknown {
+					return reservedStop(filepath.ToSlash(childPath), cause)
+				}
 				*kept = true
 				continue
 			}
@@ -363,7 +386,10 @@ func clearKeeping(root *os.Root, dir, rel string, w *walk, kept, removed *bool) 
 			// them straight through the profile service's file -- spelled
 			// however the destination's own directory entry spells it,
 			// which the resolved question is what answers.
-			if reservedAtResolved(root, filepath.ToSlash(childPath)) {
+			if answer, cause := reservedAtResolved(root, filepath.ToSlash(childPath)); answer != notReserved {
+				if answer == reservedUnknown {
+					return reservedStop(filepath.ToSlash(childPath), cause)
+				}
 				*kept = true
 				continue
 			}

@@ -151,13 +151,13 @@ func legacyPerQuestionStillNamed(root *os.Root, current []config.Entry, recorded
 			named = true
 			break
 		}
-		if canonical, ok := resolver.place(entry.Path); ok {
-			places[canonical] = true
+		if result := resolver.place(entry.Path); result.ok {
+			places[result.canonical] = true
 		}
 	}
 	if !named {
-		recordedPlace, ok := resolver.place(recorded)
-		named = ok && places[recordedPlace]
+		resolved := resolver.place(recorded)
+		named = resolved.ok && places[resolved.canonical]
 	}
 	count.opens += resolver.opens
 	count.reads += resolver.reads

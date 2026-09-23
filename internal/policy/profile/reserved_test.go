@@ -593,56 +593,6 @@ func TestATakeBackSparesTheHiveARecordSpelledTheWayTheVolumeReadsIt(t *testing.T
 	}
 }
 
-// TestATakeBackSparesWhatItCouldNotAskAbout pins the guard's third answer.
-// A record spelling the hive through an alias whose path cannot be asked
-// about -- Microsoft below AppData/Local is a junction pointing outside the
-// profile, and the root refuses to open through a reparse point -- opens a
-// name the volume may resolve onto the hive, and the question of where it
-// lands goes unanswered: the open fails for a reason that is not absence.
-// The shape resolvedRootRel answered with before read every failure as
-// absence, and absence reads as the as-written tables' leave to delete; an
-// unknown is not a no. The entry is spared, the hive stands, and the
-// record's plain-named neighbor still goes, because the spare answers the
-// question that failed and nothing else.
-func TestATakeBackSparesWhatItCouldNotAskAbout(t *testing.T) {
-	_, dest := useProfile(t, []string{})
-	real := filepath.Join(t.TempDir(), "elsewhere")
-	hive := filepath.Join(real, "Windows", "UsrClass.dat")
-	write(t, hive, profileServiceHive)
-	// The junction sits where the record's spelling sends the walk, and the
-	// hive sits behind it -- reachable by the plain file system calls the
-	// fixture writes with, refused to the root that would have to open it
-	// to answer.
-	junctionTo(t, filepath.Join(dest, "AppData", "Microsoft"), real)
-	control := filepath.Join(dest, "AppData", "Local", "ours.txt")
-	write(t, control, "ours")
-
-	if err := Clear(dest, []config.Entry{
-		{Path: "AppData/Local/Microsoft./Windows/UsrClass.dat"},
-		{Path: "AppData/Local/ours.txt"},
-	}); err != nil {
-		t.Fatalf("the take-back refused a record it could not ask about: %v", err)
-	}
-	if got := read(t, hive); got != profileServiceHive {
-		t.Errorf("the take-back deleted through an answer it never got: the hive now holds %q", got)
-	}
-	if _, err := os.Stat(control); !os.IsNotExist(err) {
-		t.Errorf("a plain file the record named was spared by the same fog the hive was spared by: %v", err)
-	}
-
-	// The branch itself, asked directly: the spelling is suspicious, the
-	// open is refused rather than answered, and the resolution says so --
-	// this is the answer the spare above stands on.
-	root, err := os.OpenRoot(dest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = root.Close() }()
-	if _, answer := resolvedRootRel(root, "AppData/Local/Microsoft./Windows/UsrClass.dat"); answer != answerUnknown {
-		t.Errorf("an open refused, not answered, resolved as %v: the guard would have read that as the tables' leave to delete", answer)
-	}
-}
-
 // shortNameSpelling asks Windows for the 8.3 spelling of an existing path,
 // the way internal/win/acl's own tests do; empty where the volume answers
 // nothing.

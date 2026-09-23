@@ -45,12 +45,12 @@ func DedupeEntries(dest string, entries []config.Entry) []config.Entry {
 		if spellings[spelling] {
 			continue
 		}
-		canonical, ok := resolver.place(entry.Path)
-		if ok {
-			if places[canonical] {
+		canonical := resolver.place(entry.Path)
+		if canonical.ok {
+			if places[canonical.canonical] {
 				continue
 			}
-			places[canonical] = true
+			places[canonical.canonical] = true
 		}
 		spellings[spelling] = true
 		kept = append(kept, entry)

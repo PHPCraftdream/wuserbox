@@ -156,7 +156,11 @@ type placeIndex struct {
 	resolver *placeResolver
 	paths    map[string]string
 	members  map[string]map[string]bool
-	byPath   *placePathNode
+	// unknown is the set of recorded spellings whose resolutions did not
+	// finish: the membership set cannot vouch for them, because the one
+	// question that would place them never answered.
+	unknown map[string]bool
+	byPath  *placePathNode
 }
 
 type placePathNode struct {
@@ -227,16 +231,23 @@ func newPlaceIndex(root *os.Root, names []string) *placeIndex {
 
 func (ix *placeIndex) index(spelling string) {
 	key := cleanEntryPath(spelling)
-	canonical, ok := ix.resolver.place(spelling)
-	if !ok {
+	result := ix.resolver.place(spelling)
+	delete(ix.unknown, key)
+	if !result.ok {
+		if result.unknown {
+			if ix.unknown == nil {
+				ix.unknown = make(map[string]bool)
+			}
+			ix.unknown[key] = true
+		}
 		delete(ix.paths, key)
 		return
 	}
-	ix.paths[key] = canonical
-	if ix.members[canonical] == nil {
-		ix.members[canonical] = make(map[string]bool)
+	ix.paths[key] = result.canonical
+	if ix.members[result.canonical] == nil {
+		ix.members[result.canonical] = make(map[string]bool)
 	}
-	ix.members[canonical][key] = true
+	ix.members[result.canonical][key] = true
 }
 
 // refresh keeps one operation-local index current after a mirror. Only
@@ -246,11 +257,11 @@ func (ix *placeIndex) refresh(path string) error {
 	changed := ix.byPath.under(path)
 	parent := filepath.Dir(cleanEntryPath(path))
 	dependencyDir := ""
-	canonical, resolved := ix.resolver.place(path)
-	if resolved {
-		parent = filepath.Dir(canonical)
+	resolved := ix.resolver.place(path)
+	if resolved.ok {
+		parent = filepath.Dir(resolved.canonical)
 		dependencyDir = ix.resolver.places[cleanEntryPath(path)].directory
-		for _, place := range ix.resolver.placesUnder(canonical) {
+		for _, place := range ix.resolver.placesUnder(resolved.canonical) {
 			for key := range ix.members[place] {
 				changed = append(changed, key)
 			}
@@ -289,17 +300,69 @@ func (r *placeResolver) placesUnder(path string) []string {
 	return subtree
 }
 
-// holds answers whether the recorded spelling names a place the index's
-// set holds, and it is the volume-witnessed half of forget's and
-// copyEntries' ownership questions. When nothing the stretch compares
-// against resolved to a place at all, membership is impossible and the
-// volume is not asked: this is what makes Clear -- forget with an empty
-// current list -- answer every recorded entry without opening a single
-// directory.
-func (ix *placeIndex) holds(recorded string) bool {
-	if len(ix.members) == 0 {
-		return false
+// vouchAnswer is what the record's membership answers about one entry's
+// place, and it is the shape the round-11 review asked the bool to grow:
+// absent and held are witnessed answers, unknown is the case where the
+// question itself did not finish.
+type vouchAnswer int
+
+const (
+	// witnessed: every recorded spelling that could be compared resolved,
+	// and none names the place this entry names.
+	vouchAbsent vouchAnswer = iota
+	// witnessed: a recorded spelling resolves onto the place this entry
+	// names.
+	vouchHeld
+	// the question did not finish: this entry's own walk stopped on a
+	// failure that is not absence, or a recorded spelling that might name
+	// the same place could not be resolved to be compared against. Not
+	// an answer, and never to be read as one.
+	vouchUnknown
+)
+
+// vouches is holds' three-state shape, asked where the answer decides a
+// recorded entry's fate: copyEntries decides whether a vanished source's
+// copy stays on the record, and answering that on a question nobody got
+// is how a locked destination directory retires a copy that still stands.
+//
+// The fast path is the one that keeps Clear paying nothing: membership
+// empty AND nothing unresolved means nothing was indexed at all -- an
+// empty record, or an indexing pass that witnessed honest absences -- so
+// absent is then witnessed without asking again, and Clear answers every
+// recorded entry without opening a single directory.
+//
+// The len(ix.unknown) > 0 branch before absent is deliberate, and it asks
+// for the entry's own witnessed place: an absence vouches for nothing, so
+// where this entry names no place at all there is nothing an unanswered
+// spelling could have kept standing -- a recorded spelling that went
+// unanswered could only have named a place this entry actually names, and
+// where the entry names none, no answer anyone owed could have kept a copy
+// alive at it. The branch therefore only holds a place back while the entry
+// itself names a witnessed one that an unanswered recorded spelling might
+// also name.
+func (ix *placeIndex) vouches(recorded string) (vouchAnswer, error) {
+	if len(ix.members) == 0 && len(ix.unknown) == 0 {
+		return vouchAbsent, nil
 	}
-	place, ok := ix.resolver.place(recorded)
-	return ok && len(ix.members[place]) > 0
+	result := ix.resolver.place(recorded)
+	if result.unknown {
+		return vouchUnknown, result.err
+	}
+	if result.ok && len(ix.members[result.canonical]) > 0 {
+		return vouchHeld, nil
+	}
+	if result.ok && len(ix.unknown) > 0 {
+		return vouchUnknown, nil
+	}
+	return vouchAbsent, nil
+}
+
+// holds is the bool convenience over vouches, for callers whose next step
+// asks the volume itself and stops on what it cannot finish: an unknown
+// reading as false stays safe where every step after it -- clearEntry's
+// Lstat, the reserved questions, the walks -- fails closed on its own.
+// forget's first ask is not that shape, and asks vouches instead.
+func (ix *placeIndex) holds(recorded string) bool {
+	answer, _ := ix.vouches(recorded)
+	return answer == vouchHeld
 }
