@@ -62,7 +62,16 @@ func walkEntry(sk sink, src, dst, rel string, root *os.Root, info os.FileInfo, l
 	// carrying the hive as "NTUSER.DAT." or under a short alias lands here
 	// as exactly such a name -- a name the volume resolves onto the hive is
 	// the hive, whatever the walk spelled it.
-	if reservedAtResolved(root, filepath.ToSlash(dst)) {
+	//
+	// The question is asked of both the run and the preview through the same
+	// walk, so the two cannot drift about it -- and an answer nobody got now
+	// stops both, where it used to be read as reserved and skip the copy
+	// silently, over an object whose identity nothing had checked.
+	answer, cause := reservedAtResolved(root, filepath.ToSlash(dst))
+	switch answer {
+	case reservedUnknown:
+		return reservedStop(filepath.ToSlash(dst), cause)
+	case isReserved:
 		return nil
 	}
 	if info.IsDir() {
@@ -441,14 +450,27 @@ func (s *copySink) removeStrayChildren(root *os.Root, dst, rel string, present m
 		// entry's own limits protect. childPath, built by Join from dst, is
 		// relative to the profile root -- the tables' frame; childRel is the
 		// entry's and would make a guard that protects nothing.
-		if reservedWithinResolved(root, filepath.ToSlash(childPath)) {
-			if e.IsDir() && !reservedAtResolved(root, filepath.ToSlash(childPath)) {
-				_, taken, err := clearKeepingReserved(root, childPath)
-				if err != nil {
-					return err
+		if answer, cause := reservedWithinResolved(root, filepath.ToSlash(childPath)); answer != notReserved {
+			if answer == reservedUnknown {
+				return reservedStop(filepath.ToSlash(childPath), cause)
+			}
+			// A directory the resolved question spares is cleared around
+			// the hive rather than taken whole, unless it is the reserved
+			// path itself -- the leaf question answers that, and an answer
+			// nobody got about it stops the mirror the same way.
+			if e.IsDir() {
+				leaf, leafCause := reservedAtResolved(root, filepath.ToSlash(childPath))
+				if leaf == reservedUnknown {
+					return reservedStop(filepath.ToSlash(childPath), leafCause)
 				}
-				if taken {
-					s.markMutation(childPath)
+				if leaf == notReserved {
+					_, taken, err := clearKeepingReserved(root, childPath)
+					if err != nil {
+						return err
+					}
+					if taken {
+						s.markMutation(childPath)
+					}
 				}
 			}
 			continue

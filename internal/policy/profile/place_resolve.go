@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -19,11 +20,18 @@ import (
 // a second question about one spelling -- or a first question about a
 // different spelling of it -- in a directory this resolver has already
 // scanned opens nothing at all.
-func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
+//
+// The walk answers three ways, not two. A witnessed place and the volume's
+// own nothing are answers; an open or a ReadDir that failed for any other
+// reason is not, and the answer nobody got is carried back with its cause
+// rather than dressed up as absence -- the round-11 review's record loss
+// was exactly that dressing, a locked destination directory reading as a
+// place the record no longer names.
+func (r *placeResolver) canonicalEntryPath(path string) placeResult {
 	clean := cleanEntryPath(path)
 	if clean == "." || filepath.IsAbs(clean) || clean == ".." ||
 		strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", false
+		return placeResult{}
 	}
 	r.lastDependentDir = ""
 	current := "."
@@ -31,7 +39,10 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 		snap, ok := r.snapshot(current)
 		if !ok {
 			r.lastDependentDir = current
-			return "", false
+			if snap.unknown {
+				return placeResult{unknown: true, err: snap.err}
+			}
+			return placeResult{}
 		}
 		chosen := snap.byName[component]
 		if chosen == "" {
@@ -46,16 +57,20 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 				delete(r.alias, aliasPath)
 				opened, err := r.root.Open(aliasPath)
 				if err != nil {
-					r.noteAlias(current, aliasPath, placeResult{})
+					answer := placeResult{}
+					if !os.IsNotExist(err) {
+						answer = placeResult{unknown: true, err: err}
+					}
+					r.noteAlias(current, aliasPath, answer)
 					r.lastDependentDir = current
-					return "", false
+					return answer
 				}
 				openedPath, err := pathid.Canonical(opened.Name())
 				_ = opened.Close()
 				if err != nil {
-					r.noteAlias(current, aliasPath, placeResult{})
+					r.noteAlias(current, aliasPath, placeResult{unknown: true, err: err})
 					r.lastDependentDir = current
-					return "", false
+					return placeResult{unknown: true, err: err}
 				}
 				// A sibling scan here already ran for an earlier alias
 				// spelling and canonicalized every child on its way
@@ -70,11 +85,12 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 					} else {
 						r.noteAlias(current, aliasPath, placeResult{})
 						r.lastDependentDir = current
-						return "", false
+						return placeResult{}
 					}
 				} else {
 					r.scans++
 					complete := true
+					var scanErr error
 					for _, child := range snap.children {
 						if _, known := snap.canonical[child.Name()]; known {
 							continue
@@ -82,6 +98,7 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 						childFile, err := r.root.Open(filepath.Join(current, child.Name()))
 						if err != nil {
 							complete = false
+							scanErr = err
 							continue
 						}
 						var childErr error
@@ -89,6 +106,7 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 						_ = childFile.Close()
 						if childErr != nil {
 							complete = false
+							scanErr = childErr
 							continue
 						}
 						snap.canonical[child.Name()] = childPath
@@ -128,7 +146,16 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 					if answer, seen := snap.byCanonical[openedPath]; !seen || !answer.unique {
 						r.noteAlias(current, aliasPath, placeResult{})
 						r.lastDependentDir = current
-						return "", false
+						if !complete {
+							// The refusal may be the unread
+							// sibling's shadow: a sibling this scan
+							// could not open or canonicalize
+							// might be the one carrying the
+							// opened path, so no answer about
+							// this spelling was got at all.
+							return placeResult{unknown: true, err: scanErr}
+						}
+						return placeResult{}
 					}
 					chosen = snap.byCanonical[openedPath].name
 					r.noteAlias(current, aliasPath, placeResult{canonical: chosen, ok: true})
@@ -137,9 +164,9 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 		}
 		if chosen == "" {
 			r.lastDependentDir = current
-			return "", false
+			return placeResult{}
 		}
 		current = filepath.Join(current, chosen)
 	}
-	return current, true
+	return placeResult{canonical: current, ok: true}
 }

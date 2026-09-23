@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -209,6 +210,22 @@ const (
 	answerUnknown
 )
 
+// reservedAnswer is what the resolved reserved question concluded about
+// one name. notReserved and isReserved are witnessed answers -- the
+// spelling itself, or the name the volume resolved it to, is or is not
+// on a reserved path. reservedUnknown is the case the round-12 review
+// traced through Clear: the name opened something and the question about
+// it was lost to a failure that is not absence, so sparing was right and
+// reporting the take-back finished was not. Every deletion-path caller
+// stops the operation on it, with the record standing for the retry.
+type reservedAnswer int
+
+const (
+	notReserved reservedAnswer = iota
+	isReserved
+	reservedUnknown
+)
+
 // resolvedRootRel answers with the path the volume actually resolved rootRel
 // to, relative to the profile root and spelled with forward slashes -- the
 // frame the reserved tables are written in. It opens the name through the
@@ -229,13 +246,13 @@ const (
 // A nil root is absence: a preview asked about a sandbox that does not exist
 // yet has nothing to open, so there is nothing to resolve and the as-written
 // question stands.
-func resolvedRootRel(root *os.Root, rootRel string) (string, resolveAnswer) {
+func resolvedRootRel(root *os.Root, rootRel string) (string, resolveAnswer, error) {
 	if root == nil {
 		// A preview asked about a sandbox that does not exist yet has
 		// nothing to open -- planSink's own contract, the same answer
 		// from the other side. Nothing resolves, and the as-written
 		// question stands.
-		return "", answerAbsent
+		return "", answerAbsent, nil
 	}
 	f, err := root.Open(rootRel)
 	if err != nil {
@@ -244,14 +261,14 @@ func resolvedRootRel(root *os.Root, rootRel string) (string, resolveAnswer) {
 		// a rights question, a reparse the root would not open -- is
 		// about a name that is there, and is no answer at all.
 		if os.IsNotExist(err) {
-			return "", answerAbsent
+			return "", answerAbsent, nil
 		}
-		return "", answerUnknown
+		return "", answerUnknown, err
 	}
 	full, err := pathid.Canonical(f.Name())
 	_ = f.Close()
 	if err != nil {
-		return "", answerUnknown
+		return "", answerUnknown, err
 	}
 	// root.Name() is whatever spelling the caller opened the root with, not
 	// the volume's own answer for it -- measured on a machine whose TEMP
@@ -262,19 +279,22 @@ func resolvedRootRel(root *os.Root, rootRel string) (string, resolveAnswer) {
 	// sides go through the same resolution before they are compared.
 	rootFull, err := pathid.Canonical(root.Name())
 	if err != nil {
-		return "", answerUnknown
+		return "", answerUnknown, err
 	}
 	rel, err := filepath.Rel(rootFull, full)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if err != nil {
+		return "", answerUnknown, fmt.Errorf("%s opened, but the path it resolved to could not be lined up with the profile root's own answer: %w", rootRel, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		// The two resolved spellings can still disagree about the case of
 		// the directories between them; a relative path that climbs says
 		// they could not be lined up lexically. The name opened -- it is
 		// there -- but where it sits relative to the root is the question
 		// the tables are written to answer, and that went unanswered.
 		// Unknown, not absent.
-		return "", answerUnknown
+		return "", answerUnknown, fmt.Errorf("%s opened, but the path it resolved to climbed outside the profile root's own answer: %s", rootRel, rel)
 	}
-	return filepath.ToSlash(rel), answerResolved
+	return filepath.ToSlash(rel), answerResolved, nil
 }
 
 // reservedAtResolved adds to reservedAt the answer for what the name the
@@ -290,25 +310,31 @@ func resolvedRootRel(root *os.Root, rootRel string) (string, resolveAnswer) {
 // The as-written question is asked first, as it always was; only a path
 // some segment of which the spelling itself marks suspicious pays for the
 // resolution. Unresolvable is not reserved -- a name that opens nothing is
-// spared or taken exactly as the tables read it -- but unanswered is: a
-// suspicious spelling that opens something, the question about which failed,
-// is spared, because the other reading of the same failure is deleting the
-// hive on a guess.
-func reservedAtResolved(root *os.Root, rootRel string) bool {
+// spared or taken exactly as the tables read it -- but unanswered is its own
+// answer: a suspicious spelling that opens something, the question about
+// which failed, comes back reservedUnknown with its cause, and every
+// deletion-path caller stops on it, because the other reading of the same
+// failure is deleting the hive on a guess. It is no longer answered as
+// reserved-true, which read as a spared object and let a take-back report
+// itself finished over an object whose identity nothing had checked.
+func reservedAtResolved(root *os.Root, rootRel string) (reservedAnswer, error) {
 	if reservedAt(rootRel) {
-		return true
+		return isReserved, nil
 	}
 	if !pathSuspicious(rootRel) {
-		return false
+		return notReserved, nil
 	}
-	resolved, answer := resolvedRootRel(root, rootRel)
+	resolved, answer, err := resolvedRootRel(root, rootRel)
 	if answer == answerUnknown {
-		return true
+		return reservedUnknown, err
 	}
 	if answer != answerResolved {
-		return false
+		return notReserved, nil
 	}
-	return reservedAt(resolved)
+	if reservedAt(resolved) {
+		return isReserved, nil
+	}
+	return notReserved, nil
 }
 
 // reservedWithinResolved is reservedWithin's resolved twin, asked where a
@@ -319,24 +345,39 @@ func reservedAtResolved(root *os.Root, rootRel string) bool {
 // only its own name: "Microsoft./Windows" opens the directory
 // "Microsoft/Windows" spells, and a RemoveAll through it takes the hive
 // under the resolved name the as-written tables never saw. The unknown
-// answer fails closed the same way reservedAtResolved's does, toward
-// clearKeepingReserved's walk rather than a RemoveAll: a directory that
-// opened, the question about which failed, is not a directory to take whole.
-func reservedWithinResolved(root *os.Root, rootRel string) bool {
+// answer is its own answer the same way reservedAtResolved's is -- toward
+// clearKeepingReserved's walk rather than a RemoveAll, reported with its
+// cause so the caller stops instead of reading a spared directory as a
+// finished take-back.
+func reservedWithinResolved(root *os.Root, rootRel string) (reservedAnswer, error) {
 	if reservedWithin(rootRel) {
-		return true
+		return isReserved, nil
 	}
 	if !pathSuspicious(rootRel) {
-		return false
+		return notReserved, nil
 	}
-	resolved, answer := resolvedRootRel(root, rootRel)
+	resolved, answer, err := resolvedRootRel(root, rootRel)
 	if answer == answerUnknown {
-		return true
+		return reservedUnknown, err
 	}
 	if answer != answerResolved {
-		return false
+		return notReserved, nil
 	}
-	return reservedWithin(resolved)
+	if reservedWithin(resolved) {
+		return isReserved, nil
+	}
+	return notReserved, nil
+}
+
+// reservedStop is the error every deletion-path caller returns for a
+// reservedUnknown answer: the question of whether the name lands on a
+// path the registry reserves went unanswered, so nothing is taken and no
+// finish is reported -- the record stands and the next run asks again.
+func reservedStop(name string, cause error) error {
+	if cause == nil {
+		return fmt.Errorf("whether %s names a path the registry reserves cannot be asked to an answer, so nothing will be taken and no finish reported -- the run stops here and the record stands for the retry", name)
+	}
+	return fmt.Errorf("whether %s names a path the registry reserves cannot be asked to an answer (%w), so nothing will be taken and no finish reported -- the run stops here and the record stands for the retry", name, cause)
 }
 
 // clearKeepingReserved removes from one directory what a deletion that must
@@ -373,7 +414,10 @@ func clearKeepingReserved(root *os.Root, dir string) (spared, removed bool, err 
 		// asked again of what the name resolves to, because a child name
 		// the volume resolves onto a reserved file is spared by the file
 		// it reaches, not the one it spells.
-		if reservedAtResolved(root, filepath.ToSlash(childPath)) {
+		if answer, cause := reservedAtResolved(root, filepath.ToSlash(childPath)); answer != notReserved {
+			if answer == reservedUnknown {
+				return spared, removed, reservedStop(filepath.ToSlash(childPath), cause)
+			}
 			spared = true
 			continue
 		}

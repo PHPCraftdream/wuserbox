@@ -383,11 +383,11 @@ func TestRetractTakesBackExactlyTheAnswersTheClearMadeFalse(t *testing.T) {
 
 	// Two witnessed resolutions, the memos every later question of these
 	// spellings reads.
-	if canonical, ok := resolver.place("E0"); !ok || canonical != "e0" {
-		t.Fatalf("place(E0) answered (%q, %v), want (\"e0\", true): the spelling the stretch must later retract has to be witnessed first", canonical, ok)
+	if E0 := resolver.place("E0"); !E0.ok || E0.canonical != "e0" {
+		t.Fatalf("place(E0) answered (%q, %v), want (\"e0\", true): the spelling the stretch must later retract has to be witnessed first", E0.canonical, E0.ok)
 	}
-	if canonical, ok := resolver.place("E1"); !ok || canonical != "e1" {
-		t.Fatalf("place(E1) answered (%q, %v), want (\"e1\", true): the survivor needs a witnessed answer for the retraction to keep", canonical, ok)
+	if E1 := resolver.place("E1"); !E1.ok || E1.canonical != "e1" {
+		t.Fatalf("place(E1) answered (%q, %v), want (\"e1\", true): the survivor needs a witnessed answer for the retraction to keep", E1.canonical, E1.ok)
 	}
 	// A spelling the stretch never walked has no answer to take back --
 	// forget reads the false as the clear it cannot scope and ends the
@@ -406,18 +406,18 @@ func TestRetractTakesBackExactlyTheAnswersTheClearMadeFalse(t *testing.T) {
 	// The retraction took E0's resolution back, so the next ask is a real
 	// walk -- and the volume, asked again, answers nothing, which is
 	// recorded the way every answer is.
-	if canonical, ok := resolver.place("E0"); ok || canonical != "" {
-		t.Errorf("place(E0) after the clear answered (%q, %v), want the volume's nothing: the retraction took the witnessed answer back, so the ask re-walks the directory the clear emptied", canonical, ok)
+	if after := resolver.place("E0"); after.ok || after.canonical != "" {
+		t.Errorf("place(E0) after the clear answered (%q, %v), want the volume's nothing: the retraction took the witnessed answer back, so the ask re-walks the directory the clear emptied", after.canonical, after.ok)
 	}
 	// The miss is a memo like any other: the second ask costs the stretch
 	// nothing and answers the same nothing.
-	if _, ok := resolver.place("E0"); ok {
+	if again := resolver.place("E0"); again.ok {
 		t.Errorf("place(E0) answered ok a second time, want the recorded miss: the not-found answer is kept like any other, and a deletion never makes a name the volume once did not have")
 	}
 	// The survivor's memo is what the retraction was for: E1 costs no
 	// walk, and its witnessed answer stands.
-	if canonical, ok := resolver.place("E1"); !ok || canonical != "e1" {
-		t.Errorf("place(E1) after E0's retraction answered (%q, %v), want (\"e1\", true) from the surviving memo: the clear changed E0 and the directory that held it, and nothing else", canonical, ok)
+	if survivor := resolver.place("E1"); !survivor.ok || survivor.canonical != "e1" {
+		t.Errorf("place(E1) after E0's retraction answered (%q, %v), want (\"e1\", true) from the surviving memo: the clear changed E0 and the directory that held it, and nothing else", survivor.canonical, survivor.ok)
 	}
 	if resolver.resolutions != 3 {
 		t.Errorf("the resolver counted %d resolutions, want three: E0 and E1 witnessed before the clear, and E0's one re-ask after it -- the second miss and E1's answer are memo hits the retraction kept", resolver.resolutions)
@@ -491,7 +491,7 @@ func TestRetractReachesATerminalLeafBeneathTheTakenDirectory(t *testing.T) {
 		"sibling/inner/file.txt",
 	}
 	for _, spelling := range witnessed {
-		if _, ok := resolver.place(spelling); !ok {
+		if got := resolver.place(spelling); !got.ok {
 			t.Fatalf("place(%s) answered not ok before the clear, want a witnessed place", spelling)
 		}
 	}
@@ -504,9 +504,9 @@ func TestRetractReachesATerminalLeafBeneathTheTakenDirectory(t *testing.T) {
 	aliasedLeaf := ""
 	if fileSystemJoins(t, "leaf.txt", "LEAF.TXT") {
 		aliasedLeaf = "tree/deep/LEAF.TXT"
-		canonical, ok := resolver.place(aliasedLeaf)
-		if !ok || canonical != wantLeaf {
-			t.Fatalf("place(%s) answered (%q, %v), want (%q, true): the alias spelling has to resolve onto the same leaf before it can stand as a regression case for it", aliasedLeaf, canonical, ok, wantLeaf)
+		aliased := resolver.place(aliasedLeaf)
+		if !aliased.ok || aliased.canonical != wantLeaf {
+			t.Fatalf("place(%s) answered (%q, %v), want (%q, true): the alias spelling has to resolve onto the same leaf before it can stand as a regression case for it", aliasedLeaf, aliased.canonical, aliased.ok, wantLeaf)
 		}
 	}
 
@@ -524,12 +524,12 @@ func TestRetractReachesATerminalLeafBeneathTheTakenDirectory(t *testing.T) {
 		taken = append(taken, aliasedLeaf)
 	}
 	for _, spelling := range taken {
-		gotCanonical, gotOK := resolver.place(spelling)
-		wantCanonical, wantOK := fresh.place(spelling)
-		if gotOK != wantOK || gotCanonical != wantCanonical {
-			t.Errorf("place(%s) after retract(tree) answered (%q, %v), want (%q, %v) from a fresh resolver over the same cleared root: a retracted answer must agree with the volume, not the pre-clear cache", spelling, gotCanonical, gotOK, wantCanonical, wantOK)
+		got := resolver.place(spelling)
+		want := fresh.place(spelling)
+		if got.ok != want.ok || got.canonical != want.canonical {
+			t.Errorf("place(%s) after retract(tree) answered (%q, %v), want (%q, %v) from a fresh resolver over the same cleared root: a retracted answer must agree with the volume, not the pre-clear cache", spelling, got.canonical, got.ok, want.canonical, want.ok)
 		}
-		if gotOK {
+		if got.ok {
 			t.Errorf("place(%s) after retract(tree) still answered ok: it named a place beneath the taken directory, and RemoveAll(tree) took it down too", spelling)
 		}
 	}
@@ -538,12 +538,12 @@ func TestRetractReachesATerminalLeafBeneathTheTakenDirectory(t *testing.T) {
 	// the clear never touched, cached or not.
 	untouched := "sibling/inner/file.txt"
 	wantUntouched := filepath.Join("sibling", "inner", "file.txt")
-	gotCanonical, gotOK := resolver.place(untouched)
-	wantCanonical, wantOK := fresh.place(untouched)
-	if gotOK != wantOK || gotCanonical != wantCanonical {
-		t.Errorf("place(%s) after retract(tree) answered (%q, %v), want (%q, %v) from a fresh resolver: the sibling's answer must not depend on its neighbor's subtree ever having been cached", untouched, gotCanonical, gotOK, wantCanonical, wantOK)
+	got := resolver.place(untouched)
+	want := fresh.place(untouched)
+	if got.ok != want.ok || got.canonical != want.canonical {
+		t.Errorf("place(%s) after retract(tree) answered (%q, %v), want (%q, %v) from a fresh resolver: the sibling's answer must not depend on its neighbor's subtree ever having been cached", untouched, got.canonical, got.ok, want.canonical, want.ok)
 	}
-	if !gotOK || gotCanonical != wantUntouched {
-		t.Errorf("place(%s) after retract(tree) answered (%q, %v), want (%q, true): the sibling was never touched by the clear beside it", untouched, gotCanonical, gotOK, wantUntouched)
+	if !got.ok || got.canonical != wantUntouched {
+		t.Errorf("place(%s) after retract(tree) answered (%q, %v), want (%q, true): the sibling was never touched by the clear beside it", untouched, got.canonical, got.ok, wantUntouched)
 	}
 }

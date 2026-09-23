@@ -11,6 +11,13 @@ import (
 type placeResult struct {
 	canonical string
 	ok        bool
+	// unknown records that the question about this spelling did not
+	// finish: an open or a ReadDir failed for a reason that is not the
+	// volume's own nothing. It is never to be read as !ok's usual
+	// absence, and err carries the failure for the message of the
+	// caller that has to stop on it.
+	unknown   bool
+	err       error
 	directory string
 	version   uint64
 }
@@ -62,6 +69,13 @@ type dirSnapshot struct {
 	canonicalNames    map[string]map[string]bool
 	canonicalComplete bool
 	ok                bool
+	// unknown and err are the shut directory's reason. The volume's own
+	// nothing leaves unknown false -- an honest answer that the directory
+	// is not there -- while every other failure sets unknown and keeps its
+	// cause, so a retention decision downstream cannot read the failure
+	// as absence.
+	unknown bool
+	err     error
 }
 
 // canonicalChild is one canonical path's answer in the snapshot's
@@ -175,11 +189,17 @@ func defaultPlaceResolver(root *os.Root) *placeResolver {
 // place resolves one spelling's canonical directory-entry path once per
 // cleaned spelling: "one" and "./one" clean to the same key, and the
 // second spelling is answered from the first's walk.
-func (r *placeResolver) place(path string) (string, bool) {
+//
+// The answer is one of three, not two: a witnessed place, the volume's own
+// nothing, or a question that did not finish -- unknown, with err carrying
+// why. ok is true only for the witnessed place, and a caller whose next
+// step keeps or retires a recorded entry asks the question rather than
+// reading !ok as absence.
+func (r *placeResolver) place(path string) placeResult {
 	key := cleanEntryPath(path)
 	if got, ok := r.places[key]; ok {
 		if got.directory == "" || got.version == r.dirVersion[got.directory] {
-			return got.canonical, got.ok
+			return got
 		}
 		if got.ok {
 			named := r.placeAt[got.canonical]
@@ -192,17 +212,16 @@ func (r *placeResolver) place(path string) (string, bool) {
 	}
 	r.resolutions++
 	r.lastDependentDir = ""
-	canonical, ok := r.canonicalEntryPath(path)
-	result := placeResult{canonical: canonical, ok: ok}
+	result := r.canonicalEntryPath(path)
 	if r.lastDependentDir != "" {
 		result.directory = r.lastDependentDir
 		result.version = r.dirVersion[r.lastDependentDir]
 	}
 	r.places[key] = result
-	if ok {
-		r.notePlace(key, canonical)
+	if result.ok {
+		r.notePlace(key, result.canonical)
 	}
-	return canonical, ok
+	return result
 }
 
 // notePlace files a witnessed spelling under the canonical place its
@@ -246,16 +265,19 @@ func (r *placeResolver) registerChild(key string) {
 // samePlace is the comparison sameEntryPlace puts to a fresh resolver, and
 // it reads the same way: false the moment either spelling names no place.
 func (r *placeResolver) samePlace(first, second string) bool {
-	opened, ok := r.place(first)
-	if !ok {
+	opened := r.place(first)
+	if !opened.ok {
 		return false
 	}
-	other, ok := r.place(second)
-	return ok && opened == other
+	other := r.place(second)
+	return other.ok && opened.canonical == other.canonical
 }
 
 // snapshot returns one directory's snapshot, read once until a mirror or
-// clear updates that directory's resolver state.
+// clear updates that directory's resolver state. The bool is whether the
+// listing was enumerated; a directory this operation could not enumerate
+// comes back shut, carrying unknown and its cause where the failure is
+// not the volume's own nothing.
 func (r *placeResolver) snapshot(dir string) (dirSnapshot, bool) {
 	if snap, ok := r.dirs[dir]; ok {
 		return snap, snap.ok
@@ -263,17 +285,13 @@ func (r *placeResolver) snapshot(dir string) (dirSnapshot, bool) {
 	r.opens++
 	file, err := r.root.Open(dir)
 	if err != nil {
-		r.dirs[dir] = dirSnapshot{}
-		r.noteDir(dir)
-		return dirSnapshot{}, false
+		return r.noteShut(dir, err), false
 	}
 	r.reads++
 	children, err := file.ReadDir(-1)
 	_ = file.Close()
 	if err != nil {
-		r.dirs[dir] = dirSnapshot{}
-		r.noteDir(dir)
-		return dirSnapshot{}, false
+		return r.noteShut(dir, err), false
 	}
 	byName := make(map[string]string, len(children))
 	for _, child := range children {
@@ -291,6 +309,23 @@ func (r *placeResolver) snapshot(dir string) (dirSnapshot, bool) {
 	r.noteDir(dir)
 	r.children += len(children)
 	return snap, true
+}
+
+// noteShut caches a directory this operation could not enumerate, and
+// it keeps the distinction the round-11 review drew through the
+// answer: the volume's own nothing is an honest absence, while any
+// other failure -- a lock another program holds, a read that stopped
+// part way -- is no answer at all, cached with its cause so nothing
+// downstream reads it as the directory not being there.
+func (r *placeResolver) noteShut(dir string, err error) dirSnapshot {
+	snap := dirSnapshot{}
+	if !os.IsNotExist(err) {
+		snap.unknown = true
+		snap.err = err
+	}
+	r.dirs[dir] = snap
+	r.noteDir(dir)
+	return snap
 }
 
 // noteDir files a snapshot key beneath its parent's in the reverse book,

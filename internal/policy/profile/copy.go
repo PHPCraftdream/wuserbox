@@ -311,9 +311,22 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 			if stretch == nil {
 				stretch = newPlaceIndex(root, recorded)
 			}
-			if stretch.holds(entry.Path) {
+			switch answer, cause := stretch.vouches(entry.Path); answer {
+			case vouchHeld:
 				copied = append(copied, entry)
+			case vouchUnknown:
+				// An answer nobody got must not read as nothing left to
+				// vouch: the destination was never asked, so agreeing
+				// with it would retire a copy that may still be standing.
+				// The run stops and the caller's partial-record union
+				// keeps the entry for the retry.
+				return copied, newPrints, unknownCopyError(entry.Path, cause)
 			}
+			// The never-copied case: the record names a path this
+			// machine never had, and recording it claimed whatever was
+			// sitting there as ours -- the same rationale the comment
+			// above draws for local-agent. Nothing was copied under it
+			// by an earlier run, and nothing is recorded.
 			continue
 		}
 		// Written down before the copying and not after. What this list is for
@@ -346,6 +359,18 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 	return copied, newPrints, nil
 }
 
+// unknownCopyError is the refusal for a missing source whose copy the
+// profile could not be asked about: recording nothing here retires an
+// earlier run's copy from the record, and the copy may still be standing
+// in the destination. The run stops instead, and the caller's union over
+// the partial record keeps the entry for the retry.
+func unknownCopyError(entry string, cause error) error {
+	if cause == nil {
+		return fmt.Errorf("the source %s has gone, and whether an earlier run's copy of it still stands in the profile cannot be asked to an answer -- recording nothing would retire a copy that may still be there, so the run stops with the record standing for the retry", entry)
+	}
+	return fmt.Errorf("the source %s has gone, and whether an earlier run's copy of it still stands in the profile cannot be asked to an answer (%w) -- recording nothing would retire a copy that may still be there, so the run stops with the record standing for the retry", entry, cause)
+}
+
 // recordVouches answers whether the record names the place one entry lands
 // at, and it is asked exactly where os.Stat cannot answer: a source that
 // has gone since an earlier run copied it and a source that was never here
@@ -366,15 +391,21 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 // each mutation-free stretch of its entry loop instead of a fresh one per
 // vouch, and drops it after the mirror that would turn its cached answers
 // into lies.
+//
+// It answers held and nothing else, so a question that did not finish
+// reads as no vouch here: the callers that keep or retire a record on the
+// answer ask a placeIndex's vouches themselves and stop on the unknown,
+// which is where the round-11 finding's refusal has to land.
 func recordVouches(resolver *placeResolver, recorded []string, entry string) bool {
 	index := &placeIndex{resolver: resolver, members: make(map[string]map[string]bool, len(recorded))}
 	for _, path := range recorded {
-		if canonical, ok := resolver.place(path); ok {
-			if index.members[canonical] == nil {
-				index.members[canonical] = make(map[string]bool)
+		if result := resolver.place(path); result.ok {
+			if index.members[result.canonical] == nil {
+				index.members[result.canonical] = make(map[string]bool)
 			}
-			index.members[canonical][cleanEntryPath(path)] = true
+			index.members[result.canonical][cleanEntryPath(path)] = true
 		}
 	}
-	return index.holds(entry)
+	answer, _ := index.vouches(entry)
+	return answer == vouchHeld
 }
