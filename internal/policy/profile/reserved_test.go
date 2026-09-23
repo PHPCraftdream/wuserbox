@@ -506,42 +506,140 @@ func TestACopyRefusesAnEntrySpelledTheWayTheVolumeImprovesOn(t *testing.T) {
 // spared by the file it reaches. NTUSER~1.DAT needs no special answer: on
 // a volume where the alias exists the resolved question spares it, and
 // where the alias does not the name opens nothing and there is nothing to
-// remove -- the hive survives either way. The root spellings are driven
-// through a real Copy as well, because forget's spare runs inside one, on
-// the way to the copy that rewrites the record.
+// remove -- the hive survives either way. The records are driven through a
+// real Copy as well, because forget's spare runs inside one, on the way to
+// the copy that rewrites the record.
+//
+// The alias is not a leaf's privilege, and the record is where that bites.
+// Win32 normalizes every segment on the way down, so "AppData.", "Local.",
+// "Microsoft." and "Windows." each open the directory the plain spelling
+// keeps -- measured, each one reaches the hive through the same os.Root --
+// and a guard that paid for resolution only where the LEAF was spelled
+// strangely answered a record spelled through an ancestor out of the
+// as-written tables and deleted what the volume had resolved onto the hive.
+// Every ancestor position is driven here, against the hive itself and
+// against the directory it sits in -- the same alias one component shorter,
+// whose uncorrected answer is a bare RemoveAll over the directory the hive
+// lives in -- through Clear and through a Copy carrying the record as
+// previously. Beside them stand two plain-named controls the spare must
+// not spread to: a file the same record names away from the hive, which
+// nothing about the hive's spelling may protect, and -- for the directory
+// records -- a stray inside the directory, which is exactly what the
+// clearing-around walk is there to take.
 func TestATakeBackSparesTheHiveARecordSpelledTheWayTheVolumeReadsIt(t *testing.T) {
-	for _, spelling := range []string{
-		"NTUSER.DAT.",
-		"NTUSER.DAT ",
-		"NTUSER~1.DAT",
-		"AppData/Local/Microsoft/Windows/UsrClass.dat.",
+	for _, c := range []struct {
+		spelling string
+		namesDir bool
+	}{
+		{spelling: "NTUSER.DAT."},
+		{spelling: "NTUSER.DAT "},
+		{spelling: "NTUSER~1.DAT"},
+		{spelling: "AppData/Local/Microsoft/Windows/UsrClass.dat."},
+		{spelling: "AppData./Local/Microsoft/Windows/UsrClass.dat"},
+		{spelling: "AppData/Local./Microsoft/Windows/UsrClass.dat"},
+		{spelling: "AppData/Local/Microsoft./Windows/UsrClass.dat"},
+		{spelling: "AppData/Local/Microsoft/Windows./UsrClass.dat"},
+		{spelling: "AppData./Local/Microsoft/Windows", namesDir: true},
+		{spelling: "AppData/Local./Microsoft/Windows", namesDir: true},
+		{spelling: "AppData/Local/Microsoft./Windows", namesDir: true},
+		{spelling: "AppData/Local/Microsoft/Windows.", namesDir: true},
+		{spelling: "AppData./Local./Microsoft./Windows.", namesDir: true},
 	} {
-		t.Run(spelling, func(t *testing.T) {
+		t.Run(c.spelling, func(t *testing.T) {
 			_, dest := useProfile(t, []string{})
+			win := filepath.Join(dest, "AppData", "Local", "Microsoft", "Windows")
 			hive := filepath.Join(dest, "NTUSER.DAT")
-			atRoot := spelling != "AppData/Local/Microsoft/Windows/UsrClass.dat."
-			if !atRoot {
-				hive = hivePath(t, dest)
+			if !strings.HasPrefix(c.spelling, "NTUSER") {
+				hive = filepath.Join(win, "UsrClass.dat")
 			}
 			write(t, hive, profileServiceHive)
+			write(t, hive+".LOG1", "companion")
+			notes := filepath.Join(win, "notes.txt")
+			if c.namesDir {
+				write(t, notes, "a stray nothing reserves")
+			}
+			control := filepath.Join(dest, "AppData", "Local", "ours.txt")
+			write(t, control, "ours")
+			previously := []config.Entry{
+				{Path: c.spelling},
+				{Path: "AppData/Local/ours.txt"},
+			}
 
-			if err := Clear(dest, []config.Entry{{Path: spelling}}); err != nil {
-				t.Fatalf("the take-back refused a record spelling %q that an earlier run of this tool wrote: %v", spelling, err)
+			if err := Clear(dest, previously); err != nil {
+				t.Fatalf("the take-back refused a record spelling %q that an earlier run of this tool wrote: %v", c.spelling, err)
 			}
 			if got := read(t, hive); got != profileServiceHive {
-				t.Errorf("the take-back honored the record's spelling %q to the letter: the hive now holds %q", spelling, got)
+				t.Errorf("the take-back honored the record's spelling %q to the letter: the hive now holds %q", c.spelling, got)
+			}
+			if got := read(t, hive+".LOG1"); got != "companion" {
+				t.Errorf("the take-back took the hive's companion through the record's spelling %q: it now holds %q", c.spelling, got)
+			}
+			if _, err := os.Stat(control); !os.IsNotExist(err) {
+				t.Errorf("a plain file the record named was spared as if the hive's spelling protected it: %v", err)
+			}
+			if c.namesDir {
+				if _, err := os.Stat(notes); !os.IsNotExist(err) {
+					t.Errorf("a plain stray under the directory the record named survived the clearing that spared the hive: %v", err)
+				}
 			}
 
-			if !atRoot {
-				return
-			}
-			if _, _, err := Copy(dest, []config.Entry{{Path: spelling}}, nil); err != nil {
-				t.Fatalf("a fill refused to run over a record spelling %q: %v", spelling, err)
+			if _, _, err := Copy(dest, previously, nil); err != nil {
+				t.Fatalf("a fill refused to run over a record spelling %q: %v", c.spelling, err)
 			}
 			if got := read(t, hive); got != profileServiceHive {
-				t.Errorf("the fill honored the record's spelling %q to the letter: the hive now holds %q", spelling, got)
+				t.Errorf("the fill honored the record's spelling %q to the letter: the hive now holds %q", c.spelling, got)
 			}
 		})
+	}
+}
+
+// TestATakeBackSparesWhatItCouldNotAskAbout pins the guard's third answer.
+// A record spelling the hive through an alias whose path cannot be asked
+// about -- Microsoft below AppData/Local is a junction pointing outside the
+// profile, and the root refuses to open through a reparse point -- opens a
+// name the volume may resolve onto the hive, and the question of where it
+// lands goes unanswered: the open fails for a reason that is not absence.
+// The shape resolvedRootRel answered with before read every failure as
+// absence, and absence reads as the as-written tables' leave to delete; an
+// unknown is not a no. The entry is spared, the hive stands, and the
+// record's plain-named neighbor still goes, because the spare answers the
+// question that failed and nothing else.
+func TestATakeBackSparesWhatItCouldNotAskAbout(t *testing.T) {
+	_, dest := useProfile(t, []string{})
+	real := filepath.Join(t.TempDir(), "elsewhere")
+	hive := filepath.Join(real, "Windows", "UsrClass.dat")
+	write(t, hive, profileServiceHive)
+	// The junction sits where the record's spelling sends the walk, and the
+	// hive sits behind it -- reachable by the plain file system calls the
+	// fixture writes with, refused to the root that would have to open it
+	// to answer.
+	junctionTo(t, filepath.Join(dest, "AppData", "Microsoft"), real)
+	control := filepath.Join(dest, "AppData", "Local", "ours.txt")
+	write(t, control, "ours")
+
+	if err := Clear(dest, []config.Entry{
+		{Path: "AppData/Local/Microsoft./Windows/UsrClass.dat"},
+		{Path: "AppData/Local/ours.txt"},
+	}); err != nil {
+		t.Fatalf("the take-back refused a record it could not ask about: %v", err)
+	}
+	if got := read(t, hive); got != profileServiceHive {
+		t.Errorf("the take-back deleted through an answer it never got: the hive now holds %q", got)
+	}
+	if _, err := os.Stat(control); !os.IsNotExist(err) {
+		t.Errorf("a plain file the record named was spared by the same fog the hive was spared by: %v", err)
+	}
+
+	// The branch itself, asked directly: the spelling is suspicious, the
+	// open is refused rather than answered, and the resolution says so --
+	// this is the answer the spare above stands on.
+	root, err := os.OpenRoot(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if _, answer := resolvedRootRel(root, "AppData/Local/Microsoft./Windows/UsrClass.dat"); answer != answerUnknown {
+		t.Errorf("an open refused, not answered, resolved as %v: the guard would have read that as the tables' leave to delete", answer)
 	}
 }
 

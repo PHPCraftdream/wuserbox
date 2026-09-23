@@ -148,32 +148,110 @@ func looksLikeShortName(segment string) bool {
 	return true
 }
 
+// pathSuspicious answers whether ANY name along a root-relative path is one
+// the volume may resolve under a different spelling: trailing dots or spaces
+// Win32 strips, or a shape an 8.3 alias carries -- per segment, not per
+// path's end. The old gate asked this of the leaf alone and dropped
+// everything before the last slash, and the record taught better: Win32
+// normalizes every segment on the way down, so "AppData." opens the
+// directory AppData keeps and a hive spelled through an aliased ancestor
+// opens through it too -- measured, through the same os.Root. A leaf
+// spelled plainly then never paid for the one question that would have said
+// where the name really lands, and the as-written tables answered a
+// question the volume had already answered differently. It is the gate on
+// the resolved questions below -- a spelling no segment of which the volume
+// may improve on never resolves to anything else (the fold already answers
+// for case), so the walks pay for an open and a final-path question only
+// where the spelling itself says the volume may know better.
+//
+// "." and ".." are skipped, not asked: they are navigation, never a stored
+// name -- Windows will not create a file or directory spelled either way --
+// so stripsTrailingPad's own rule (a segment is suspicious if trimming its
+// trailing dots and spaces changes it) misreads ".." as a name stripped down
+// to nothing and reads a record's climb-out as a spelling to resolve rather
+// than what within and withinRecorded already refuse outright. A cleaned
+// path carries "." only as the whole of it -- filepath.Clean removes every
+// internal one -- and that whole-path case is refused by name before either
+// caller reaches this far; ".." can still lead a cleaned path that climbs,
+// and it is exactly there that asking the volume about it would matter least
+// and cost most, resolving a name that was never going to be reserved
+// through an open the root refuses for its own reason.
+func pathSuspicious(rootRel string) bool {
+	for _, segment := range strings.Split(rootRel, "/") {
+		if segment == "." || segment == ".." {
+			continue
+		}
+		if stripsTrailingPad(segment) || looksLikeShortName(segment) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveAnswer is what the volume said about one suspicious spelling. Three
+// answers, because two of them read as leave to delete and only one of
+// those is: absent is the volume's own nothing, resolved carries the name
+// the volume answered with, and unknown is a question about a name that
+// opened something which went unanswered.
+type resolveAnswer int
+
+const (
+	// the name opened nothing: it is not another name for something, and
+	// the as-written question stands.
+	answerAbsent resolveAnswer = iota
+	// the volume opened it; the companion string is the path it answered
+	// for the name, relative to the profile root and spelled with forward
+	// slashes.
+	answerResolved
+	// the open failed for a reason that is not absence, or the final-path
+	// question failed, or the two resolved spellings could not be lined
+	// up. Not an answer, and never to be read as one.
+	answerUnknown
+)
+
 // resolvedRootRel answers with the path the volume actually resolved rootRel
 // to, relative to the profile root and spelled with forward slashes -- the
 // frame the reserved tables are written in. It opens the name through the
 // root (which refuses a reparse point leading out of the profile) and asks
 // GetFinalPathNameByHandle -- pathid.Canonical -- for the final path, the
-// same question canonicalEntryPath asks one component at a time. A name that
-// opens nothing is not another name for something: false, and the caller
-// falls back to the spelling as written. A nil root is the same answer: a
-// preview asked about a sandbox that does not exist yet has nothing to
-// open, so there is nothing to resolve and the as-written question stands.
-func resolvedRootRel(root *os.Root, rootRel string) (string, bool) {
+// same question canonicalEntryPath asks one component at a time.
+//
+// Three answers come back, and the line between them is the one the round-8
+// review drew through the record's ancestor aliases. A name that opens
+// nothing is not another name for something: absent, and the caller falls
+// back to the spelling as written. A name that opens something is a file or
+// a directory this question may be the only thing standing between it and a
+// deletion, so every other failure on the way to the answer -- an open
+// refused rather than answered, a final path that could not be had, two
+// resolved spellings that would not line up -- is unknown, and the callers
+// fail closed on it: spared, never deleted on an answer nobody got.
+//
+// A nil root is absence: a preview asked about a sandbox that does not exist
+// yet has nothing to open, so there is nothing to resolve and the as-written
+// question stands.
+func resolvedRootRel(root *os.Root, rootRel string) (string, resolveAnswer) {
 	if root == nil {
 		// A preview asked about a sandbox that does not exist yet has
 		// nothing to open -- planSink's own contract, the same answer
 		// from the other side. Nothing resolves, and the as-written
 		// question stands.
-		return "", false
+		return "", answerAbsent
 	}
 	f, err := root.Open(rootRel)
 	if err != nil {
-		return "", false
+		// The volume's own nothing is absence: a name that opens nothing
+		// is not another name for something. Anything else -- a refusal,
+		// a rights question, a reparse the root would not open -- is
+		// about a name that is there, and is no answer at all.
+		if os.IsNotExist(err) {
+			return "", answerAbsent
+		}
+		return "", answerUnknown
 	}
 	full, err := pathid.Canonical(f.Name())
 	_ = f.Close()
 	if err != nil {
-		return "", false
+		return "", answerUnknown
 	}
 	// root.Name() is whatever spelling the caller opened the root with, not
 	// the volume's own answer for it -- measured on a machine whose TEMP
@@ -184,32 +262,19 @@ func resolvedRootRel(root *os.Root, rootRel string) (string, bool) {
 	// sides go through the same resolution before they are compared.
 	rootFull, err := pathid.Canonical(root.Name())
 	if err != nil {
-		return "", false
+		return "", answerUnknown
 	}
 	rel, err := filepath.Rel(rootFull, full)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		// The two resolved spellings can still disagree about the case of
 		// the directories between them; a relative path that climbs says
-		// they could not be lined up lexically, and the as-written
-		// question stands.
-		return "", false
+		// they could not be lined up lexically. The name opened -- it is
+		// there -- but where it sits relative to the root is the question
+		// the tables are written to answer, and that went unanswered.
+		// Unknown, not absent.
+		return "", answerUnknown
 	}
-	return filepath.ToSlash(rel), true
-}
-
-// leafSuspicious answers whether a root-relative path's own name is one the
-// volume may resolve under a different spelling: trailing dots or spaces
-// Win32 strips, or a shape an 8.3 alias carries. It is the gate on the
-// resolved questions below -- a spelling that names itself exactly never
-// resolves to anything else (the fold already answers for case), so the
-// walks pay for an open and a final-path question only where the spelling
-// itself says the volume may know better.
-func leafSuspicious(rootRel string) bool {
-	segment := rootRel
-	if i := strings.LastIndexByte(rootRel, '/'); i >= 0 {
-		segment = rootRel[i+1:]
-	}
-	return stripsTrailingPad(segment) || looksLikeShortName(segment)
+	return filepath.ToSlash(rel), answerResolved
 }
 
 // reservedAtResolved adds to reservedAt the answer for what the name the
@@ -217,34 +282,61 @@ func leafSuspicious(rootRel string) bool {
 // hive "NTUSER.DAT" names, and a family member's 8.3 alias -- NTUSER~1.BLF
 // beside a real .TM.blf, measured -- opens the member. Measured with a plain
 // Open through an os.Root: the handle's final path is the plain spelling's,
-// file identity and all. The as-written question is asked first, as it always
-// was; only a leaf the spelling itself marks suspicious pays for the
-// resolution. Unresolvable is not reserved: a name that opens nothing is
-// spared or taken exactly as the tables read it.
+// file identity and all -- and the same is true of an alias on any component
+// of the path, not only the leaf's: "AppData." opens the directory AppData
+// keeps, so a record spelling the hive through an aliased ancestor was
+// answered out of the as-written tables alone, and the take-back honored the
+// spelling to the letter over a file the volume had resolved onto the hive.
+// The as-written question is asked first, as it always was; only a path
+// some segment of which the spelling itself marks suspicious pays for the
+// resolution. Unresolvable is not reserved -- a name that opens nothing is
+// spared or taken exactly as the tables read it -- but unanswered is: a
+// suspicious spelling that opens something, the question about which failed,
+// is spared, because the other reading of the same failure is deleting the
+// hive on a guess.
 func reservedAtResolved(root *os.Root, rootRel string) bool {
 	if reservedAt(rootRel) {
 		return true
 	}
-	if !leafSuspicious(rootRel) {
+	if !pathSuspicious(rootRel) {
 		return false
 	}
-	resolved, ok := resolvedRootRel(root, rootRel)
-	return ok && reservedAt(resolved)
+	resolved, answer := resolvedRootRel(root, rootRel)
+	if answer == answerUnknown {
+		return true
+	}
+	if answer != answerResolved {
+		return false
+	}
+	return reservedAt(resolved)
 }
 
 // reservedWithinResolved is reservedWithin's resolved twin, asked where a
 // deletion would take a directory whole: a directory the record or the
 // cleanup reaches under an alias spelling takes the reserved files under its
-// resolved name with it, which is the same destruction with one alias more.
+// resolved name with it, which is the same destruction with one alias more
+// -- and the alias may sit on any component of the directory's path, not
+// only its own name: "Microsoft./Windows" opens the directory
+// "Microsoft/Windows" spells, and a RemoveAll through it takes the hive
+// under the resolved name the as-written tables never saw. The unknown
+// answer fails closed the same way reservedAtResolved's does, toward
+// clearKeepingReserved's walk rather than a RemoveAll: a directory that
+// opened, the question about which failed, is not a directory to take whole.
 func reservedWithinResolved(root *os.Root, rootRel string) bool {
 	if reservedWithin(rootRel) {
 		return true
 	}
-	if !leafSuspicious(rootRel) {
+	if !pathSuspicious(rootRel) {
 		return false
 	}
-	resolved, ok := resolvedRootRel(root, rootRel)
-	return ok && reservedWithin(resolved)
+	resolved, answer := resolvedRootRel(root, rootRel)
+	if answer == answerUnknown {
+		return true
+	}
+	if answer != answerResolved {
+		return false
+	}
+	return reservedWithin(resolved)
 }
 
 // clearKeepingReserved removes from one directory what a deletion that must
