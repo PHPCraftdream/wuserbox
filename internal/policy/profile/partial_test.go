@@ -451,3 +451,99 @@ func TestRetractTakesBackExactlyTheAnswersTheClearMadeFalse(t *testing.T) {
 		t.Errorf("the retraction pulled %d book entries, want three: E0's witnessed spelling and the two alias answers asked in the directory that held it, where the scanned loops examined every book whole", resolver.visits)
 	}
 }
+
+// TestRetractReachesATerminalLeafBeneathTheTakenDirectory is P3-2,
+// docs/reviews/security-performance-review-2026-09-28-round8.md: notePlace
+// filed a witnessed leaf's canonical path in placeAt but never as a
+// dirChildren node, because a leaf is never opened as a directory and
+// noteDir only files what snapshot() reads. retract's subtree walk follows
+// dirChildren alone, so a leaf under the directory a clear took was never
+// reached by it, and its resolution outlived the clear -- measured exactly
+// this way in the review: place("tree") and place("tree/deep/leaf.txt"),
+// RemoveAll of tree, retract("tree"), and the leaf answered retained where
+// a fresh resolver answered gone.
+//
+// This asks several depths at once -- the taken directory itself, a
+// directory nested under it, a leaf two deep under it, a leaf one deep
+// under it -- an alias spelling of the nested leaf, and an entirely
+// untouched sibling subtree. Every answer after the retraction is checked
+// against a fresh resolver built over the same, already-cleared root: the
+// fresh resolver never cached anything, so it is the oracle the retracted
+// one has to agree with, not a second copy of the same assumption.
+func TestRetractReachesATerminalLeafBeneathTheTakenDirectory(t *testing.T) {
+	dest := t.TempDir()
+	write(t, filepath.Join(dest, "tree", "deep", "leaf.txt"), "leaf")
+	write(t, filepath.Join(dest, "tree", "other.txt"), "other")
+	write(t, filepath.Join(dest, "sibling", "inner", "file.txt"), "sibling")
+
+	root, err := os.OpenRoot(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	resolver := newPlaceResolver(root)
+
+	// Witness every depth before anything is cleared: the taken
+	// directory, a directory beneath it, a leaf two deep beneath it, a
+	// leaf one deep beneath it, and the untouched sibling's own leaf.
+	witnessed := []string{
+		"tree", "tree/deep", "tree/deep/leaf.txt", "tree/other.txt",
+		"sibling/inner/file.txt",
+	}
+	for _, spelling := range witnessed {
+		if _, ok := resolver.place(spelling); !ok {
+			t.Fatalf("place(%s) answered not ok before the clear, want a witnessed place", spelling)
+		}
+	}
+
+	// An alias spelling of the nested leaf, asked only if this volume
+	// joins the two spellings: the alias branch's own answer, filed
+	// under the directory it opened in, has to be reachable from the
+	// taken place too.
+	wantLeaf := filepath.Join("tree", "deep", "leaf.txt")
+	aliasedLeaf := ""
+	if fileSystemJoins(t, "leaf.txt", "LEAF.TXT") {
+		aliasedLeaf = "tree/deep/LEAF.TXT"
+		canonical, ok := resolver.place(aliasedLeaf)
+		if !ok || canonical != wantLeaf {
+			t.Fatalf("place(%s) answered (%q, %v), want (%q, true): the alias spelling has to resolve onto the same leaf before it can stand as a regression case for it", aliasedLeaf, canonical, ok, wantLeaf)
+		}
+	}
+
+	if err := root.RemoveAll("tree"); err != nil {
+		t.Fatal(err)
+	}
+	if !resolver.retract("tree") {
+		t.Fatalf("retract(tree) answered false, want true: tree was witnessed a moment ago, and the clear just made every answer beneath it a lie")
+	}
+
+	fresh := newPlaceResolver(root)
+
+	taken := []string{"tree", "tree/deep", "tree/deep/leaf.txt", "tree/other.txt"}
+	if aliasedLeaf != "" {
+		taken = append(taken, aliasedLeaf)
+	}
+	for _, spelling := range taken {
+		gotCanonical, gotOK := resolver.place(spelling)
+		wantCanonical, wantOK := fresh.place(spelling)
+		if gotOK != wantOK || gotCanonical != wantCanonical {
+			t.Errorf("place(%s) after retract(tree) answered (%q, %v), want (%q, %v) from a fresh resolver over the same cleared root: a retracted answer must agree with the volume, not the pre-clear cache", spelling, gotCanonical, gotOK, wantCanonical, wantOK)
+		}
+		if gotOK {
+			t.Errorf("place(%s) after retract(tree) still answered ok: it named a place beneath the taken directory, and RemoveAll(tree) took it down too", spelling)
+		}
+	}
+
+	// The untouched sibling: retracting tree must not disturb a subtree
+	// the clear never touched, cached or not.
+	untouched := "sibling/inner/file.txt"
+	wantUntouched := filepath.Join("sibling", "inner", "file.txt")
+	gotCanonical, gotOK := resolver.place(untouched)
+	wantCanonical, wantOK := fresh.place(untouched)
+	if gotOK != wantOK || gotCanonical != wantCanonical {
+		t.Errorf("place(%s) after retract(tree) answered (%q, %v), want (%q, %v) from a fresh resolver: the sibling's answer must not depend on its neighbor's subtree ever having been cached", untouched, gotCanonical, gotOK, wantCanonical, wantOK)
+	}
+	if !gotOK || gotCanonical != wantUntouched {
+		t.Errorf("place(%s) after retract(tree) answered (%q, %v), want (%q, true): the sibling was never touched by the clear beside it", untouched, gotCanonical, gotOK, wantUntouched)
+	}
+}
