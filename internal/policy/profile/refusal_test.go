@@ -141,7 +141,7 @@ func TestCopyCanStillClearAJunctionTheSandboxLeftBehind(t *testing.T) {
 // the way NTUSER.DAT never is -- gets removed for not being in the source.
 func TestCopyRefusesAnEntryNamingTheProfileRoot(t *testing.T) {
 	for _, path := range []string{".", "foo/.."} {
-		t.Run(path, func(t *testing.T) {
+		t.Run("no record/"+path, func(t *testing.T) {
 			home, dest := useProfile(t, []string{path})
 			write(t, filepath.Join(home, "elsewhere-in-the-profile.txt"), "not meant for any sandbox")
 			write(t, filepath.Join(dest, "NTUSER.DAT"), "the sandbox's own registry hive")
@@ -151,6 +151,43 @@ func TestCopyRefusesAnEntryNamingTheProfileRoot(t *testing.T) {
 				t.Fatalf("path %q: an entry naming the profile root was accepted", path)
 			}
 
+			if _, statErr := os.Stat(filepath.Join(dest, "NTUSER.DAT")); statErr != nil {
+				t.Errorf("path %q: the sandbox's own registry hive was removed: %v", path, statErr)
+			}
+			if _, statErr := os.Stat(filepath.Join(dest, "elsewhere-in-the-profile.txt")); statErr == nil {
+				t.Errorf("path %q: the whole user profile was mirrored into the sandbox's", path)
+			}
+		})
+		// The same refusal with a previous copy standing under dest, which is
+		// the only way to see the take-back at all: with previously nil the run
+		// has nothing of an earlier fill to clear, so the deletion the unfixed
+		// code did in front of a correct refusal is invisible to the family
+		// above it. Here the refused run has to leave the earlier copy exactly
+		// where it stood, byte for byte, beside the hive and beside the file
+		// from elsewhere in the profile that was never on any list.
+		t.Run("record/"+path, func(t *testing.T) {
+			home, dest := useProfile(t, []string{".claude"})
+			write(t, filepath.Join(home, ".claude", "keep.txt"), "from the source")
+			write(t, filepath.Join(home, "elsewhere-in-the-profile.txt"), "not meant for any sandbox")
+			write(t, filepath.Join(dest, "NTUSER.DAT"), "the sandbox's own registry hive")
+
+			copied := fill(t, dest)
+			if !reflect.DeepEqual(pathsOf(copied), []string{".claude"}) {
+				t.Fatalf("nothing was copied in the first place, so this test proves nothing: %v", copied)
+			}
+
+			// The typo. The same rules file, one entry naming the profile root
+			// rather than something inside it.
+			if err := (&config.Config{Profile: config.Entries([]string{path})}).Save(); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := Copy(dest, copied, lastPrints[dest]); err == nil {
+				t.Fatalf("path %q: an entry naming the profile root was accepted by a run with a previous copy to take back", path)
+			}
+
+			if got := read(t, filepath.Join(dest, ".claude", "keep.txt")); got != "from the source" {
+				t.Errorf("path %q: the previous run's copy did not survive the refused run: %q", path, got)
+			}
 			if _, statErr := os.Stat(filepath.Join(dest, "NTUSER.DAT")); statErr != nil {
 				t.Errorf("path %q: the sandbox's own registry hive was removed: %v", path, statErr)
 			}
@@ -251,6 +288,99 @@ func TestCopyRefusesANegativeDepthRatherThanDeletingWhatItDidNotCopy(t *testing.
 		if string(data) != kept.want {
 			t.Errorf("%s was disturbed by the refused run: %q", kept.path, data)
 		}
+	}
+}
+
+// TestCopyRefusesAnEntryThatCannotLandBeforeTakingAnythingBack is the
+// review's measured scenario, and the reason within moved into the shared
+// preflight. within refuses an entry whose path does not land inside the
+// profile -- one that climbs out with "..", or names the profile root, or
+// carries a segment the volume would store under a different name -- and
+// it used to be asked only inside the copy loop, one entry at a time as the
+// loop reached it. By then forget had already taken the last run's copies
+// away and clearCleanup had already swept what the cleanup globs named, so
+// the typo got a refusal that was exactly right and a destination that had
+// been emptied in front of it: a data loss dressed as a refusal. The
+// credentials have a source to copy again; what the sandbox wrote for itself
+// beside the copy, and what the glob names, does not.
+//
+// So this holds the whole destination across the refused run -- the previous
+// copy, the sandbox's own file beside it, and the file the cleanup glob
+// names -- byte for byte. Each spelling below is one of within's own
+// refusals, written the way a hand would actually write it: the root, a
+// climb nobody meant, a trailing dot nobody sees, and the volume's own
+// alias.
+func TestCopyRefusesAnEntryThatCannotLandBeforeTakingAnythingBack(t *testing.T) {
+	for _, invalid := range []string{".", "../outside", "auth.json.", "NTUSER~1.DAT"} {
+		t.Run(invalid, func(t *testing.T) {
+			home, dest := useProfileEntries(t, []config.Entry{{Path: "agent"}})
+			write(t, filepath.Join(home, "agent", "auth.json"), `{"token":"real"}`)
+
+			copied := fill(t, dest)
+			if !reflect.DeepEqual(pathsOf(copied), []string{"agent"}) {
+				t.Fatalf("nothing was copied in the first place, so this test proves nothing: %v", copied)
+			}
+
+			// What the agent inside the sandbox wrote after that: its own local
+			// state, never copied in by any run, and a session store which is
+			// what the cleanup glob below names -- on the unfixed code
+			// clearCleanup swept it before the refusal arrived.
+			write(t, filepath.Join(dest, "agent", "local.txt"), "the sandbox's own local state")
+			write(t, filepath.Join(dest, "agent", "sessions", "junk.txt"), "a session store")
+
+			// The typo. The whole list is one entry whose path cannot land, and
+			// the cleanup section is left as a rules file would have it.
+			if err := (&config.Config{
+				Profile: []config.Entry{{Path: invalid}},
+				Cleanup: []config.Mask{{Pattern: "agent/sessions/**"}},
+			}).Save(); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, _, err := Copy(dest, copied, lastPrints[dest]); err == nil {
+				t.Fatalf("%q: a rules file naming a path that cannot land was accepted by a run with a previous copy to take back", invalid)
+			}
+			for _, kept := range []struct {
+				path, want string
+			}{
+				{filepath.Join("agent", "auth.json"), `{"token":"real"}`},
+				{filepath.Join("agent", "local.txt"), "the sandbox's own local state"},
+				{filepath.Join("agent", "sessions", "junk.txt"), "a session store"},
+			} {
+				data, err := os.ReadFile(filepath.Join(dest, kept.path))
+				if err != nil {
+					t.Errorf("%s did not survive the refused %q run: %v", kept.path, invalid, err)
+					continue
+				}
+				if string(data) != kept.want {
+					t.Errorf("%s was disturbed by the refused %q run: %q", kept.path, invalid, data)
+				}
+			}
+		})
+	}
+}
+
+// TestCopyRefusesTheWholeListBeforeTheFirstEntryMoves is the other half of
+// the same preflight: it reads the list whole before anything under dest
+// moves. The copy loop asks within per entry as it reaches each one, so a
+// valid entry first in the list and one that cannot land behind it used to
+// copy the valid one and refuse afterwards -- half a fill, with the
+// destination changed and the run reported as a failure. Ahead of every
+// mutation the whole list is read, and the answer is all of it or none of
+// it.
+func TestCopyRefusesTheWholeListBeforeTheFirstEntryMoves(t *testing.T) {
+	for _, invalid := range []string{".", "../outside", "auth.json.", "C:/Users/somebody"} {
+		t.Run(invalid, func(t *testing.T) {
+			home, dest := useProfileEntries(t, []config.Entry{{Path: "agent"}, {Path: invalid}})
+			write(t, filepath.Join(home, "agent", "auth.json"), `{"token":"real"}`)
+
+			if _, _, err := Copy(dest, nil, nil); err == nil {
+				t.Fatalf("%q: a rules file whose list carries an entry that cannot land was accepted", invalid)
+			}
+			if _, statErr := os.Stat(filepath.Join(dest, "agent")); !os.IsNotExist(statErr) {
+				t.Errorf("%q: the valid entry ahead of the refused one was acted on by a run that refused the list: %v", invalid, statErr)
+			}
+		})
 	}
 }
 

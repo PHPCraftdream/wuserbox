@@ -141,17 +141,43 @@ func describeEntryLimits(e config.Entry) string {
 
 // refuseEntriesCopyRefuses returns the error Copy gives a rules file it
 // refuses before anything touches dest: a path listed twice with different
-// limits, or an entry carrying a depth that cannot bind. Checked before
-// anything below touches dest, for the same reason the profile-root refusal
-// in within is checked there and not only at validation: an ordinary run
-// never calls --config validate. The negative-depth half is refused here
-// rather than only at validation, and before clearCleanup and forget, both
-// of which delete, so a rules file this refuses has nothing of it acted on
-// at all -- the same contract as the duplicate refusal. Neither of those
-// reads an entry's depths today, so this placement is not what keeps a
-// profile safe; it is there so the answer to "what did the run do with my
-// file" is always "nothing, the file was refused". Plan asks it too, so
-// --dry-run cannot describe a run the real Copy would refuse to start.
+// limits, an entry carrying a depth that cannot bind, or an entry whose path
+// does not land inside the profile at all. Checked before anything below
+// touches dest, for the same reason the profile-root refusal in within is
+// checked there and not only at validation: an ordinary run never calls
+// --config validate. The negative-depth half is refused here rather than
+// only at validation, and before clearCleanup and forget, both of which
+// delete, so a rules file this refuses has nothing of it acted on at all --
+// the same contract as the duplicate refusal. Neither of those reads an
+// entry's depths today, so this placement is not what keeps a profile safe;
+// it is there so the answer to "what did the run do with my file" is always
+// "nothing, the file was refused". Plan asks it too, so --dry-run cannot
+// describe a run the real Copy would refuse to start.
+//
+// The third refusal is the entry's own path, and it is within's whole
+// answer: an absolute path, a ".." that climbs out of the profile, the
+// profile root itself -- filepath.Clean arrives at it from more than one
+// spelling -- or a segment the volume would store under a different name,
+// trailing dots and spaces stripped before it opens anything, or an 8.3
+// shape resolved onto the long name it aliases. It used to be asked only
+// where the copy loop reached each entry in turn, which is after forget had
+// already taken the last run's copies away and clearCleanup had already
+// swept what the cleanup globs named: a typo in the profile: list got a
+// refusal that read right and a destination that had already been emptied
+// in front of it. The credentials a previous run carried in, and the state
+// the sandbox had written for itself where the globs pointed, were both
+// gone before the words arrived. Asked here instead -- over the whole list,
+// before either of those runs -- the answer is now the same as for the
+// other two: a valid entry followed by one that cannot land copies nothing
+// at all rather than half the list, and copyEntries keeps its own within
+// behind this one as defense in depth.
+//
+// The words are within's own. An entry the copy loop would have refused
+// from there gets from this the same message it would have given it there,
+// because this is that refusal moved earlier and not a second one written.
+// A record's spelling is deliberately not asked: withinRecorded is a laxer
+// answer for what an earlier run of this tool itself wrote, and it is read
+// by forget, not here.
 func refuseEntriesCopyRefuses(entries []config.Entry) error {
 	if first, second, found := conflictingProfileEntry(entries); found {
 		return fmt.Errorf("profile: lists %q twice with different limits -- once as "+
@@ -163,6 +189,11 @@ func refuseEntriesCopyRefuses(entries []config.Entry) error {
 	}
 	for _, entry := range entries {
 		if err := EntryCarriesNegativeDepth(entry); err != nil {
+			return err
+		}
+	}
+	for _, entry := range entries {
+		if _, err := within(entry.Path); err != nil {
 			return err
 		}
 	}
