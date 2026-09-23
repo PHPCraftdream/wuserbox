@@ -395,6 +395,58 @@ func TestTheRelayPumpCarriesRenderedBytesOutAndKeystrokesIn(t *testing.T) {
 	}
 }
 
+// childRun is what a fixture's run goroutine reports about the child it
+// waited out: the exit code RunWithConsole captured, and the start/wait
+// error beside it. A nil error means only that the wait itself succeeded --
+// the exit code is the child's own verdict, and a diagnostic that drops it
+// reports "no error" where it means "nothing known".
+type childRun struct {
+	code int
+	err  error
+}
+
+// childRunFate words a childRun for a diagnostic, including the fate the
+// buffered channel never delivered: a child still running when a deadline
+// cut in is a different fact from a child that ended, and neither may pass
+// silently for the other.
+func childRunFate(run childRun, ended bool) string {
+	if !ended {
+		return "was still running"
+	}
+	if run.err != nil {
+		return fmt.Sprintf("ended with exit code %d and run error %v", run.code, run.err)
+	}
+	return fmt.Sprintf("ended with exit code %d", run.code)
+}
+
+// parseConsoleSize reads a child's size report -- the measured
+// widthxheight a fixture child writes once its console has answered a real
+// measurement. NUL padding is stripped before the shape is checked, so the
+// report reads the same however the child's encoder padded it.
+func parseConsoleSize(raw []byte) (string, bool) {
+	s := strings.TrimSpace(strings.Map(func(r rune) rune {
+		if r == 0 {
+			return -1
+		}
+		return r
+	}, string(raw)))
+	i := strings.IndexByte(s, 'x')
+	if i <= 0 || i == len(s)-1 {
+		return s, false
+	}
+	for _, part := range [2]string{s[:i], s[i+1:]} {
+		if part == "" {
+			return s, false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return s, false
+			}
+		}
+	}
+	return s, true
+}
+
 // TestAResizeMessageReshapesTheRelayedConsole is the live measurement that a
 // resize message reaches the child's console through the production pump:
 // messages are queued on the relay's third pipe, pumpRelayResizes -- the
@@ -411,14 +463,20 @@ func TestTheRelayPumpCarriesRenderedBytesOutAndKeystrokesIn(t *testing.T) {
 // console for a size nobody measured, while a pump that stopped on it would
 // never read the real message queued behind it.
 //
-// The messages are queued only after the child has marked that it is up and
-// polling, and that order is measured, not taste: a resize sent before the
-// child exists sometimes never reaches the console the child is born into --
-// the first draft of this test measured 80x25 on a run whose message had
-// already been consumed -- because a ResizePseudoConsole landing before any
-// client is attached can be refused by the pty's conhost, and resize is best
-// effort, so a refusal is never retried. The .ready gate in
-// internal/win/proc's relay tests is the same lesson. Queued after, the
+// The messages are queued only after the child has marked that it is up,
+// reading its console and polling, and that order is measured, not taste:
+// a resize sent before the child exists sometimes never reaches the console
+// the child is born into -- the first draft of this test measured 80x25 on
+// a run whose message had already been consumed -- because a
+// ResizePseudoConsole landing before any client is attached can be refused
+// by the pty's conhost, and resize is best effort, so a refusal is never
+// retried. The .ready gate in internal/win/proc's relay tests is the same
+// lesson. What ready means here is the child's own measurement, not its
+// arrival at a line: the file must carry the widthxheight the child
+// measured, so ready is proof the console answered a real read -- the
+// readiness the resizes below ride on -- and a run whose child never
+// reports one fails with the child's exit code and the captured stream
+// attached, not with a bare timeout. Queued after, the
 // resize lands while the child is polling -- the production shape, the
 // watcher writing while the program runs -- and the child's poll is the
 // determinism, not any test-side sleep: it measures only after the resize
@@ -464,11 +522,21 @@ func TestAResizeMessageReshapesTheRelayedConsole(t *testing.T) {
 
 	answerFile := filepath.Join(t.TempDir(), "relay-resize-answer.txt")
 	readyFile := filepath.Join(t.TempDir(), "relay-resize-ready.txt")
-	// The child marks that it is up, polls its own console until the resize
-	// shows up or its 5s run out, then writes what it measured; the paths
-	// are single-quoted the way internal/e2e's relay test quotes its paths.
-	dir := t.TempDir()
-	line := fmt.Sprintf(`powershell.exe -NoProfile -Command "$d = 50; Set-Content -LiteralPath '%s' 'ready'; while ([Console]::WindowWidth -lt 90 -and $d -gt 0) { Start-Sleep -Milliseconds 100; $d-- }; Set-Content -LiteralPath '%s' -Value ([Console]::WindowWidth.ToString() + 'x' + [Console]::WindowHeight)"`, readyFile, answerFile)
+	// The child marks that it is ready by measuring its own console --
+	// ready is the widthxheight that measurement returned, proof the
+	// console answers a real read -- then polls until the resize shows up
+	// or its 5s run out, and writes what it measured; the paths are
+	// single-quoted the way internal/e2e's relay test quotes its paths.
+	// The child's working directory is its own, outside the test's: a
+	// child still parked there when the test ends would hold the directory
+	// open and turn cleanup into a second failure standing in for the
+	// first -- the close-ceiling sibling's reason, unchanged.
+	dir, err := os.MkdirTemp("", "wuserbox-relay-resize-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	line := fmt.Sprintf(`powershell.exe -NoProfile -Command "$d = 50; Set-Content -LiteralPath '%s' -Value ([Console]::WindowWidth.ToString() + 'x' + [Console]::WindowHeight); while ([Console]::WindowWidth -lt 90 -and $d -gt 0) { Start-Sleep -Milliseconds 100; $d-- }; Set-Content -LiteralPath '%s' -Value ([Console]::WindowWidth.ToString() + 'x' + [Console]::WindowHeight)"`, readyFile, answerFile)
 
 	var own syscall.Token
 	// The child runs under the current, same-account, unrestricted token;
@@ -509,20 +577,38 @@ func TestAResizeMessageReshapesTheRelayedConsole(t *testing.T) {
 	// until the child says it is polling, so the wait runs beside it the
 	// way internal/win/proc's relay test runs its afterReady beside its
 	// probe.
-	started := make(chan error, 1)
-	finished := make(chan int, 1)
+	ranWith := make(chan childRun, 1)
 	go func() {
-		got, runErr := proc.RunWithConsole(own, line, dir, relay.hpc)
-		started <- runErr
-		finished <- got
+		code, runErr := proc.RunWithConsole(own, line, dir, relay.hpc)
+		ranWith <- childRun{code: code, err: runErr}
 	}()
-	readyDeadline := time.Now().Add(20 * time.Second)
+	// The deadline bounds the diagnosis, not the property: a child slow
+	// to start is a scheduling fact, a child that never reports a
+	// measured size is a readiness failure, and the fatal below names
+	// which one ran, with the child's own verdict and the captured
+	// stream attached.
+	readyDeadline := time.Now().Add(30 * time.Second)
 	for {
-		if _, err := os.Stat(readyFile); err == nil {
-			break
+		if raw, err := os.ReadFile(readyFile); err == nil {
+			if _, ok := parseConsoleSize(raw); ok {
+				break
+			}
+		}
+		select {
+		case run := <-ranWith:
+			t.Fatalf("the child ended before it signaled ready: exit code %d, run error %v; captured:\n%s", run.code, run.err, captured())
+		default:
 		}
 		if time.Now().After(readyDeadline) {
-			t.Fatalf("the child never began to poll (%s never appeared); captured:\n%s", readyFile, captured())
+			var run childRun
+			ended := false
+			select {
+			case run = <-ranWith:
+				ended = true
+			default:
+			}
+			t.Fatalf("the child never confirmed its console ready (%s never appeared or never named a measured size; the child %s); captured:\n%s",
+				readyFile, childRunFate(run, ended), captured())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -549,12 +635,12 @@ func TestAResizeMessageReshapesTheRelayedConsole(t *testing.T) {
 	}
 	pumpRelayResizes(relay, resizedRead)
 
-	if err := <-started; err != nil {
-		t.Fatal(err)
+	run := <-ranWith
+	if run.err != nil {
+		t.Fatalf("waiting the child out failed: %v; captured:\n%s", run.err, captured())
 	}
-	code := <-finished
-	if code != 0 {
-		t.Fatalf("the child ended with exit code %d, want 0; captured:\n%s", code, captured())
+	if run.code != 0 {
+		t.Fatalf("the child ended with exit code %d, want 0; captured:\n%s", run.code, captured())
 	}
 	answer, err := os.ReadFile(answerFile)
 	if err != nil {
@@ -1241,9 +1327,20 @@ func TestAFinishWhoseConsoleCloseHangsIsBoundedByTheCeilingNotByTheClose(t *test
 // than the prefix -- but the child's own early words stay readable in the
 // prefix, so a child that failed before it ever poured says so where the
 // test can quote it.
+//
+// blockedWrite is the stall made observable: the instant a Write has
+// passed the prefix and can no longer return before release, the channel
+// it returns is closed, once. A fixed pause after the child's ready file
+// cannot say whether the pour has actually reached the barrier -- the gap
+// round 12's P2-2 measured in this file's own CI -- and only this signal
+// does: from its instant the drain cannot end while release stays shut, so
+// all finish can still report is the ceiling's verdict.
 type prefixBarrierWriter struct {
 	release chan struct{}
 	prefix  int
+	blocked chan struct{}
+
+	blockOnce sync.Once
 
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -1251,7 +1348,6 @@ type prefixBarrierWriter struct {
 
 func (w *prefixBarrierWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	room := w.prefix - w.buf.Len()
 	n := 0
 	if room > 0 {
@@ -1261,13 +1357,25 @@ func (w *prefixBarrierWriter) Write(p []byte) (int, error) {
 		}
 		n, _ = w.buf.Write(take)
 	}
+	w.mu.Unlock()
 	if n < len(p) {
+		// The stall is real from here, not from the release: these
+		// bytes cannot be written until release moves, so this Write
+		// -- and the drain carrying it -- is wedged whatever the
+		// machine does next. The mutex is not held across the wait,
+		// so the test can quote the prefix while the writer is
+		// parked.
+		w.blockOnce.Do(func() { close(w.blocked) })
 		<-w.release
+		w.mu.Lock()
+		defer w.mu.Unlock()
 		more, _ := w.buf.Write(p[n:])
 		n += more
 	}
 	return n, nil
 }
+
+func (w *prefixBarrierWriter) blockedWrite() <-chan struct{} { return w.blocked }
 
 func (w *prefixBarrierWriter) captured() []byte {
 	w.mu.Lock()
@@ -1303,7 +1411,16 @@ func (w *prefixBarrierWriter) captured() []byte {
 // first few thousand bytes pass, so a child that failed before it poured
 // is quoted by the test instead of being invisible behind the stall -- and
 // the pipe still ends up wedged, because the pour is far longer than the
-// prefix.
+// prefix. That the stall has actually begun is waited for, not guessed at:
+// prefixBarrierWriter closes its blocked channel the instant a Write has
+// passed the prefix and can no longer return before release, and finish
+// runs only once that signal has landed. The fixed 200ms beat this
+// replaced measured a pause, not a precondition -- round 12's P2-2 caught
+// it red-handed on CI, where a slow pour let the close finish the client
+// and the drain hit EOF before the prefix ever filled, and finish lawfully
+// reported a whole delivery -- because from the blocked signal's instant
+// the drain cannot end while release stays shut, the ceiling's verdict is
+// the only honest outcome, whatever the machine's generation or load.
 //
 // What the test asserts is the bound and the exactly-once free, not the
 // whole pour: a client that has already exited while its pipe is stalled
@@ -1316,13 +1433,27 @@ func TestALiveConsolesHungCloseIsStillBoundedByTheCeiling(t *testing.T) {
 	}
 	oldCeiling := relayDrainCeiling
 	relayDrainCeiling = 2 * time.Second
-	defer func() { relayDrainCeiling = oldCeiling }()
+	// The restores are t.Cleanups, registered so they run after the
+	// test's own defers and in this order: the fixture's teardown first,
+	// then the hooks, then the ceiling -- the siblings' order. A test
+	// that dies mid-flight must not restore a hook a still-running
+	// goroutine is about to read -- that is a data race on the package
+	// var standing in for the seam -- and must not leave the console,
+	// the child or the flood running behind the restoration either.
+	t.Cleanup(func() { relayDrainCeiling = oldCeiling })
 	relay, err := takeConsoleRelay(shutToNobody)
 	if err != nil {
 		t.Fatal(err)
 	}
-	consumer := &prefixBarrierWriter{release: make(chan struct{}), prefix: 4096}
+	consumer := &prefixBarrierWriter{release: make(chan struct{}), prefix: 4096, blocked: make(chan struct{})}
 	pump := pumpRelay(relay, consumer, strings.NewReader(""))
+	// The verdict goroutine's end is tracked so the fixture's cleanup
+	// can wait it out: a finish still running while the hook or the
+	// ceiling is restored would be reading the very seam being given
+	// back.
+	finished := make(chan error, 1)
+	finishDone := make(chan struct{})
+	var finishStarted bool
 	// The third leg runs through the whole teardown: bounded messages,
 	// spaced wide enough that the pump is answering them while the close
 	// races the ceiling underneath them.
@@ -1346,8 +1477,14 @@ func TestALiveConsolesHungCloseIsStillBoundedByTheCeiling(t *testing.T) {
 		// flat out under a client attaching to it or pouring through
 		// it is a broken fixture, not a measurement. Ten crossings of
 		// the ownership are what the race detector reads; it needs
-		// the interleavings, not thousands of them.
-		<-resizesGo
+		// the interleavings, not thousands of them. The stopResizes
+		// arm before the gate is what lets the fixture's cleanup end
+		// a flood whose gate never opened.
+		select {
+		case <-resizesGo:
+		case <-stopResizes:
+			return
+		}
 		message := make([]byte, proc.ResizeMessageLen)
 		for i := 0; i < 10; i++ {
 			binary.LittleEndian.PutUint16(message[0:], uint16(81+i%20))
@@ -1380,7 +1517,54 @@ func TestALiveConsolesHungCloseIsStillBoundedByTheCeiling(t *testing.T) {
 		oldClose(hpc)
 		closeEnded <- struct{}{}
 	}
-	defer func() { closePseudoConsole = oldClose }()
+	t.Cleanup(func() { closePseudoConsole = oldClose })
+	// Everything the fixture owns is undone here, on every way out of
+	// the test -- success, assertion failure or a fatal mid-setup. The
+	// consumer and the flood are released first; the console is claimed
+	// for the native close, which the released drain gives somewhere to
+	// drain, under a ceiling of the fixture's own so a wedged call
+	// cannot hang the suite; the finish goroutine, if one ever ran, is
+	// waited out; the tracked drain is awaited to its end once the
+	// console's write end is gone; and only then are the pipe ends
+	// closed. The registration order above is what makes this the first
+	// cleanup to run, ahead of the hook and ceiling restorations:
+	// nothing the fixture owns may still be reading a seam when the
+	// seam is given back.
+	quiesced := new(sync.Once)
+	quiesce := func() {
+		quiesced.Do(func() {
+			close(consumer.release)
+			close(stopResizes)
+		})
+		resizeWG.Wait()
+		_ = resizedWrite.Close()
+	}
+	t.Cleanup(func() {
+		quiesce()
+		consoleDone := make(chan struct{})
+		go func() { relay.closeConsole(); close(consoleDone) }()
+		select {
+		case <-consoleDone:
+		case <-time.After(30 * time.Second):
+			// The native close is unbounded where it wedges; a test
+			// already failing must not hang the suite on it. Whatever
+			// it names is left to the process, the way the stub's own
+			// death ends its relay.
+		}
+		if finishStarted {
+			select {
+			case <-finishDone:
+			case <-time.After(30 * time.Second):
+			}
+		}
+		allDone := make(chan struct{})
+		go func() { pump.drained.Wait(); close(allDone) }()
+		select {
+		case <-allDone:
+		case <-time.After(30 * time.Second):
+		}
+		relay.closePipes()
+	})
 	// The child: announce, then pour. The pour is bounded -- six thousand
 	// console lines, far more than the pipe holds -- and nothing waits on
 	// the child's exit: a child parked mid-write on a full console is
@@ -1402,10 +1586,10 @@ func TestALiveConsolesHungCloseIsStillBoundedByTheCeiling(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = os.RemoveAll(childDir) }()
-	ranWith := make(chan error, 1)
+	ranWith := make(chan childRun, 1)
 	go func() {
-		_, runErr := proc.RunWithConsole(own, line, childDir, relay.hpc)
-		ranWith <- runErr
+		code, runErr := proc.RunWithConsole(own, line, childDir, relay.hpc)
+		ranWith <- childRun{code: code, err: runErr}
 	}()
 	readyDeadline := time.Now().Add(60 * time.Second)
 	for {
@@ -1413,11 +1597,11 @@ func TestALiveConsolesHungCloseIsStillBoundedByTheCeiling(t *testing.T) {
 			break
 		}
 		// A child that died before it poured is a failure worth
-		// naming now, not at the deadline: its early words are in
-		// the prefix the consumer let through.
+		// naming now, not at the deadline, and with its own verdict:
+		// its early words are in the prefix the consumer let through.
 		select {
-		case runErr := <-ranWith:
-			t.Fatalf("the child ended before it began to pour: %v; its first words: %q", runErr, consumer.captured())
+		case run := <-ranWith:
+			t.Fatalf("the child ended before it began to pour: exit code %d, run error %v; its first words: %q", run.code, run.err, consumer.captured())
 		default:
 		}
 		if time.Now().After(readyDeadline) {
@@ -1425,16 +1609,39 @@ func TestALiveConsolesHungCloseIsStillBoundedByTheCeiling(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	// A beat for the pour to be under way: the child writes into a
-	// console whose pipe nobody is taking, so conhost is holding pending
-	// output from this instant on -- the state the close blocks in.
-	time.Sleep(200 * time.Millisecond)
-	// The child is up and pouring; now, and only now, the resizes, so
-	// the flood spans the teardown that follows and nothing else.
+	// The stall is waited for, not guessed at. Ready says the child is
+	// about to pour; only the barrier's blocked signal says the pour has
+	// actually arrived and the drain cannot end while release stays shut.
+	// The fixed 200ms beat this replaced measured a pause, not a
+	// precondition -- round 12's P2-2 caught it red-handed on CI, where a
+	// slow pour let the close finish the client and the drain hit EOF
+	// before the prefix ever filled, and finish lawfully reported a whole
+	// delivery -- and the verdict below is only the oracle once the stall
+	// itself is in: from the signal's instant, the ceiling's verdict is
+	// the only honest outcome, whatever the machine's generation or load.
+	select {
+	case <-consumer.blockedWrite():
+	case <-time.After(30 * time.Second):
+		var run childRun
+		ended := false
+		select {
+		case run = <-ranWith:
+			ended = true
+		default:
+		}
+		t.Fatalf("the consumer's stall never began: the pour never reached the barrier past its first %d bytes within 30s of the ready file (the child %s; the prefix holds %d bytes); its first words: %q",
+			consumer.prefix, childRunFate(run, ended), len(consumer.captured()), consumer.captured())
+	}
+	// The child is up and pouring, and the drain is provably wedged; now,
+	// and only now, the resizes, so the flood spans the teardown that
+	// follows and nothing else.
 	close(resizesGo)
 	teardownStarted := time.Now()
-	finished := make(chan error, 1)
-	go func() { finished <- pump.finish(relay) }()
+	finishStarted = true
+	go func() {
+		defer close(finishDone)
+		finished <- pump.finish(relay)
+	}()
 	var finishErr error
 	select {
 	case finishErr = <-finished:
@@ -1448,12 +1655,15 @@ func TestALiveConsolesHungCloseIsStillBoundedByTheCeiling(t *testing.T) {
 		t.Fatal("the close never reached the real ClosePseudoConsole")
 	}
 	if finishErr == nil || !strings.Contains(finishErr.Error(), "incomplete") {
-		var childErr error
+		var run childRun
+		ended := false
 		select {
-		case childErr = <-ranWith:
+		case run = <-ranWith:
+			ended = true
 		default:
 		}
-		t.Fatalf("finish's verdict with the consumer stalled past the ceiling: %v; the child's exit: %v; its first words: %q", finishErr, childErr, consumer.captured())
+		t.Fatalf("finish's verdict with the consumer stalled past the ceiling: %v; the child %s; its first words: %q",
+			finishErr, childRunFate(run, ended), consumer.captured())
 	}
 	// Which teardown was measured: a close still inside the native call
 	// when the ceiling cut in is the documented hang itself, bounded;
@@ -1469,12 +1679,7 @@ func TestALiveConsolesHungCloseIsStillBoundedByTheCeiling(t *testing.T) {
 	// Now unstick everything the way the process's own death would, and
 	// measure the rest: the consumer lets go, the pour finishes, the
 	// close comes back, the drain carries every byte it read.
-	close(consumer.release)
-	close(stopResizes)
-	resizeWG.Wait()
-	if err := resizedWrite.Close(); err != nil {
-		t.Fatal(err)
-	}
+	quiesce()
 	if wasStillInside {
 		select {
 		case <-closeEnded:
@@ -1508,13 +1713,19 @@ func TestALiveConsolesHungCloseIsStillBoundedByTheCeiling(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("the console was freed %d times, want exactly once", calls)
 	}
-	var runErr error
+	// The child's own verdict, bounded the same way the cleanup's waits
+	// are: the pour ends once the drain is taking bytes again, but a
+	// child stranded by a wedged teardown must not hang a failing suite,
+	// so the wait is bounded and the log says which fate ran.
+	var run childRun
+	runEnded := false
 	select {
-	case runErr = <-ranWith:
-	default:
+	case run = <-ranWith:
+		runEnded = true
+	case <-time.After(30 * time.Second):
 	}
-	t.Logf("teardown returned in %s (ceiling %s); the close was still inside the native call when the ceiling cut in: %v; the child's run: %v",
-		teardownTook, relayDrainCeiling, wasStillInside, runErr)
+	t.Logf("teardown returned in %s (ceiling %s); the close was still inside the native call when the ceiling cut in: %v; the child %s",
+		teardownTook, relayDrainCeiling, wasStillInside, childRunFate(run, runEnded))
 }
 
 // TestTheBirthHostsGuardRefusesTheStubWhenTheListCannotBeRead is the P2-1
