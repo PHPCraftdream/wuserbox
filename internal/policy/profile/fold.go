@@ -298,9 +298,10 @@ type placeResolver struct {
 	// resolution, not enumeration, and stay uncounted.
 	alias map[string]placeResult
 	// The reverse books, retract's index into the three above: which
-	// snapshot keys hang beneath which, which spellings' witnessed
-	// answers name which canonical place, which alias answers were asked
-	// in which directory. The scanned loops a retraction once walked --
+	// snapshot keys and witnessed canonical places -- leaf or directory
+	// alike -- hang beneath which, which spellings' witnessed answers
+	// name which canonical place, which alias answers were asked in
+	// which directory. The scanned loops a retraction once walked --
 	// every book, every real clear -- are answered out of these instead:
 	// the retraction pulls the entries the books hand it, the taken
 	// place's own and everything registered beneath it, and never sees
@@ -371,6 +372,16 @@ func (r *placeResolver) place(path string) (string, bool) {
 // named the taken place or something beneath it. Misses are not filed: a
 // deletion never makes a name the volume once did not have, so a
 // not-found answer keeps its truth through any clear.
+//
+// It also files the canonical place itself into dirChildren, beneath its
+// parent -- registerChild, the same filing noteDir does for a snapshot.
+// A leaf entry is never opened as a directory, so without this its
+// canonical path never becomes a dirChildren key or value at all, and a
+// retraction of an ancestor directory -- whose subtree walk only follows
+// dirChildren -- never reaches it: the leaf's witnessed resolution
+// outlives the clear that removed it. Filing it here, off of every
+// resolved place and not only the ones a ReadDir touched, is what makes
+// the subtree walk find it.
 func (r *placeResolver) notePlace(spelling, canonical string) {
 	named := r.placeAt[canonical]
 	if named == nil {
@@ -378,6 +389,20 @@ func (r *placeResolver) notePlace(spelling, canonical string) {
 		r.placeAt[canonical] = named
 	}
 	named[spelling] = true
+	r.registerChild(canonical)
+}
+
+// registerChild files key beneath its parent's list in dirChildren, the
+// filing noteDir and notePlace both need: a snapshot key from the one,
+// a witnessed canonical place -- leaf or directory -- from the other.
+func (r *placeResolver) registerChild(key string) {
+	above := filepath.Dir(key)
+	below := r.dirChildren[above]
+	if below == nil {
+		below = make(map[string]bool)
+		r.dirChildren[above] = below
+	}
+	below[key] = true
 }
 
 // samePlace is the comparison sameEntryPlace puts to a fresh resolver, and
@@ -436,13 +461,24 @@ func (r *placeResolver) snapshot(dir string) (dirSnapshot, bool) {
 // scanning the snapshot table. Every key the resolver snapshots is
 // filed, the shut ones included: they stand or fall with the rest.
 func (r *placeResolver) noteDir(dir string) {
-	above := filepath.Dir(dir)
-	below := r.dirChildren[above]
-	if below == nil {
-		below = make(map[string]bool)
-		r.dirChildren[above] = below
+	r.registerChild(dir)
+}
+
+// unlinkChild takes one dirChildren key back out of the books: its seat
+// beneath its own parent key, and its own now-empty child list. dropDir
+// calls it for a taken snapshot; retract calls it directly for a taken
+// terminal place, which owns no snapshot to drop but was filed by
+// notePlace the same way.
+func (r *placeResolver) unlinkChild(key string) {
+	if above := r.dirChildren[filepath.Dir(key)]; above != nil {
+		delete(above, key)
+		if len(above) == 0 {
+			delete(r.dirChildren, filepath.Dir(key))
+		}
 	}
-	below[dir] = true
+	if below := r.dirChildren[key]; len(below) == 0 {
+		delete(r.dirChildren, key)
+	}
 }
 
 // dropDir takes one snapshot key back out of the books: the snapshot
@@ -458,15 +494,7 @@ func (r *placeResolver) dropDir(dir string) {
 		r.visits++
 	}
 	delete(r.aliasIn, dir)
-	if above := r.dirChildren[filepath.Dir(dir)]; above != nil {
-		delete(above, dir)
-		if len(above) == 0 {
-			delete(r.dirChildren, filepath.Dir(dir))
-		}
-	}
-	if below := r.dirChildren[dir]; len(below) == 0 {
-		delete(r.dirChildren, dir)
-	}
+	r.unlinkChild(dir)
 }
 
 // noteAlias files the alias branch's answer under the directory its walk
@@ -620,7 +648,8 @@ func (r *placeResolver) canonicalEntryPath(path string) (string, bool) {
 // ask whether it sat under the taken place -- and every book is keyed by
 // walk products, one namespace of stored names, so the ancestry the folds
 // were groping for is already recorded exactly: dirChildren files each
-// snapshot key beneath the key its walk came from, placeAt files each
+// snapshot key, and each witnessed terminal place notePlace filed beside
+// them, beneath the key its walk came from, placeAt files each
 // witnessed spelling under the canonical place its answer named, aliasIn
 // files each alias answer under the directory its question stood in. A
 // retraction walks the taken place's registered subtree once, takes each
@@ -680,8 +709,11 @@ func (r *placeResolver) retract(spelling string) bool {
 	// The keys beneath the taken place, its own first: the reverse
 	// book's walk down from it. A key is filed only where a walk filed
 	// it, and a walk reached a key only through every key above it, so
-	// this walk finds every snapshot the clear could have made stale
-	// and nothing else.
+	// this walk finds every snapshot and every witnessed terminal place
+	// the clear could have made stale, and nothing else -- notePlace
+	// files a leaf's canonical path here exactly as noteDir files a
+	// directory's, so a leaf under the taken place is found by this walk
+	// even though it was never opened as a directory itself.
 	subtree := []string{removed}
 	for i := 0; i < len(subtree); i++ {
 		for child := range r.dirChildren[subtree[i]] {
@@ -689,11 +721,15 @@ func (r *placeResolver) retract(spelling string) bool {
 		}
 	}
 	// Deepest first, so a key's children have taken their own rows back
-	// by the time the key itself goes.
+	// by the time the key itself goes. A key with a snapshot drops it;
+	// a key with none -- a terminal place notePlace filed but no ReadDir
+	// ever touched -- still unfiles its own seat in dirChildren.
 	for i := len(subtree) - 1; i >= 0; i-- {
 		key := subtree[i]
 		if _, ok := r.dirs[key]; ok {
 			r.dropDir(key)
+		} else {
+			r.unlinkChild(key)
 		}
 		// The witnessed spellings that name the taken place or
 		// something beneath it. A miss would keep its truth here as
