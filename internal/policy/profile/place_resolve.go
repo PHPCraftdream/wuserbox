@@ -52,6 +52,10 @@ func (r *placeResolver) canonicalEntryPath(path string) placeResult {
 			// accepting a case-insensitive directory entry.
 			aliasPath := filepath.Join(current, component)
 			if memo, seen := r.alias[aliasPath]; seen && memo.version == r.dirVersion[current] {
+				if memo.unknown {
+					r.lastDependentDir = current
+					return placeResult{unknown: true, err: memo.err}
+				}
 				chosen = memo.canonical
 			} else {
 				delete(r.alias, aliasPath)
@@ -174,8 +178,14 @@ func (r *placeResolver) canonicalEntryPath(path string) placeResult {
 					// links therefore match only the name Windows actually resolved,
 					// rather than merging every name for the same file identity.
 					if answer, seen := snap.byCanonical[openedPath]; !seen || !answer.unique {
-						r.noteAlias(current, aliasPath, placeResult{})
-						r.lastDependentDir = current
+						// The answer is computed once and kept exactly as
+						// this hand is about to return it: an unanswered
+						// spelling owes this caller the refusal the partial
+						// scan deserves, and the question after it -- through
+						// the same prefix -- the very same one. A memo
+						// holding a plain result where the hand returns
+						// unknown is that silence read as an answer.
+						result := placeResult{}
 						if !complete {
 							// The refusal may be the unread
 							// sibling's shadow: a sibling this scan
@@ -183,9 +193,11 @@ func (r *placeResolver) canonicalEntryPath(path string) placeResult {
 							// might be the one carrying the
 							// opened path, so no answer about
 							// this spelling was got at all.
-							return placeResult{unknown: true, err: scanErr}
+							result = placeResult{unknown: true, err: scanErr}
 						}
-						return placeResult{}
+						r.noteAlias(current, aliasPath, result)
+						r.lastDependentDir = current
+						return result
 					}
 					chosen = snap.byCanonical[openedPath].name
 					r.noteAlias(current, aliasPath, placeResult{canonical: chosen, ok: true})
