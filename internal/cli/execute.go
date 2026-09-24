@@ -20,12 +20,13 @@ import (
 // command is one entry in the dispatch table.
 type command struct {
 	run        func([]string) error
-	privileged bool // may change permissions, so it is barred inside a sandbox
+	privileged bool // may change permissions or rules, so it is barred inside a sandbox
 }
 
 var commands = map[string]command{
 	"run":        {run: setup.Run},
 	"init":       {run: setup.Init, privileged: true},
+	"re-init":    {run: setup.ReInit, privileged: true},
 	"rm":         {run: setup.Rm, privileged: true},
 	"grant":      {run: access.Grant, privileged: true},
 	"revoke":     {run: access.Revoke, privileged: true},

@@ -32,7 +32,7 @@ import (
 func ProtectSettings(s *state.State) (err error) {
 	done := trace.Current().Phase("protect_settings")
 	defer func() { done(err) }()
-	if err := ensureRules(); err != nil {
+	if err := EnsureRules(); err != nil {
 		return err
 	}
 	// The copy kept behind the record says the same things about the same
@@ -67,13 +67,13 @@ func ProtectSettings(s *state.State) (err error) {
 	return nil
 }
 
-// ensureRules writes a rules file when there is none, its profile section
+// EnsureRules writes a rules file when there is none, its profile section
 // pre-filled from the agent preset, so the common agents' credentials,
 // settings and instructions are copied into a sandbox without anybody
 // composing that list by hand. It is held while doing so, like every other
 // change to that file, so it cannot overwrite a rule another command is
 // writing at the same moment.
-func ensureRules() error {
+func EnsureRules() error {
 	if _, err := os.Stat(config.Path()); err == nil {
 		return nil
 	}

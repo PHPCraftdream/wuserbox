@@ -108,6 +108,7 @@ RUNNING AND CONFIGURING ARE SEPARATE
     wuserbox --grant <dir> [--ro]     allow it for this project, unrecorded
     wuserbox --init --no-ai           build the sandbox without agent directories
     wuserbox --init --home-writes     let it create files in the profile root
+    wuserbox --re-init                restore default profile copies; keep grants
 
   A directory allowed this way stays in force for later runs, until
   "wuserbox --revoke" takes it back or "wuserbox --rm" removes the sandbox.

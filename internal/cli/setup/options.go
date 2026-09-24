@@ -6,6 +6,7 @@ import (
 	"flag"
 	"os"
 	"strings"
+	"syscall"
 
 	"github.com/PHPCraftdream/wuserbox/internal/base/exit"
 	"github.com/PHPCraftdream/wuserbox/internal/base/paths"
@@ -48,6 +49,10 @@ func resolveAll(dirs repeated) (repeated, error) {
 // the program's own arguments — "wuserbox git checkout -- file.txt" — is never
 // looked at, so it reaches the program exactly as typed.
 func ParseOptions(name string, args []string) (sandbox.Options, []string, error) {
+	return parseOptions(name, args, callerHasTerminal)
+}
+
+func parseOptions(name string, args []string, hasTerminal func() bool) (sandbox.Options, []string, error) {
 	flags, o := sharedFlags(name)
 	if err := flags.Parse(args); err != nil {
 		return sandbox.Options{}, nil, exit.Errorf(exit.Usage, "%v", err)
@@ -92,11 +97,19 @@ func ParseOptions(name string, args []string) (sandbox.Options, []string, error)
 		return sandbox.Options{}, nil, exit.Errorf(exit.Usage,
 			"--own-console and --console-relay each give the program a different console; set only one")
 	}
-	if o.ownConsole {
-		_ = os.Setenv(proc.EnvOwnConsole, "1")
+	if o.plainStdio && (o.ownConsole || o.consoleRelay) {
+		return sandbox.Options{}, nil, exit.Errorf(exit.Usage,
+			"--plain-stdio cannot be combined with --own-console or --console-relay")
 	}
-	if o.consoleRelay {
-		_ = os.Setenv(proc.EnvConsoleRelay, "1")
+	if name == "run" {
+		_ = os.Unsetenv(proc.EnvOwnConsole)
+		_ = os.Unsetenv(proc.EnvConsoleRelay)
+		switch {
+		case o.ownConsole:
+			_ = os.Setenv(proc.EnvOwnConsole, "1")
+		case o.consoleRelay || (!o.plainStdio && hasTerminal()):
+			_ = os.Setenv(proc.EnvConsoleRelay, "1")
+		}
 	}
 	options := sandbox.Options{
 		Dir: o.dir, RW: o.rw, RO: o.ro,
@@ -115,6 +128,7 @@ type shared struct {
 	allowLinks                     bool
 	ownConsole                     bool
 	consoleRelay                   bool
+	plainStdio                     bool
 }
 
 // sharedFlags builds that set. It stands apart from the parsing so a test can
@@ -139,6 +153,25 @@ func sharedFlags(name string) (*flag.FlagSet, *shared) {
 			"give the program a console of its own instead of sharing this one")
 		flags.BoolVar(&o.consoleRelay, "console-relay", false,
 			"relay the program's console through this one instead of a window of its own")
+		flags.BoolVar(&o.plainStdio, "plain-stdio", false,
+			"pass ordinary standard streams even when running from a terminal")
 	}
 	return flags, o
+}
+
+func callerHasTerminal() bool {
+	return allConsoleStreams(os.Stdin, os.Stdout, os.Stderr)
+}
+
+func allConsoleStreams(stdin, stdout, stderr *os.File) bool {
+	for _, stream := range []*os.File{stdin, stdout, stderr} {
+		if stream == nil {
+			return false
+		}
+		var mode uint32
+		if syscall.GetConsoleMode(syscall.Handle(stream.Fd()), &mode) != nil {
+			return false
+		}
+	}
+	return true
 }

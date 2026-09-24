@@ -44,26 +44,28 @@ command out and marking where its arguments end, and means exactly what
 leaving out "--run --" means.
 
 The sandbox is created on first use, which needs administrator rights
-once. Later runs need none. The program keeps your console and your
-exit code, so it behaves like any other program you start from the
+once. Later runs need none. The program keeps your terminal window and
+your exit code, so it behaves like any other program you start from the
 shell. What it does not keep is your profile: it gets one of its own,
 filled before each run with what the rules file names, and nothing
 written there ever travels back to yours.
 
-Some programs refuse to start unless their standard input is a real
-console -- a full-screen interface checks, and a pipe is never one.
+When stdin, stdout and stderr are all connected to a terminal, the
+program gets a windowless console relayed through that terminal. This
+lets full-screen programs run in the same window. If any stream is
+redirected, ordinary standard streams are passed through instead.
+"--plain-stdio" forces that ordinary path even from a terminal.
+
 "--own-console" gives the program a console of its own: a new console
 window opens, and the program reads its keyboard and draws its screen
 there while the run waits for its exit code. What the program does not
 get is a share of the window wuserbox was started from: the sandbox's
 own account cannot attach to it, for input any more than for output.
 
-"--console-relay" is the other answer to the same problem: the
-program gets a console with no window at all, and what it draws is
-carried as bytes into the console the run was started from, with
-your keystrokes, the window's size and Ctrl-C carried the other
-way. It is one console for the program either way, so the two
-flags refuse each other.
+"--console-relay" forces the relayed console even when streams are
+redirected. Its rendered output and input cross as bytes; with a real
+terminal, its size and Ctrl-C cross too. The three console-mode flags
+cannot be combined.
 
 A run changes nothing about the sandbox. What may be written is decided
 by "--init", "--grant" and "--add-dir", and is the same whichever
@@ -77,6 +79,7 @@ command line starts the program.`,
 			{"--non-interactive", "fail instead of asking for administrator rights"},
 			{"--own-console", "give the program a console of its own instead of sharing this one"},
 			{"--console-relay", "relay the program's console through this one instead of a window of its own"},
+			{"--plain-stdio", "pass ordinary standard streams even from a terminal"},
 		},
 		Exits: "Whatever the program inside returned, so the code you read is its own.",
 		Examples: []string{
@@ -127,6 +130,17 @@ permissions name its group and the account joins that group.`,
 			`wuserbox --init --no-ai`,
 			`wuserbox --init --dir C:\projects\app --rw C:\projects\shared`,
 		},
+	},
+	{
+		Name:       "re-init",
+		Summary:    "restore default profile copy rules, backing up the old rules",
+		Call:       "--re-init",
+		Privileged: true,
+		Detail: `Replaces only the profile copy list with defaults for agents found
+on this machine. Project directory grants and cleanup rules stay unchanged.
+The previous rules file is backed up whole before the replacement; if there
+is no previous file, the defaults are created without a backup.`,
+		Examples: []string{`wuserbox --re-init`},
 	},
 	{
 		Name:       "grant",

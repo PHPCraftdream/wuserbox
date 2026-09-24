@@ -28,6 +28,11 @@ Running is what wuserbox does unless the first word is one of its commands, so
 that line is complete. Options belong to wuserbox and come before the program;
 everything from the program onwards belongs to the program.
 
+From a terminal, wuserbox gives interactive programs a console in the same
+window automatically. With redirected input or output, it preserves ordinary
+standard streams instead. Use `--plain-stdio` to force ordinary streams, or
+`--own-console` to open a separate window.
+
 ## Installing
 
 With [Scoop](https://scoop.sh), which also keeps it up to date:
@@ -114,6 +119,10 @@ machine: `~/.claude.json`, `~/.claude/.credentials.json`, `~/.codex/auth.json`
 and their neighbours. On the machine this was written on that comes to 17
 entries and 254 KB.
 
+If that list was emptied or changed, `wuserbox --re-init` restores the current
+default copy list. It backs up the previous rules file and leaves project
+grants and cleanup rules unchanged.
+
 Histories, logs, caches and databases are deliberately left behind. The
 default named whole state directories once, and that was 72,320 files and
 19 GB per sandbox per run, almost none of it credentials. So a sandbox starts
@@ -152,6 +161,7 @@ and what it led to in
 | --- | --- |
 | `wuserbox [options] <program> [args...]` | run a program sandboxed for the current directory |
 | `wuserbox --init` | create the group and apply permissions |
+| `wuserbox --re-init` | back up rules and restore default profile copies, keeping grants |
 | `wuserbox --grant <dir> [--ro]` | allow one more directory |
 | `wuserbox --revoke <dir>` | take an allowance back |
 | `wuserbox --add-dir <dir> [--ro]` | remember a directory in the rules and grant it |

@@ -77,7 +77,7 @@ func TestAliasesReachTheSameCommand(t *testing.T) {
 func TestPermissionChangingCommandsAreMarked(t *testing.T) {
 	// Anything that edits permissions or groups has to be barred inside a
 	// sandbox; forgetting the mark is the mistake this catches.
-	mustBePrivileged := []string{"init", "rm", "grant", "revoke", "add-dir", "remove-dir"}
+	mustBePrivileged := []string{"init", "re-init", "rm", "grant", "revoke", "add-dir", "remove-dir"}
 	for _, name := range mustBePrivileged {
 		if !commands[name].privileged {
 			t.Errorf("%q is not marked as changing permissions", name)

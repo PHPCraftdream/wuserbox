@@ -155,8 +155,9 @@ ENVIRONMENT
     WUSERBOX_OWN_CONSOLE       set by --own-console and passed to the run's
                                stub, which gives the program a console of
                                its own instead of the caller's
-    WUSERBOX_CONSOLE_RELAY     set by --console-relay and passed to the
-                               run's stub, which gives the program a
+    WUSERBOX_CONSOLE_RELAY     set by --console-relay or automatically when
+                               all three standard streams are terminals;
+                               passed to the run's stub, which gives it a
                                console with no window, relayed through
                                the caller's own
 

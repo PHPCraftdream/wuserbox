@@ -10,6 +10,7 @@ import (
 	"github.com/PHPCraftdream/wuserbox/internal/policy/grant"
 	"github.com/PHPCraftdream/wuserbox/internal/policy/state"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox"
+	"github.com/PHPCraftdream/wuserbox/internal/sandbox/grants"
 	"github.com/PHPCraftdream/wuserbox/internal/sandbox/plan"
 )
 
@@ -30,6 +31,9 @@ func AddDir(args []string) error {
 	if t.dryRun {
 		held, _ := load(t.project) // a sandbox that does not exist yet holds nothing
 		return t.preview(planned(rules, held, t)...)
+	}
+	if err := grants.EnsureRules(); err != nil {
+		return err
 	}
 	// The rule and the permission it stands for are one change, so one lock
 	// covers both. Writing the rule and then handing the directory over under
