@@ -73,7 +73,14 @@ func Copy(dest string, previously []config.Entry, prints map[string]Print) ([]co
 	if err := forget(root, previously, rules.Profile); err != nil {
 		return nil, nil, err
 	}
-	return copyEntries(paths.Home(), root, rules.Profile, previously, Ceiling, prints)
+	copied, newPrints, err := copyEntries(paths.Home(), root, rules.Profile, previously, Ceiling, prints)
+	if err != nil {
+		return copied, newPrints, err
+	}
+	if err := rebaseCahCommands(root, paths.Home(), copied); err != nil {
+		return copied, newPrints, err
+	}
+	return copied, newPrints, nil
 }
 
 // Clear takes back everything an earlier Copy placed under dest, without

@@ -119,6 +119,10 @@ machine: `~/.claude.json`, `~/.claude/.credentials.json`, `~/.codex/auth.json`
 and their neighbours. On the machine this was written on that comes to 17
 entries and 254 KB.
 
+Claude's `cah` hooks use scripts in `.claude/cah-bin`. Their `bin` and `lib`
+are copied, while generated `cache` files stay in the sandbox; only the copied
+settings have their absolute script paths adjusted to that copy.
+
 If that list was emptied or changed, `wuserbox --re-init` restores the current
 default copy list. It backs up the previous rules file and leaves project
 grants and cleanup rules unchanged.

@@ -18,7 +18,7 @@ import (
 // what it had been taught, which is also the part a person cannot retype on
 // every run.
 //
-// The whole list comes to roughly 2.8 MB across about 250 files, against
+// The list came to roughly 3 MB across about 270 files, against
 // 254 KB for the file-only default it replaces and the 64 MB ceiling
 // internal/policy/profile.Ceiling enforces. It stays that small because
 // every directory in it was chosen by measurement: `.claude/skills` is
@@ -74,6 +74,8 @@ var defaultProfile = []config.Entry{
 	{Path: ".claude/skills"},
 	{Path: ".claude/output-styles"},
 	{Path: ".claude/plugins", Exclude: config.Masks([]string{"marketplaces/**"})},
+	// cah's cache has many generated files; its bin and lib are the program.
+	{Path: ".claude/cah-bin", Exclude: config.Masks([]string{"cache/**"})},
 	{Path: ".codex/auth.json"},
 	{Path: ".codex/config.toml"},
 	{Path: ".codex/installation_id"},
