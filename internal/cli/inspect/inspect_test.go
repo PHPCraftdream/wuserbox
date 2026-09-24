@@ -46,27 +46,27 @@ func TestListTakesNoArguments(t *testing.T) {
 }
 
 func TestAuditAcceptsADepth(t *testing.T) {
-	// Depth zero only looks at the drive roots, which keeps the test quick.
-	if err := Audit([]string{"0"}); err != nil {
-		t.Errorf("audit: %v", err)
+	if depth, err := auditDepth([]string{"0"}); err != nil || depth != 0 {
+		t.Errorf("depth zero: got (%d, %v), want (0, nil)", depth, err)
 	}
-	if err := Audit([]string{"not-a-number"}); err == nil {
+	if _, err := auditDepth([]string{"not-a-number"}); err == nil {
 		t.Error("a non-numeric depth should have been rejected")
 	}
-	if err := Audit([]string{"1", "2"}); err == nil {
+	if _, err := auditDepth([]string{"1", "2"}); err == nil {
 		t.Error("two arguments should have been rejected")
 	}
 	// A negative depth used to parse, and the walk's only boundary -- left
 	// == 0 -- is one a negative start never reaches: every fixed drive to its
 	// last leaf, two permission reads per directory on the way.
-	if err := Audit([]string{"-1"}); err == nil {
+	if _, err := auditDepth([]string{"-1"}); err == nil {
 		t.Error("a negative depth should have been rejected")
 	}
-	if got := exit.Of(Audit([]string{"-1"})); got != exit.Usage {
+	_, err := auditDepth([]string{"-1"})
+	if got := exit.Of(err); got != exit.Usage {
 		t.Errorf("a negative depth gave %v, want %v", got, exit.Usage)
 	}
 	// And whatever followed the number used to be dropped on the floor.
-	if err := Audit([]string{"2x"}); err == nil {
+	if _, err := auditDepth([]string{"2x"}); err == nil {
 		t.Error("trailing garbage after the depth should have been rejected")
 	}
 }

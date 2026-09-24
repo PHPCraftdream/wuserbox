@@ -120,7 +120,10 @@ func previewEntries(home string, root *os.Root, entries []config.Entry, prints m
 		}
 		src := filepath.Join(home, filepath.FromSlash(entry.Path))
 		info, err := os.Stat(src)
-		if err != nil {
+		if err != nil && !os.IsNotExist(err) {
+			return plans, fmt.Errorf("statting source %s: %w", entry.Path, err)
+		}
+		if os.IsNotExist(err) {
 			continue // not on this machine; not an error, same as a real copy
 		}
 		plan := EntryPlan{Path: entry.Path}

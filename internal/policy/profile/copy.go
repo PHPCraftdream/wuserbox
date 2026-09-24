@@ -292,7 +292,10 @@ func copyEntries(home string, root *os.Root, entries, previously []config.Entry,
 		}
 		src := filepath.Join(home, filepath.FromSlash(entry.Path))
 		info, err := os.Stat(src)
-		if err != nil {
+		if err != nil && !os.IsNotExist(err) {
+			return copied, newPrints, fmt.Errorf("statting source %s: %w", entry.Path, err)
+		}
+		if os.IsNotExist(err) {
 			// os.Stat cannot tell a source that has gone since an earlier
 			// run copied it from a source that was never here, and the two
 			// are opposite in what they license. The first leaves a copy
