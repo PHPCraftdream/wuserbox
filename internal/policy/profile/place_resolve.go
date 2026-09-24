@@ -95,37 +95,36 @@ func (r *placeResolver) canonicalEntryPath(path string) placeResult {
 					r.scans++
 					complete := true
 					var scanErr error
-					for _, child := range snap.children {
-						name := child.Name()
-						if _, known := snap.canonical[name]; known {
-							continue
+					for _, name := range snap.children {
+						r.aliasChildVisits++
+						childPath := snap.canonical[name]
+						if childPath == "" {
+							childFile, err := r.root.Open(filepath.Join(current, name))
+							if err != nil {
+								complete = false
+								scanErr = err
+								continue
+							}
+							var childErr error
+							childPath, childErr = pathid.Canonical(childFile.Name())
+							_ = childFile.Close()
+							if childErr != nil {
+								complete = false
+								scanErr = childErr
+								continue
+							}
+							snap.canonical[name] = childPath
 						}
-						childFile, err := r.root.Open(filepath.Join(current, name))
-						if err != nil {
-							complete = false
-							scanErr = err
-							continue
-						}
-						var childErr error
-						childPath, childErr := pathid.Canonical(childFile.Name())
-						_ = childFile.Close()
-						if childErr != nil {
-							complete = false
-							scanErr = childErr
-							continue
-						}
-						snap.canonical[name] = childPath
 						// The index is extended in place, beside the
 						// canonical row the answer just got, rather than
 						// cleared and rebuilt out of the whole snapshot's
 						// answers on every scan. The children an earlier
 						// scan already answered are exactly the ones this
-						// loop skips, so a scan adds only the answers it
-						// newly computed: a retried scan re-observes
-						// nothing, and an inner membership map is built
-						// once per canonical path a snapshot first stored
-						// a name under instead of once for every known path
-						// on every scan. That rebuild is the cumulative
+						// loop already knows are not new disk reads. Each
+						// pass still folds every known canonical answer into
+						// the membership index, and builds an inner map only
+						// once per canonical path a snapshot first stored a
+						// name under. That rebuild is the cumulative
 						// allocation work the reviews of 2026-09-30 (round
 						// 11) and 2026-09-23 (round 12) measured: with B
 						// unchanged neighbors and M changed names it paid

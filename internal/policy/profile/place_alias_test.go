@@ -388,14 +388,14 @@ func TestAMixedCopyRefreshesStructuralMirrorsWithoutReindexingTheRecord(t *testi
 			if resolvers != 1 || opens != 1 || reads != 1 || children != k/2 {
 				t.Errorf("alternating structural mirrors over %d entries built %d resolvers, opened/read %d/%d directories and processed %d children; want one resolver and one initial index of %d standing entries", k, resolvers, opens, reads, children, k/2)
 			}
-			if want := 2*k - 1; resolutions != want {
-				t.Errorf("the %d-entry mixed run resolved %d spellings, want %d: initial index plus one changed-name refresh and one later vouch per entry", k, resolutions, want)
+			if want := 3 * k / 2; resolutions != want {
+				t.Errorf("the %d-entry mixed run resolved %d spellings, want %d: initial index plus the invalidated missing-name vouches", k, resolutions, want)
 			}
-			if scans > k/2 {
-				t.Errorf("the %d-entry refresh scanned %d alias sibling lists, more than one per changed name", k, scans)
+			if scans != 0 {
+				t.Errorf("the %d-entry refresh scanned %d alias sibling lists, want none for exact structural names", k, scans)
 			}
-			if canonicalMaps != k {
-				t.Errorf("the %d-entry refresh built %d canonical membership maps, want %d: one per answered canonical path -- %d survivors canonicalized by the first recreate's scan, and one per recreated name -- where the shape this replaces cleared and rebuilt every directory's maps on every scan", k, canonicalMaps, k, k/2)
+			if canonicalMaps != k/2 {
+				t.Errorf("the %d-entry refresh built %d canonical membership maps, want %d for the recreated names; unchanged siblings need no alias scan", k, canonicalMaps, k/2)
 			}
 			if !reflect.DeepEqual(pathsOf(copied), names) {
 				t.Errorf("the record came back as %v, want %v", pathsOf(copied), names)

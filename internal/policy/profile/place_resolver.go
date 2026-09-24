@@ -70,7 +70,7 @@ type placeResult struct {
 // the fact: the taken child's rows leave byName, canonical and
 // byCanonical, and what stays is what the volume still holds.
 type dirSnapshot struct {
-	children []os.DirEntry
+	children []string
 	// childAt holds the same listing under the same names as a map, name to
 	// the slot it sits in. A name that leaves the listing -- one mirror's
 	// refresh, one clear's take-back -- is a single lookup and a single
@@ -123,7 +123,7 @@ func (snap *dirSnapshot) takeChild(name string) {
 	last := len(snap.children) - 1
 	moved := snap.children[last]
 	snap.children[at] = moved
-	snap.childAt[moved.Name()] = at
+	snap.childAt[moved] = at
 	snap.children = snap.children[:last]
 	delete(snap.childAt, name)
 }
@@ -201,6 +201,8 @@ type placeResolver struct {
 	resolutions int
 	children    int
 	scans       int
+	// aliasChildVisits counts every snapshot child an alias scan examines.
+	aliasChildVisits int
 	// canonicalMaps is the counter beside scans and visits, and it is the
 	// shape the round-11 and round-12 reviews asked for beside them: the
 	// inner membership maps a directory's canonical answers had to build,
@@ -341,18 +343,19 @@ func (r *placeResolver) snapshot(dir string) (dirSnapshot, bool) {
 		return r.noteShut(dir, err), false
 	}
 	r.reads++
-	children, err := file.ReadDir(-1)
+	entries, err := file.ReadDir(-1)
 	_ = file.Close()
 	if err != nil {
 		return r.noteShut(dir, err), false
 	}
-	byName := make(map[string]string, len(children))
-	for _, child := range children {
-		byName[child.Name()] = child.Name()
-	}
-	childAt := make(map[string]int, len(children))
-	for at, child := range children {
-		childAt[child.Name()] = at
+	children := make([]string, 0, len(entries))
+	byName := make(map[string]string, len(entries))
+	childAt := make(map[string]int, len(entries))
+	for _, child := range entries {
+		name := child.Name()
+		childAt[name] = len(children)
+		children = append(children, name)
+		byName[name] = name
 	}
 	snap := dirSnapshot{
 		children:       children,
@@ -365,7 +368,7 @@ func (r *placeResolver) snapshot(dir string) (dirSnapshot, bool) {
 	}
 	r.dirs[dir] = snap
 	r.noteDir(dir)
-	r.children += len(children)
+	r.children += len(entries)
 	return snap, true
 }
 

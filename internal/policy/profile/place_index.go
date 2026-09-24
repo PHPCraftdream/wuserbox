@@ -90,6 +90,8 @@ func (r *placeResolver) refreshSnapshots(path string) error {
 		name := filepath.Base(canonical)
 		r.removeSnapshotChild(&snap, component)
 		r.removeSnapshotChild(&snap, name)
+		snap.childAt[name] = len(snap.children)
+		snap.children = append(snap.children, name)
 		snap.byName[name] = name
 		snap.canonical[name] = canonical
 		if snap.canonicalNames[canonical] == nil {
@@ -260,21 +262,36 @@ func (ix *placeIndex) index(spelling string) {
 // retain their canonical answers and the resolver's snapshots.
 func (ix *placeIndex) refresh(path string) error {
 	changed := ix.byPath.under(path)
-	parent := filepath.Dir(cleanEntryPath(path))
+	key := cleanEntryPath(path)
+	parent := filepath.Dir(key)
 	dependencyDir := ""
-	resolved := ix.resolver.place(path)
-	if resolved.ok {
-		parent = filepath.Dir(resolved.canonical)
-		dependencyDir = ix.resolver.places[cleanEntryPath(path)].directory
-		for _, place := range ix.resolver.placesUnder(resolved.canonical) {
+	canonical := filepath.Join(parent, filepath.Base(key))
+	if known, ok := ix.paths[parent]; ok {
+		parent = known
+		canonical = filepath.Join(parent, filepath.Base(key))
+	} else if known, ok := ix.resolver.places[parent]; ok && known.ok {
+		parent = known.canonical
+		canonical = filepath.Join(parent, filepath.Base(key))
+		dependencyDir = known.directory
+	}
+	if known, ok := ix.paths[key]; ok {
+		canonical = known
+		parent = filepath.Dir(known)
+	} else if known, ok := ix.resolver.places[key]; ok && known.ok {
+		canonical = known.canonical
+		parent = filepath.Dir(known.canonical)
+	}
+	if known, ok := ix.resolver.places[key]; ok && known.directory != "" {
+		dependencyDir = known.directory
+	}
+	if canonical != "" {
+		for _, place := range ix.resolver.placesUnder(canonical) {
 			for key := range ix.members[place] {
 				changed = append(changed, key)
 			}
 		}
-	} else if miss, ok := ix.resolver.places[cleanEntryPath(path)]; ok && miss.directory != "" {
-		dependencyDir = miss.directory
 	}
-	ix.resolver.retract(path)
+	ix.resolver.retract(key)
 	for _, key := range changed {
 		ix.resolver.retract(key)
 		if canonical, ok := ix.paths[key]; ok {
