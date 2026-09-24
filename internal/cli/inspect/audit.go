@@ -1,6 +1,7 @@
 package inspect
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -174,7 +175,7 @@ func fixedDrives() ([]string, error) {
 	query := func(buf []uint16) (uint32, error) {
 		n, _, callErr := getStrings.Call(uintptr(len(buf)), uintptr(unsafe.Pointer(&buf[0])))
 		if n == 0 {
-			if callErr != nil && callErr != syscall.Errno(0) {
+			if callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
 				return 0, callErr
 			}
 			return 0, syscall.EINVAL
@@ -188,7 +189,7 @@ func fixedDrives() ([]string, error) {
 		}
 		t, _, callErr := getType.Call(uintptr(unsafe.Pointer(name)))
 		if t == 0 {
-			if callErr != nil && callErr != syscall.Errno(0) {
+			if callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
 				return 0, callErr
 			}
 			return 0, syscall.EINVAL
